@@ -1,5 +1,6 @@
 /*
  * sys_compat_run - Universal Linux ELF Loader & Entry Point Runner for Haiku OS
+ * Auto-filters GNU extension program headers (0x60000000..0x6FFFFFFF)
  * License: Public Domain / CC0 1.0 Universal
  */
 
@@ -51,7 +52,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Map PT_LOAD segments
+    // Map PT_LOAD segments (ignoring GNU extension headers)
     for (int i = 0; i < ehdr.e_phnum; i++) {
         if (phdrs[i].p_type == PT_LOAD) {
             void* addr = (void*)(phdrs[i].p_vaddr & ~0xFFFF);
@@ -59,7 +60,6 @@ int main(int argc, char** argv)
             void* mapped = mmap(addr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
             if (mapped == MAP_FAILED) {
-                // Retry without MAP_FIXED if preferred
                 mapped = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC,
                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             }
