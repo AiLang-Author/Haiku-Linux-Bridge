@@ -1,6 +1,5 @@
 /*
- * sys_compat_run - Universal Linux ELF Loader & Entry Point Runner for Haiku OS
- * Auto-filters GNU extension program headers (0x60000000..0x6FFFFFFF)
+ * sys_compat_run - Universal Linux ELF Loader & System V ABI Stack Launcher for Haiku OS
  * License: Public Domain / CC0 1.0 Universal
  */
 
@@ -9,6 +8,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <sys/mman.h>
 #include <elf.h>
 
@@ -74,12 +74,60 @@ int main(int argc, char** argv)
     free(phdrs);
     close(fd);
 
-    printf("[+] Transferring execution to Linux entry point 0x%lx...\n", (unsigned long)ehdr.e_entry);
+    // Allocate 1MB User Stack for Linux process
+    size_t stack_size = 1024 * 1024;
+    void* stack_base = mmap(NULL, stack_size, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (stack_base == MAP_FAILED) {
+        perror("[-] Failed to allocate Linux stack");
+        return 1;
+    }
 
-    // Jump to Linux entry point
-    typedef void (*entry_func_t)(int, char**, char**);
-    entry_func_t entry = (entry_func_t)ehdr.e_entry;
-    entry(argc - 1, &argv[1], NULL);
+    uint64_t* sp = (uint64_t*)((uint8_t*)stack_base + stack_size);
+
+    // 16-byte align stack pointer
+    sp = (uint64_t*)((uintptr_t)sp & ~0xFULL);
+
+    // Push Auxiliary Vector (AT_NULL = 0, 0)
+    *(--sp) = 0;
+    *(--sp) = 0;
+
+    // Push AT_PAGESZ (6 = 4096)
+    *(--sp) = 4096;
+    *(--sp) = 6;
+
+    // Push envp NULL terminator
+    *(--sp) = 0;
+
+    // Prepare Linux argv pointers
+    int linux_argc = argc - 1;
+    char** linux_argv = &argv[1];
+
+    // Push argv NULL terminator
+    *(--sp) = 0;
+
+    // Push argv string pointers
+    for (int i = linux_argc - 1; i >= 0; i--) {
+        *(--sp) = (uint64_t)(uintptr_t)linux_argv[i];
+    }
+
+    // Push argc
+    *(--sp) = (uint64_t)linux_argc;
+
+    printf("[+] System V ABI Stack prepared at RSP=0x%lx (argc=%d)...\n",
+           (unsigned long)(uintptr_t)sp, linux_argc);
+    printf("[+] Transferring execution to Linux entry point 0x%lx...\n",
+           (unsigned long)ehdr.e_entry);
+
+    // Assembly jump: set RSP to sp and jump to e_entry
+    uint64_t entry_addr = ehdr.e_entry;
+    __asm__ __volatile__ (
+        "mov %0, %%rsp\n\t"
+        "jmp *%1\n\t"
+        :
+        : "r"(sp), "r"(entry_addr)
+        : "memory"
+    );
 
     return 0;
 }
