@@ -1,0 +1,27 @@
+# .gitignore for Haiku-Linux-Bridge
+
+# QEMU runtime disk & log files
+*.qcow2
+*.log
+*.sock
+
+# Downloads and heavy source trees
+downloads/
+payload/
+obj/
+
+# Compiled C test executables
+tests/hello_linux
+tests/test_file
+tests/test_mem
+tests/test_sys
+tests/test_net
+tests/test_ioctl
+tests/hello_dyn
+tests/hello_stat
+tests/compiled_out.x
+
+# OS & Editor files
+.DS_Store
+*.swp
+*~
