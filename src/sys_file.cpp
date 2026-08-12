@@ -445,16 +445,65 @@ linux_sys_select(uint64 nfds, uint64 readfds, uint64 writefds, uint64 exceptfds,
     return (int64)result;
 }
 
+struct linux_sigaction {
+    uint64 sa_handler;
+    uint64 sa_flags;
+    uint64 sa_restorer;
+    uint64 sa_mask;
+};
+
+static struct linux_sigaction gLinuxSignalTable[64];
+static uint64 gLinuxBlockedSignalMask = 0;
+
 extern "C" int64
 linux_sys_rt_sigaction(uint64 signum, uint64 act, uint64 oldact, uint64 sigsetsize, uint64 unused1, uint64 unused2)
 {
-    dprintf("[sys_compat] sys_rt_sigaction registered for signal %" B_PRIu64 "\n", signum);
+    if (signum >= 64)
+        return -LINUX_EINVAL;
+
+    if (oldact != 0) {
+        if (user_memcpy((void*)oldact, &gLinuxSignalTable[signum], sizeof(struct linux_sigaction)) != B_OK)
+            return -LINUX_EFAULT;
+    }
+
+    if (act != 0) {
+        if (user_memcpy(&gLinuxSignalTable[signum], (const void*)act, sizeof(struct linux_sigaction)) != B_OK)
+            return -LINUX_EFAULT;
+        dprintf("[sys_compat] Registered Linux signal %" B_PRIu64 " handler at 0x%" B_PRIx64 "\n",
+                signum, gLinuxSignalTable[signum].sa_handler);
+    }
+
     return 0;
 }
 
 extern "C" int64
 linux_sys_rt_sigprocmask(uint64 how, uint64 set, uint64 oldset, uint64 sigsetsize, uint64 unused1, uint64 unused2)
 {
+    if (oldset != 0) {
+        if (user_memcpy((void*)oldset, &gLinuxBlockedSignalMask, sizeof(uint64)) != B_OK)
+            return -LINUX_EFAULT;
+    }
+
+    if (set != 0) {
+        uint64 new_mask = 0;
+        if (user_memcpy(&new_mask, (const void*)set, sizeof(uint64)) != B_OK)
+            return -LINUX_EFAULT;
+
+        switch (how) {
+            case 0: // SIG_BLOCK
+                gLinuxBlockedSignalMask |= new_mask;
+                break;
+            case 1: // SIG_UNBLOCK
+                gLinuxBlockedSignalMask &= ~new_mask;
+                break;
+            case 2: // SIG_SETMASK
+                gLinuxBlockedSignalMask = new_mask;
+                break;
+            default:
+                return -LINUX_EINVAL;
+        }
+    }
+
     return 0;
 }
 
