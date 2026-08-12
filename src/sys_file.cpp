@@ -403,17 +403,46 @@ linux_sys_pipe(uint64 pipefd, uint64 unused1, uint64 unused2, uint64 unused3, ui
     return 0;
 }
 
+struct linux_epoll_event {
+    uint32 events;
+    uint64 data;
+} __attribute__((packed));
+
+#define LINUX_EPOLL_CTL_ADD 1
+#define LINUX_EPOLL_CTL_DEL 2
+#define LINUX_EPOLL_CTL_MOD 3
+
+#define LINUX_EPOLLIN     0x001
+#define LINUX_EPOLLPRI    0x002
+#define LINUX_EPOLLOUT    0x004
+#define LINUX_EPOLLERR    0x008
+#define LINUX_EPOLLHUP    0x010
+#define LINUX_EPOLLRDHUP  0x2000
+
 extern "C" int64
 linux_sys_poll(uint64 fds, uint64 nfds, uint64 timeout, uint64 unused1, uint64 unused2, uint64 unused3)
 {
-    // Delegate to Haiku VFS poll handler
-    return 0;
+    if (fds == 0 && nfds > 0)
+        return -LINUX_EFAULT;
+
+    // Use Haiku kernel _kern_poll primitive
+    ssize_t result = _kern_poll((struct pollfd*)fds, (nfds_t)nfds, (bigtime_t)(timeout * 1000));
+    if (result < B_OK)
+        return haiku_to_linux_error((status_t)result);
+
+    return (int64)result;
 }
 
 extern "C" int64
 linux_sys_select(uint64 nfds, uint64 readfds, uint64 writefds, uint64 exceptfds, uint64 timeout, uint64 unused1)
 {
-    return 0;
+    // Delegate to Haiku kernel _kern_select primitive
+    int result = _kern_select((int)nfds, (fd_set*)readfds, (fd_set*)writefds, (fd_set*)exceptfds,
+                              (bigtime_t)(timeout ? *(uint64*)timeout : -1), NULL);
+    if (result < B_OK)
+        return haiku_to_linux_error((status_t)result);
+
+    return (int64)result;
 }
 
 extern "C" int64
@@ -432,12 +461,14 @@ linux_sys_rt_sigprocmask(uint64 how, uint64 set, uint64 oldset, uint64 sigsetsiz
 extern "C" int64
 linux_sys_epoll_create1(uint64 flags, uint64 unused1, uint64 unused2, uint64 unused3, uint64 unused4, uint64 unused5)
 {
-    // Create an epoll object handle mapped to Haiku port/pipe
-    int epfd = _kern_create_pipe(NULL);
-    if (epfd < B_OK)
-        return haiku_to_linux_error((status_t)epfd);
-    dprintf("[sys_compat] Created epoll instance fd=%d\n", epfd);
-    return (int64)epfd;
+    // Create an epoll object handle mapped to Haiku pipe
+    int fds[2];
+    status_t status = _kern_create_pipe(fds);
+    if (status < B_OK)
+        return haiku_to_linux_error(status);
+
+    dprintf("[sys_compat] Created epoll instance fd=%d\n", fds[0]);
+    return (int64)fds[0];
 }
 
 extern "C" int64
@@ -450,7 +481,30 @@ linux_sys_epoll_ctl(uint64 epfd, uint64 op, uint64 fd, uint64 event, uint64 unus
 extern "C" int64
 linux_sys_epoll_pwait(uint64 epfd, uint64 events, uint64 maxevents, uint64 timeout, uint64 sigmask, uint64 sigsetsize)
 {
-    return 0;
+    if (events == 0 || maxevents == 0)
+        return -LINUX_EINVAL;
+
+    // Check descriptors readiness via _kern_poll
+    struct pollfd pfd;
+    pfd.fd = (int)epfd;
+    pfd.events = POLLIN | POLLOUT;
+    pfd.revents = 0;
+
+    bigtime_t timeout_us = (timeout == (uint64)-1) ? -1 : (bigtime_t)(timeout * 1000);
+    ssize_t poll_res = _kern_poll(&pfd, 1, timeout_us);
+    if (poll_res < B_OK)
+        return haiku_to_linux_error((status_t)poll_res);
+
+    if (poll_res == 0)
+        return 0; // Timeout
+
+    // Populate ready event
+    struct linux_epoll_event* levents = (struct linux_epoll_event*)events;
+    memset(&levents[0], 0, sizeof(struct linux_epoll_event));
+    levents[0].events = LINUX_EPOLLIN | LINUX_EPOLLOUT;
+    levents[0].data = epfd;
+
+    return 1; // 1 ready event
 }
 
 extern "C" int64

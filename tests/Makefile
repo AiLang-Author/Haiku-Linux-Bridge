@@ -4,7 +4,7 @@
 CC ?= gcc
 CFLAGS = -O2 -static -Wall
 
-TARGETS = hello_linux test_file test_mem test_sys test_net test_ioctl test_vfs
+TARGETS = hello_linux test_file test_mem test_sys test_net test_ioctl test_vfs test_epoll
 
 all: $(TARGETS)
 
@@ -27,6 +27,9 @@ test_ioctl: test_ioctl.c
 	$(CC) $(CFLAGS) $< -o $@
 
 test_vfs: test_vfs.c
+	$(CC) $(CFLAGS) $< -o $@
+
+test_epoll: test_epoll.c
 	$(CC) $(CFLAGS) $< -o $@
 
 clean:
