@@ -125,6 +125,9 @@ void  linux_init_syscall_table(void);
 #define LINUX_SYS_EPOLL_PWAIT      281
 #define LINUX_SYS_SIGALTSTACK      131
 
+// Synthetic VFS interface
+status_t proc_vfs_read_node(const char* path, char* buffer, size_t max_len, size_t* read_bytes);
+
 // Syscall handlers declarations
 int64 linux_sys_read(uint64 fd, uint64 buf, uint64 count, uint64 unused1, uint64 unused2, uint64 unused3);
 int64 linux_sys_write(uint64 fd, uint64 buf, uint64 count, uint64 unused1, uint64 unused2, uint64 unused3);

@@ -49,6 +49,17 @@ linux_sys_openat(uint64 dirfd, uint64 pathname, uint64 flags, uint64 mode, uint6
         return -LINUX_EFAULT;
 
     const char* path = (const char*)pathname;
+
+    // Check for synthetic /proc or /sys paths
+    if (strncmp(path, "/proc/", 6) == 0 || strncmp(path, "/sys/", 5) == 0) {
+        char vfs_buf[1024];
+        size_t read_bytes = 0;
+        status_t vfs_status = proc_vfs_read_node(path, vfs_buf, sizeof(vfs_buf), &read_bytes);
+        if (vfs_status == B_OK) {
+            dprintf("[sys_compat] Intercepted synthetic VFS openat: %s\n", path);
+        }
+    }
+
     int haiku_flags = 0;
 
     // Convert Linux open flags to Haiku flags
