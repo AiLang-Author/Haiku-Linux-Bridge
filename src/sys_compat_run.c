@@ -1,5 +1,5 @@
 /*
- * sys_compat_run - Universal Linux ELF Launcher for Haiku OS
+ * sys_compat_run - Universal Linux ELF Loader & Entry Point Runner for Haiku OS
  * License: Public Domain / CC0 1.0 Universal
  */
 
@@ -38,12 +38,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (ehdr.e_ident[EI_CLASS] != ELFCLASS64) {
-        printf("[-] Error: Only 64-bit x86_64 Linux ELF binaries are supported\n");
-        close(fd);
-        return 1;
-    }
-
     printf("[+] sys_compat_run: Loading 64-bit Linux ELF '%s' (Entry: 0x%lx)...\n",
            elf_path, (unsigned long)ehdr.e_entry);
 
@@ -65,30 +59,27 @@ int main(int argc, char** argv)
             void* mapped = mmap(addr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
             if (mapped == MAP_FAILED) {
-                perror("[-] Failed to mmap PT_LOAD segment");
-                free(phdrs);
-                close(fd);
-                return 1;
+                // Retry without MAP_FIXED if preferred
+                mapped = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             }
 
             lseek(fd, phdrs[i].p_offset, SEEK_SET);
             read(fd, (void*)phdrs[i].p_vaddr, phdrs[i].p_filesz);
-            printf("[+] Mapped PT_LOAD Segment %d: 0x%lx - 0x%lx (%zu bytes)\n",
-                   i, (unsigned long)phdrs[i].p_vaddr,
-                   (unsigned long)(phdrs[i].p_vaddr + phdrs[i].p_memsz),
-                   (size_t)phdrs[i].p_memsz);
+            printf("[+] Mapped Segment %d: 0x%lx (%zu bytes)\n",
+                   i, (unsigned long)phdrs[i].p_vaddr, (size_t)phdrs[i].p_memsz);
         }
     }
 
     free(phdrs);
     close(fd);
 
-    // Jump to entry point
-    typedef void (*entry_func_t)(void);
-    entry_func_t entry = (entry_func_t)ehdr.e_entry;
-
     printf("[+] Transferring execution to Linux entry point 0x%lx...\n", (unsigned long)ehdr.e_entry);
-    entry();
+
+    // Jump to Linux entry point
+    typedef void (*entry_func_t)(int, char**, char**);
+    entry_func_t entry = (entry_func_t)ehdr.e_entry;
+    entry(argc - 1, &argv[1], NULL);
 
     return 0;
 }
