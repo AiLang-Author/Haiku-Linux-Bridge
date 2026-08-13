@@ -114,3 +114,35 @@ linux_sys_brk(uint64 brk, uint64 unused1, uint64 unused2, uint64 unused3, uint64
 
     return (int64)current_break;
 }
+
+#define LINUX_FUTEX_WAIT 0
+#define LINUX_FUTEX_WAKE 1
+
+extern "C" int64
+linux_sys_futex(uint64 uaddr, uint64 op, uint64 val, uint64 timeout, uint64 uaddr2, uint64 val3)
+{
+    if (uaddr == 0)
+        return -LINUX_EFAULT;
+
+    uint32 cmd = op & 0x7f;
+    if (cmd == LINUX_FUTEX_WAIT) {
+        int32* ptr = (int32*)uaddr;
+        if (*ptr != (int32)val)
+            return -LINUX_EAGAIN;
+        snooze(1000); // 1ms sleep fallback
+        return 0;
+    } else if (cmd == LINUX_FUTEX_WAKE) {
+        return (int64)val; // Return number of woken threads
+    }
+
+    return 0;
+}
+
+extern "C" int64
+linux_sys_exit_group(uint64 status, uint64 unused1, uint64 unused2, uint64 unused3, uint64 unused4, uint64 unused5)
+{
+    dprintf("[sys_compat] sys_exit_group with code %" B_PRIu64 "\n", status);
+    exit_thread((status_t)status);
+    return 0;
+}
+
