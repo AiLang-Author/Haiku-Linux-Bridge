@@ -1,6 +1,6 @@
 /*
  * sys_compat_run - Universal Linux ELF Loader & System V ABI Stack Launcher for Haiku OS
- * Includes TLS FS_BASE Initialization & System V ABI Stack Setup
+ * Includes Inline Assembly Syscall & TLS FS_BASE Register Setup
  * License: Public Domain / CC0 1.0 Universal
  */
 
@@ -11,13 +11,22 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
-#include <asm/prctl.h>
 #include <elf.h>
 
-#ifndef ARCH_SET_FS
-#define ARCH_SET_FS 0x1002
-#endif
+#define SYS_ARCH_PRCTL 158
+#define ARCH_SET_FS    0x1002
+
+static inline long linux_raw_syscall2(long num, long arg1, long arg2)
+{
+    long ret;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(arg1), "S"(arg2)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
 
 int main(int argc, char** argv)
 {
@@ -81,13 +90,13 @@ int main(int argc, char** argv)
     free(phdrs);
     close(fd);
 
-    // Initialize 4KB TLS Thread Local Storage area for Linux process
+    // Allocate 4KB TLS Thread Local Storage area for Linux process
     void* tls_area = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (tls_area != MAP_FAILED) {
         *(void**)tls_area = tls_area; // Set self-pointer
-        syscall(SYS_arch_prctl, ARCH_SET_FS, tls_area);
-        printf("[+] Initialized TLS FS_BASE at 0x%lx\n", (unsigned long)tls_area);
+        linux_raw_syscall2(SYS_ARCH_PRCTL, ARCH_SET_FS, (long)(uintptr_t)tls_area);
+        printf("[+] Initialized TLS FS_BASE at 0x%lx via raw syscall\n", (unsigned long)(uintptr_t)tls_area);
     }
 
     // Allocate 1MB User Stack for Linux process
