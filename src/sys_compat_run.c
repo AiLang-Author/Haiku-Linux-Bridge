@@ -1,5 +1,6 @@
 /*
  * sys_compat_run - Universal Linux ELF Loader & System V ABI Stack Launcher for Haiku OS
+ * Includes TLS FS_BASE Initialization & System V ABI Stack Setup
  * License: Public Domain / CC0 1.0 Universal
  */
 
@@ -10,7 +11,13 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <asm/prctl.h>
 #include <elf.h>
+
+#ifndef ARCH_SET_FS
+#define ARCH_SET_FS 0x1002
+#endif
 
 int main(int argc, char** argv)
 {
@@ -73,6 +80,15 @@ int main(int argc, char** argv)
 
     free(phdrs);
     close(fd);
+
+    // Initialize 4KB TLS Thread Local Storage area for Linux process
+    void* tls_area = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tls_area != MAP_FAILED) {
+        *(void**)tls_area = tls_area; // Set self-pointer
+        syscall(SYS_arch_prctl, ARCH_SET_FS, tls_area);
+        printf("[+] Initialized TLS FS_BASE at 0x%lx\n", (unsigned long)tls_area);
+    }
 
     // Allocate 1MB User Stack for Linux process
     size_t stack_size = 1024 * 1024;
