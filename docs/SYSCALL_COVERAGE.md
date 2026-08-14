@@ -140,11 +140,11 @@ ptrace, mount, bpf, io_uring, inotify, epoll, mmap of files.
 Approximate unique Linux numbers we **dispatch to something other than
 ENOSYS**: ~90 (including stubs).
 
-**Guest-proven useful**: ~70.
+**Guest-proven useful**: ~73 (includes `time` / `gettimeofday` / real
+`clock_gettime`; busybox `date` is Fri Aug 14 18:17:47 UTC 2026).
 
-**Wired this cut, not yet guest-proven**: time, gettimeofday, clock via
-`_kern_get_clock`, pread64/pwrite64, writev/readv, getppid, pipe/pipe2,
-nanosleep.
+**Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
+getppid, pipe/pipe2, nanosleep.
 
 **Highest remaining for “coreutils in the wild”:** `fcntl`, `statx`,
 `execve`+fork/wait (already in tree), `futex`, `poll`/`ppoll`,

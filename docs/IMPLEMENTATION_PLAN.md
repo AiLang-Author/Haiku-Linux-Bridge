@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (real `date` via time/gettimeofday/_kern_get_clock)  
+**Last updated:** 2026-08-14 (Day 10 wrap: sysutils + real `date` + 90% map)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -45,7 +45,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 
 ---
 
-## Proven vs not (2026-08-13)
+## Proven vs not (2026-08-14)
 
 | Item | Status | Evidence |
 |---|---|---|
