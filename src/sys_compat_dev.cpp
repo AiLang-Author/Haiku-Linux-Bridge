@@ -90,8 +90,41 @@
 #define HAIKU_DUP2       0xa0
 #define HAIKU_PIPE       0x83
 #define HAIKU_GET_CLOCK  0xc0	/* guest dump; counted 0xc1 in later trees */
+#define HAIKU_FCNTL      0x76	/* between open_dir 0x74 and fsync 0x77 */
 #define HAIKU_CLOCK_REALTIME  ((int32)-1)
 #define HAIKU_CLOCK_MONOTONIC ((int32)0)
+
+#define LINUX_F_DUPFD         0
+#define LINUX_F_GETFD         1
+#define LINUX_F_SETFD         2
+#define LINUX_F_GETFL         3
+#define LINUX_F_SETFL         4
+#define LINUX_F_DUPFD_CLOEXEC 1030
+#define HAIKU_F_DUPFD         0x0001
+#define HAIKU_F_GETFD         0x0002
+#define HAIKU_F_SETFD         0x0004
+#define HAIKU_F_GETFL         0x0008
+#define HAIKU_F_SETFL         0x0010
+#define HAIKU_F_DUPFD_CLOEXEC 0x0200
+#define HAIKU_O_NONBLOCK      0x80
+#define HAIKU_O_APPEND        0x800
+#define LINUX_O_APPEND        0x400
+#define LINUX_O_NONBLOCK      0x800
+
+#define LINUX_STATX_SIZE 256
+#define LINUX_STATX_TYPE   0x0001U
+#define LINUX_STATX_MODE   0x0002U
+#define LINUX_STATX_NLINK  0x0004U
+#define LINUX_STATX_UID    0x0008U
+#define LINUX_STATX_GID    0x0010U
+#define LINUX_STATX_ATIME  0x0020U
+#define LINUX_STATX_MTIME  0x0040U
+#define LINUX_STATX_CTIME  0x0080U
+#define LINUX_STATX_INO    0x0100U
+#define LINUX_STATX_SIZE   0x0200U
+#define LINUX_STATX_BLOCKS 0x0400U
+#define LINUX_STATX_BTIME  0x0800U
+#define LINUX_STATX_BASIC  0x07ffU
 
 #define BSTAT_MODE 0x0001
 #define BSTAT_UID  0x0002
@@ -214,6 +247,7 @@ typedef int32 (*haiku_dup2_fn)(int32 ofd, int32 nfd, int32 flags);
 typedef int32 (*haiku_fsync_fn)(int32 fd, int32 dataOnly);
 typedef int32 (*haiku_getclock_fn)(int32 clockid, void* timePtr);
 typedef int32 (*haiku_pipe_fn)(void* fds, int32 flags);
+typedef int32 (*haiku_fcntl_fn)(int32 fd, int32 op, uint64 argument);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -238,6 +272,7 @@ static uint64 sDup2Fn;
 static uint64 sFsyncFn;
 static uint64 sGetClockFn;
 static uint64 sPipeFn;
+static uint64 sFcntlFn;
 static int32 sHaveUid;
 static int32 sHaveGid;
 static uint32 sUid;
@@ -322,6 +357,9 @@ extern "C" {
 	int64 sys_compat_getppid(void);
 	int64 sys_compat_pipe2(void* fds, int64 flags);
 	int64 sys_compat_nanosleep(const void* req, void* rem);
+	int64 sys_compat_fcntl(int64 fd, int64 cmd, int64 arg);
+	int64 sys_compat_statx(int64 fd, const void* path, int64 flags,
+		uint32 mask, void* buf);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -497,6 +535,8 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_GET_CLOCK].function;
 				sPipeFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_PIPE].function;
+				sFcntlFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_FCNTL].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -1458,6 +1498,172 @@ sys_compat_nanosleep(const void* req, void* rem)
 	return 0;
 }
 
+static uint32
+haiku_fl_to_linux(uint32 h)
+{
+	uint32 l;
+
+	l = h & 3;
+	if ((h & HAIKU_O_APPEND) != 0)
+		l |= LINUX_O_APPEND;
+	if ((h & HAIKU_O_NONBLOCK) != 0)
+		l |= LINUX_O_NONBLOCK;
+	return l;
+}
+
+static uint32
+linux_fl_to_haiku(uint32 l)
+{
+	uint32 h;
+
+	h = l & 3;
+	if ((l & LINUX_O_APPEND) != 0)
+		h |= HAIKU_O_APPEND;
+	if ((l & LINUX_O_NONBLOCK) != 0)
+		h |= HAIKU_O_NONBLOCK;
+	return h;
+}
+
+extern "C" int64
+sys_compat_fcntl(int64 fd, int64 cmd, int64 arg)
+{
+	haiku_fcntl_fn fn;
+	int32 hop;
+	int64 st;
+	uint64 harg;
+
+	if (sFcntlFn == 0)
+		return -LINUX_ENOSYS;
+	harg = (uint64)arg;
+	switch ((int32)cmd) {
+	case LINUX_F_DUPFD:
+		hop = HAIKU_F_DUPFD;
+		break;
+	case LINUX_F_DUPFD_CLOEXEC:
+		hop = HAIKU_F_DUPFD_CLOEXEC;
+		break;
+	case LINUX_F_GETFD:
+		hop = HAIKU_F_GETFD;
+		harg = 0;
+		break;
+	case LINUX_F_SETFD:
+		hop = HAIKU_F_SETFD;
+		harg = (uint64)arg & 1;	/* FD_CLOEXEC is 1 on both */
+		break;
+	case LINUX_F_GETFL:
+		hop = HAIKU_F_GETFL;
+		harg = 0;
+		break;
+	case LINUX_F_SETFL:
+		hop = HAIKU_F_SETFL;
+		harg = linux_fl_to_haiku((uint32)arg);
+		break;
+	default:
+		return -LINUX_EINVAL;
+	}
+	fn = (haiku_fcntl_fn)(addr_t)sFcntlFn;
+	st = fn((int32)fd, hop, harg);
+	if (st < 0)
+		return haiku_status_to_linux((int64)st);
+	if ((int32)cmd == LINUX_F_GETFL)
+		return (int64)haiku_fl_to_linux((uint32)st);
+	if ((int32)cmd == LINUX_F_GETFD)
+		return (int64)(st & 1);	/* Linux only has FD_CLOEXEC */
+	return (int64)st;
+}
+
+static void
+put_u16(uint8* p, uint16 v)
+{
+	p[0] = (uint8)v;
+	p[1] = (uint8)(v >> 8);
+}
+
+static void
+put_u32(uint8* p, uint32 v)
+{
+	p[0] = (uint8)v;
+	p[1] = (uint8)(v >> 8);
+	p[2] = (uint8)(v >> 16);
+	p[3] = (uint8)(v >> 24);
+}
+
+static void
+put_u64(uint8* p, uint64 v)
+{
+	int i;
+	for (i = 0; i < 8; i++)
+		p[i] = (uint8)(v >> (8 * i));
+}
+
+static void
+put_stx_ts(uint8* p, int64 sec, int64 nsec)
+{
+	put_u64(p, (uint64)sec);
+	put_u32(p + 8, (uint32)nsec);
+	put_u32(p + 12, 0);
+}
+
+extern "C" int64
+sys_compat_statx(int64 fd, const void* path, int64 flags, uint32 mask,
+	void* buf)
+{
+	static struct haiku_stat sH;
+	haiku_read_stat_fn fn;
+	int32 traverse;
+	int32 st;
+	const void* pth;
+	uint8 first;
+	uint8 out[LINUX_STATX_SIZE];
+	uint32 got;
+	int i;
+
+	(void)mask;
+	if (buf == NULL)
+		return -LINUX_EFAULT;
+	if (sReadStatFn == 0)
+		return -LINUX_ENOSYS;
+	pth = path;
+	if (pth != NULL && (flags & LINUX_AT_EMPTY_PATH) != 0) {
+		if (user_memcpy(&first, pth, 1) != B_OK)
+			return -LINUX_EFAULT;
+		if (first == 0)
+			pth = NULL;
+	}
+	if (pth == NULL || (flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
+		traverse = 0;
+	else
+		traverse = 1;
+	fn = (haiku_read_stat_fn)(addr_t)sReadStatFn;
+	st = fn((int32)fd, pth, traverse, buf, HAIKU_STAT_SIZE);
+	if (st != 0)
+		return haiku_status_to_linux((int64)st);
+	if (user_memcpy(&sH, buf, sizeof(sH)) != B_OK)
+		return -LINUX_EFAULT;
+	for (i = 0; i < LINUX_STATX_SIZE; i++)
+		out[i] = 0;
+	got = LINUX_STATX_BASIC | LINUX_STATX_BTIME;
+	put_u32(out + 0, got);
+	put_u32(out + 4, (uint32)sH.st_blksize);
+	put_u32(out + 16, (uint32)sH.st_nlink);
+	put_u32(out + 20, sH.st_uid);
+	put_u32(out + 24, sH.st_gid);
+	put_u16(out + 28, (uint16)(sH.st_mode & 0177777));
+	put_u64(out + 32, (uint64)sH.st_ino);
+	put_u64(out + 40, (uint64)sH.st_size);
+	put_u64(out + 48, (uint64)sH.st_blocks);
+	put_stx_ts(out + 64, sH.st_atime, sH.st_atime_nsec);
+	put_stx_ts(out + 80, sH.st_crtime, sH.st_crtime_nsec);
+	put_stx_ts(out + 96, sH.st_ctime, sH.st_ctime_nsec);
+	put_stx_ts(out + 112, sH.st_mtime, sH.st_mtime_nsec);
+	put_u32(out + 136, (uint32)sH.st_dev);
+	sLastMode = sH.st_mode & 0177777;
+	sLastSize = sH.st_size;
+	if (user_memcpy(buf, out, LINUX_STATX_SIZE) != B_OK)
+		return -LINUX_EFAULT;
+	return 0;
+}
+
 extern "C" int64
 sys_compat_utimensat(int64 fd, const void* path, const void* times, int64 flags)
 {
@@ -1734,6 +1940,12 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		fmt_hex(hd, sDupFn);
 		PUT("ren="); PUT(hn); PUT(" sym="); PUT(hs);
 		PUT(" rlnk="); PUT(hl); PUT(" dup="); PUT(hd); PUT("\n");
+	}
+	{
+		char hf[20], hg[20];
+		fmt_hex(hf, sFcntlFn);
+		fmt_hex(hg, sGetClockFn);
+		PUT("fcntl="); PUT(hf); PUT(" clock="); PUT(hg); PUT("\n");
 	}
 	{
 		char uid[20], gid[20], ctid[20];

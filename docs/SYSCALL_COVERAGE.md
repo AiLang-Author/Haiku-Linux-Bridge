@@ -88,9 +88,9 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 280 | utimensat | works |
 | 32/33/292 | dup/dup2/dup3 | works |
 | 16 | ioctl | stub `-ENOTTY` |
-| 72 | fcntl | **missing** (coreutils uses it) |
-| 332 | statx | **missing** (modern coreutils) |
-| 221 | fadvise64 | **missing** (hint only) |
+| 72 | fcntl | **works** (`_kern_fcntl` 0x76; F_DUPFD/GETFD/SETFD/GETFL/SETFL/DUPFD_CLOEXEC; flag xlat) |
+| 332 | statx | **works** (`_kern_read_stat` → 256-byte `statx`; BASIC\|BTIME) |
+| 221 | fadvise64 | **works** (hint, return 0) |
 | 25 | mremap | **missing** |
 | 269 | faccessat | **missing** (openat-era access) |
 
@@ -140,14 +140,14 @@ ptrace, mount, bpf, io_uring, inotify, epoll, mmap of files.
 Approximate unique Linux numbers we **dispatch to something other than
 ENOSYS**: ~90 (including stubs).
 
-**Guest-proven useful**: ~73 (includes `time` / `gettimeofday` / real
-`clock_gettime`; busybox `date` is Fri Aug 14 18:17:47 UTC 2026).
+**Guest-proven useful**: ~76 (adds `fcntl` / `statx` / `fadvise64`;
+`hello_fcntl` printed **FCNTOK**, `hello_date` still DATEOK).
 
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** `fcntl`, `statx`,
-`execve`+fork/wait (already in tree), `futex`, `poll`/`ppoll`,
+**Highest remaining for “coreutils in the wild”:** `execve`+fork/wait
+(already in tree, unproven), `futex`, `poll`/`ppoll`,
 `rt_sigaction` (no-op install is often enough), file `mmap`.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is

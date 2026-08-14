@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (Day 10 wrap: sysutils + real `date` + 90% map)  
+**Last updated:** 2026-08-14 (Day 11: fcntl + statx guest-proven)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -74,7 +74,8 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `mprotect`/`munmap`/`chmod`/`chown`/`truncate`/`getuid`/`prctl`/`gettid` | **Works** | Guest dump: `write_stat=0x9d` `unmap=0xd5` `mprotect=0xd6` `rename_thread=0x38`. `hello_wstat` printed `WSTATOK`, `WSTAT_RC=0`, `hits=32`. `setuid`/`setgid` are layer-local; `set_tid_address`/`set_robust_list` store and return 0/`tid`. |
 | Linux `rename`/`symlink`/`readlink`/`stat`/`lstat`/`dup`/`fsync`/`clock_gettime`/`utimensat` | **Works** | Guest dump: `rename=0x81` `symlink=0x7e` `read_link=0x7d` `dup=0x9f` `fsync=0x77`. `hello_util` **UTILOK**. busybox `cp`/`mv`/`ln -s`/`readlink`/`touch`/`rm`/`cat`/`echo`/`ls` all RC=0. Hard `link` may EPERM. Adopt-on-CR3-miss is off. |
 | Linux `time`/`gettimeofday`/`clock_gettime` (real RTC) | **Works** | `_kern_get_clock` **0xc0** (not libroot `real_time_clock_usecs` — that KDLs). `hello_date` **DATEOK 1786731467**. busybox `date` / `date -u` printed **Fri Aug 14 18:17:47 UTC 2026**. |
-| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — ~90 numbers that dominate CLI/coreutils; remaining holes: `fcntl`, `statx`, `execve`, `futex`, `poll`, signals. ioctl after that. |
+| Linux `fcntl` / `statx` / `fadvise64` | **Works** | `_kern_fcntl` **0x76** (guest dump). Linux F_* / O_APPEND / O_NONBLOCK translated. `statx` from `_kern_read_stat` (256 B, size@40 mode@28). `hello_fcntl` **FCNTOK**. `hello_min` + `hello_date` still green. |
+| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `execve`, `futex`, `poll`, signals. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -116,6 +117,9 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 74 / 75 | `fsync` / `fdatasync` | `0x77` | `_kern_fsync` | |
 | 228 / 280 | `clock_gettime` / `utimensat` | `0xc0` | `_kern_get_clock` + rdtsc fallback | do **not** call libroot `real_time_clock_usecs` |
 | 201 / 96 | `time` / `gettimeofday` | `0xc0` | same clock helper | busybox `date` prints real UTC |
+| 72 | `fcntl` | `0x76` (118) | `_kern_fcntl` | Linux F_0/1/2/3/4/1030 → Haiku 0x1/0x2/0x4/0x8/0x10/0x200. GETFL flag xlat. Return fd/flags, not 0. |
+| 332 | `statx` | `0x9c` | `_kern_read_stat` | 256-byte Linux `statx`; BASIC\|BTIME; size@40 mode@28 |
+| 221 | `fadvise64` | — | no-op 0 | POSIX hint |
 | 17 / 18 | `pread64` / `pwrite64` | `0x95` / `0x97` | `_kern_read`/`_kern_write` with pos | remap only |
 | 19 / 20 | `writev` / `readv` | `0x98` / `0x96` | `_kern_writev`/`_kern_readv` pos=-1 | remap only |
 | 22 / 293 | `pipe` / `pipe2` | `0x83` | `_kern_create_pipe` | O_CLOEXEC/NONBLOCK translated |
@@ -129,10 +133,9 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **`fcntl` + `statx`** — modern coreutils hits these constantly.
-2. **Linux `clone` (fork-style) + `wait4` + `execve`** — shells, make, LTP, compilers.
-3. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
-4. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
+1. **Linux `clone` (fork-style) + `wait4` + `execve`** — shells, make, LTP, compilers. Adopt stays off until this is an explicit proven path.
+2. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
+3. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
 
 ---
 
@@ -179,6 +182,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_wstat.s` | uid/tid/prctl/mprotect/chmod/chown/truncate pack |
 | `tests/hello_util.s` | rename/symlink/readlink/stat/clock/dup/fsync/utimensat |
 | `tests/hello_date.s` | `time` + `gettimeofday` + `clock_gettime` (unix sec) |
+| `tests/hello_fcntl.s` | `fcntl` GET/SET FL/FD + DUPFD + `statx` + `fadvise64` |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

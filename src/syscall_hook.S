@@ -110,6 +110,8 @@
 	.extern	sys_compat_getppid
 	.extern	sys_compat_pipe2
 	.extern	sys_compat_nanosleep
+	.extern	sys_compat_fcntl
+	.extern	sys_compat_statx
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -259,6 +261,12 @@ sys_compat_lstar:
 	je	.Ldup
 	cmp	rax, 33			/* Linux dup2 */
 	je	.Ldup2
+	cmp	rax, 72			/* Linux fcntl */
+	je	.Lfcntl
+	cmp	rax, 221		/* fadvise64 — hint, succeed */
+	je	.Lok0
+	cmp	rax, 332		/* statx */
+	je	.Lstatx
 	cmp	rax, 74			/* Linux fsync */
 	je	.Lfsync
 	cmp	rax, 75			/* Linux fdatasync */
@@ -1196,6 +1204,27 @@ sys_compat_lstar:
 	push	r9
 	push	r10
 	CALL_C	sys_compat_nanosleep
+.Lfcntl:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_fcntl
+.Lstatx:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, r10
+	CALL_C	sys_compat_statx
 
 .Lget0:
 	xor	rax, rax
