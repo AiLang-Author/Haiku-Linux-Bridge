@@ -60,6 +60,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `lseek` / `open` / `openat` | **Works** | `hello_fds` printed `DEFGABC`, created `/tmp/created` (`CREATED`), `hits=13 last=60` (`results/ltp/fds_out.txt`) |
 | Linux `brk` / ANON `mmap` / `munmap` | **Works** | `hello_mmap` printed `MMAPOK`/`BRKOK`, `seq=9,1,11,12,1,60`, arena carved 4K (`results/ltp/mem_out.txt`) |
 | Loader 32 MB arena via `0x1337` (rdi,rsi) | **Works** | Device `brk=`/`hi=` span 32 MB after mark; `hello_min` still `HELLO_RC=0` |
+| Linux `arch_prctl(ARCH_SET_FS)` | **Works** | Writes `thread->user_local_storage` (offset `0x2b0` on this image) + `FS_BASE`. `hello_fs` printed `FSOK` (`results/ltp/fs_out.txt`) |
 | Linux `ioctl` | **Deferred** | Do not implement this layer yet |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 

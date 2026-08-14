@@ -23,7 +23,12 @@
 ### Proven Linux syscalls
 `read`, `write`, `close`, `lseek`, `open`, `openat`, `brk`, `mmap` (ANON), `munmap`, `mprotect` (no-op), `exit`, `exit_group`. Handshake `0x1337` + arena.
 
+### SET_FS (same day, later)
+- [x] Discover `user_local_storage` offset at `dev_open` by scanning the current `Thread*` for a qword equal to `rdmsr(FS_BASE)`. This image: **`uls=0x2b0`**.
+- [x] `ARCH_SET_FS` writes `[Thread+0x2b0]` then `wrmsr FS_BASE` (swapgs in/out, IF still clear).
+- [x] `hello_fs` printed **`FSOK`**, `FS_RC=0`, `seq` includes 158. `hello_min` still `HELLO_RC=0`. Evidence: `results/ltp/fs_out.txt`.
+- busybox after that: `brk, brk, SET_FS, set_tid_address(218), set_robust_list(273), rseq(334)`. Stubs added for 218/273/39/186; rseq returns `-ENOSYS`. Not yet a printed `BUSYBOX_ECHO`.
+
 ### Next steps
-1. Safe `ARCH_SET_FS`.
-2. Re-probe busybox `echo`.
-3. File-backed mmap later. ioctl still deferred.
+1. Watch `seq=` after the 218/273/334 stubs; add the next glibc/busybox number.
+2. File-backed mmap later. ioctl still deferred.

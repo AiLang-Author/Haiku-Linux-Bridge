@@ -50,6 +50,7 @@ extern "C" {
 	extern uint64 gArenaHi;
 	extern uint64 gLastN[8];
 	extern uint64 gLastNidx;
+	extern uint64 gUlsOff;
 	int64 sys_compat_dispatch_fast(uint64* saved);
 }
 
@@ -149,10 +150,47 @@ sys_compat_dispatch_fast(uint64* saved)
 	return -LINUX_ENOSYS;
 }
 
+#define IA32_FS_BASE 0xc0000100
+
+static void
+discover_uls_offset(void)
+{
+	uint64 fs, thread, match;
+	const uint64* p;
+	int i;
+
+	if (gUlsOff != 0)
+		return;
+
+	fs = rdmsr(IA32_FS_BASE);
+	__asm__ __volatile__("mov %%gs:0, %0" : "=r"(thread));
+	if (fs == 0 || thread == 0)
+		return;
+
+	/* thread->user_local_storage == current FS_BASE for a user thread. */
+	p = (const uint64*)(addr_t)thread;
+	match = 0;
+	for (i = 8; i < 256; i++) {
+		if (p[i] == fs) {
+			match = (uint64)i * 8;
+			break;
+		}
+	}
+	if (match == 0) {
+		dprintf("[sys_compat] ULS scan missed fs=%#" B_PRIx64
+			" thread=%#" B_PRIx64 "\n", fs, thread);
+		return;
+	}
+	gUlsOff = match;
+	dprintf("[sys_compat] user_local_storage off=%#" B_PRIx64
+		" fs=%#" B_PRIx64 "\n", gUlsOff, fs);
+}
+
 static status_t
 dev_open(const char* /*name*/, uint32 /*flags*/, void** cookie)
 {
 	*cookie = NULL;
+	discover_uls_offset();
 	return B_OK;
 }
 
@@ -245,6 +283,11 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 	PUT("hits="); PUT(n2); PUT("\n");
 	PUT("last="); PUT(n3); PUT("\n");
 	PUT("brk="); PUT(hb); PUT(".."); PUT(hc); PUT(" map="); PUT(hm); PUT(" hi="); PUT(hh); PUT("\n");
+	{
+		char hu[20];
+		fmt_hex(hu, gUlsOff);
+		PUT("uls="); PUT(hu); PUT("\n");
+	}
 	PUT("seq=");
 	for (k = 0; k < 8; k++) {
 		fmt_u64(nseq, gLastN[k]);

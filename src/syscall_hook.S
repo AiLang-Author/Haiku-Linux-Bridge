@@ -39,6 +39,7 @@
 	.globl	gArenaHi
 	.globl	gLastN
 	.globl	gLastNidx
+	.globl	gUlsOff
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gMarkCount
@@ -50,6 +51,7 @@
 	.hidden	gArenaHi
 	.hidden	gLastN
 	.hidden	gLastNidx
+	.hidden	gUlsOff
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -127,10 +129,20 @@ sys_compat_lstar:
 	je	.Lok0
 	cmp	rax, 12			/* Linux brk */
 	je	.Lbrk
+	cmp	rax, 39			/* Linux getpid */
+	je	.Lget1
 	cmp	rax, 158		/* Linux arch_prctl */
 	je	.Larch_prctl
+	cmp	rax, 186		/* Linux gettid */
+	je	.Lget1
+	cmp	rax, 218		/* Linux set_tid_address */
+	je	.Lget1
 	cmp	rax, 257		/* Linux openat */
 	je	.Lopenat
+	cmp	rax, 273		/* Linux set_robust_list */
+	je	.Lok0
+	cmp	rax, 334		/* Linux rseq — glibc accepts -ENOSYS */
+	je	.Lenosys
 	cmp	rax, 60			/* Linux exit */
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
@@ -242,6 +254,11 @@ sys_compat_lstar:
 	xor	rax, rax
 	sysretq
 
+.Lget1:
+	/* getpid/gettid/set_tid_address: return a fake tid of 1. */
+	mov	rax, 1
+	sysretq
+
 .Lbrk:
 	/* Linux brk(rdi): return new break, or current on failure/query. */
 	cmp	qword ptr [rip + gBrkBase], 0
@@ -291,13 +308,29 @@ sys_compat_lstar:
 
 .Larch_prctl:
 	/*
-	 * Do not wrmsr FS_BASE here. That clobbers the CPU FS without
-	 * updating Haiku's thread state and took down the wrapper
-	 * shell (2026-08-13). Pretend SET_FS succeeded; the loader
-	 * arena + brk/mmap is the TLS storage. Real FS switch later.
+	 * ARCH_SET_FS: write thread->user_local_storage (Haiku restores
+	 * that on every context switch) AND the current CPU FS_BASE.
+	 * Raw wrmsr alone left FS set when the Linux team was killed.
+	 * gUlsOff is discovered in dev_open. IF is still clear (FMASK).
 	 */
 	cmp	rdi, 0x1002		/* ARCH_SET_FS */
 	jne	.Lenosys
+	cmp	qword ptr [rip + gUlsOff], 0
+	je	.Lenosys
+	push	rcx
+	push	r11
+	swapgs
+	mov	r8, [gs:0]		/* Thread* */
+	add	r8, [rip + gUlsOff]
+	mov	[r8], rsi		/* user_local_storage = tls */
+	mov	eax, esi
+	mov	rdx, rsi
+	shr	rdx, 32
+	mov	ecx, 0xC0000100		/* IA32_FS_BASE */
+	wrmsr
+	swapgs
+	pop	r11
+	pop	rcx
 	xor	rax, rax
 	jmp	.Lret
 
@@ -333,3 +366,5 @@ gLastNidx:
 	.quad	0
 gLastN:
 	.quad	0, 0, 0, 0, 0, 0, 0, 0
+gUlsOff:
+	.quad	0

@@ -42,6 +42,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `read` / `close` remap | **Works** — `hello_rwc` echoed stdin, `hits=4` |
 | Linux `lseek` / `open` / `openat` | **Works** — `hello_fds` seeked + created `/tmp/created` |
 | Linux `brk` / ANON `mmap` / `munmap` | **Works** — `hello_mmap` printed `MMAPOK`/`BRKOK` |
+| Linux `arch_prctl(SET_FS)` | **Works** — updates Haiku `user_local_storage` + FS_BASE; `hello_fs` printed `FSOK` |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 
