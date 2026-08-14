@@ -45,6 +45,8 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `arch_prctl(SET_FS)` | **Works** — updates Haiku `user_local_storage` + FS_BASE; `hello_fs` printed `FSOK` |
 | Linux `rseq` (334) | **Works** — register/unregister + `cpu_id=0`. No `STAC` (Haiku has no `CR4.SMAP`). Guest: `hello_rseq` / `RSEQOK`. |
 | busybox `echo` (glibc-static) | **Works** — printed `BUSYBOX_ECHO`, `last=231` (`exit_group`) |
+| Linux `uname` (63) | **Works** — busybox printed `Linux haiku 6.1.0 sys_compat x86_64 GNU/Linux` |
+| busybox `cat` | **Works** — printed file contents via remapped `open`/`read`/`write` |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

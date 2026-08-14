@@ -33,6 +33,10 @@ Preempt-abort (`RIP → abort_ip` on Haiku context switch) is **not** hooked. `c
 ### busybox echo (same day)
 - [x] Static glibc busybox **`echo BUSYBOX_ECHO` printed**. `BB_RC=done`, `hits=22`, `last=231` (`exit_group`). Ring `seq=12,10,157,102,1,231,12,12` (`brk`, `mprotect`, `prctl`, `getuid`, `write`, `exit_group`). Wrapper shell stayed up. Kernel stayed up. rseq is no longer the wall.
 
+### uname + cat (same day)
+- [x] Linux `uname` (63) fills `struct utsname`. busybox printed **`Linux haiku 6.1.0 sys_compat x86_64 GNU/Linux`**.
+- [x] busybox **`cat /tmp/catme`** printed `catme`. `open`/`read`/`write`/`close` already remapped.
+
 ### Next steps
-1. `uname` / `cat`.
+1. `ls`.
 2. ioctl still deferred.

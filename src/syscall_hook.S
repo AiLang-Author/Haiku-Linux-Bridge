@@ -178,6 +178,8 @@ sys_compat_lstar:
 	je	.Lgetrandom
 	cmp	rax, 334		/* Linux rseq — register in this layer */
 	je	.Lrseq
+	cmp	rax, 63			/* Linux uname */
+	je	.Luname
 	cmp	rax, 60			/* Linux exit */
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
@@ -304,6 +306,55 @@ sys_compat_lstar:
 
 .Lenoent:
 	mov	rax, -2			/* -ENOENT */
+	jmp	.Lret
+
+	/*
+	 * Linux uname(struct utsname *). Each field is 65 bytes.
+	 * No STAC: this Haiku does not set CR4.SMAP.
+	 */
+.Luname:
+	test	rdi, rdi
+	jz	.Lefault
+	swapgs
+	xor	eax, eax
+.Luname_z:
+	mov	byte ptr [rdi + rax], 0
+	inc	rax
+	cmp	rax, 390
+	jb	.Luname_z
+	mov	byte ptr [rdi + 0], 'L'
+	mov	byte ptr [rdi + 1], 'i'
+	mov	byte ptr [rdi + 2], 'n'
+	mov	byte ptr [rdi + 3], 'u'
+	mov	byte ptr [rdi + 4], 'x'
+	mov	byte ptr [rdi + 65], 'h'
+	mov	byte ptr [rdi + 66], 'a'
+	mov	byte ptr [rdi + 67], 'i'
+	mov	byte ptr [rdi + 68], 'k'
+	mov	byte ptr [rdi + 69], 'u'
+	mov	byte ptr [rdi + 130], '6'
+	mov	byte ptr [rdi + 131], '.'
+	mov	byte ptr [rdi + 132], '1'
+	mov	byte ptr [rdi + 133], '.'
+	mov	byte ptr [rdi + 134], '0'
+	mov	byte ptr [rdi + 195], 's'
+	mov	byte ptr [rdi + 196], 'y'
+	mov	byte ptr [rdi + 197], 's'
+	mov	byte ptr [rdi + 198], '_'
+	mov	byte ptr [rdi + 199], 'c'
+	mov	byte ptr [rdi + 200], 'o'
+	mov	byte ptr [rdi + 201], 'm'
+	mov	byte ptr [rdi + 202], 'p'
+	mov	byte ptr [rdi + 203], 'a'
+	mov	byte ptr [rdi + 204], 't'
+	mov	byte ptr [rdi + 260], 'x'
+	mov	byte ptr [rdi + 261], '8'
+	mov	byte ptr [rdi + 262], '6'
+	mov	byte ptr [rdi + 263], '_'
+	mov	byte ptr [rdi + 264], '6'
+	mov	byte ptr [rdi + 265], '4'
+	swapgs
+	xor	rax, rax
 	jmp	.Lret
 
 .Lprlimit:
