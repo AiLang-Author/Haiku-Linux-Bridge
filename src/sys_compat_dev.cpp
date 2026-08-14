@@ -323,6 +323,12 @@ dev_write(void* /*cookie*/, off_t /*pos*/, const void* buf, size_t* len)
 		return B_BAD_VALUE;
 	if (user_memcpy(token, buf, SYS_COMPAT_TOKEN_LEN) != B_OK)
 		return B_BAD_ADDRESS;
+	if (sc_memcmp(token, SYS_COMPAT_LEAVE, SYS_COMPAT_TOKEN_LEN) == 0) {
+		gLinuxCR3 = 0;
+		*len = SYS_COMPAT_TOKEN_LEN;
+		dprintf("[sys_compat] LEAVE via write token\n");
+		return B_OK;
+	}
 	if (sc_memcmp(token, SYS_COMPAT_TOKEN, SYS_COMPAT_TOKEN_LEN) != 0)
 		return B_BAD_VALUE;
 

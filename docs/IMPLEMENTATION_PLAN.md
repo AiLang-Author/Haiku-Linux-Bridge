@@ -88,8 +88,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **busybox glibc startup leftovers:** after SET_FS it hits `set_tid_address` (218), `set_robust_list` (273), `rseq` (334). Stubs are coded (tid=1, robust=0, rseq=-ENOSYS). Next missing number is in `seq=` after those return.
-2. **busybox static** `echo` / `uname` / `cat`. File-backed `mmap` still later.
+1. **busybox still dies on `rseq` (334).** Host strace after rseq is `prlimit64` → `readlinkat` → `getrandom` → more `brk` → `mprotect` → `prctl` → `getuid`/`newfstatat`/`getgid`/`setgid`/`setuid` → `write` → `exit_group`. Those stubs are coded (`LEAVEABI` clears a leftover CR3 so `make` is not treated as Linux). Guest `seq=` after 2s is still `218,273,334` — it never reaches 302. Next: why userspace dies at rseq (TCB/errno vs fake rseq registration).
+2. **busybox static** `echo` / `uname` / `cat` once it gets past rseq.
 3. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
 4. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 

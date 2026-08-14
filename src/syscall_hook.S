@@ -131,6 +131,20 @@ sys_compat_lstar:
 	je	.Lbrk
 	cmp	rax, 39			/* Linux getpid */
 	je	.Lget1
+	cmp	rax, 102		/* getuid */
+	je	.Lget0
+	cmp	rax, 104		/* getgid */
+	je	.Lget0
+	cmp	rax, 105		/* setuid */
+	je	.Lok0
+	cmp	rax, 106		/* setgid */
+	je	.Lok0
+	cmp	rax, 107		/* geteuid */
+	je	.Lget0
+	cmp	rax, 108		/* getegid */
+	je	.Lget0
+	cmp	rax, 157		/* prctl */
+	je	.Lok0
 	cmp	rax, 158		/* Linux arch_prctl */
 	je	.Larch_prctl
 	cmp	rax, 186		/* Linux gettid */
@@ -139,10 +153,20 @@ sys_compat_lstar:
 	je	.Lget1
 	cmp	rax, 257		/* Linux openat */
 	je	.Lopenat
+	cmp	rax, 262		/* newfstatat */
+	je	.Lenoent
+	cmp	rax, 267		/* readlinkat */
+	je	.Lreadlinkat
 	cmp	rax, 273		/* Linux set_robust_list */
 	je	.Lok0
-	cmp	rax, 334		/* Linux rseq — glibc accepts -ENOSYS */
-	je	.Lenosys
+	cmp	rax, 302		/* prlimit64 */
+	je	.Lprlimit
+	cmp	rax, 318		/* getrandom */
+	je	.Lgetrandom
+	cmp	rax, 334		/* Linux rseq — return 0, do not register.
+					 * -ENOSYS made glibc write errno via FS
+					 * and the team died before prlimit64. */
+	je	.Lok0
 	cmp	rax, 60			/* Linux exit */
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
@@ -257,6 +281,74 @@ sys_compat_lstar:
 .Lget1:
 	/* getpid/gettid/set_tid_address: return a fake tid of 1. */
 	mov	rax, 1
+	sysretq
+
+.Lget0:
+	xor	rax, rax
+	sysretq
+
+.Lenoent:
+	mov	rax, -2			/* -ENOENT */
+	sysretq
+
+.Lprlimit:
+	/* rdi=pid rsi=resource rdx=new r10=old. Fill old with 8MB/∞. */
+	test	r10, r10
+	jz	.Lok0
+	stac
+	mov	qword ptr [r10], 0x800000
+	mov	qword ptr [r10 + 8], -1
+	clac
+	xor	rax, rax
+	sysretq
+
+.Lgetrandom:
+	/* rdi=buf rsi=len — write up to 8 bytes from rdtsc, return len. */
+	test	rdi, rdi
+	jz	.Lnomem
+	test	rsi, rsi
+	jz	.Lok0
+	rdtsc
+	stac
+	mov	[rdi], eax
+	cmp	rsi, 4
+	jbe	1f
+	mov	[rdi + 4], edx
+1:
+	clac
+	mov	rax, rsi
+	cmp	rax, 8
+	jbe	.Lret
+	mov	rax, 8
+	jmp	.Lret
+
+.Lreadlinkat:
+	/* Fake /proc/self/exe → "/boot/home/busybox". rdx=buf r10=bufsiz. */
+	test	rdx, rdx
+	jz	.Lnomem
+	cmp	r10, 18
+	jb	.Lnomem
+	stac
+	mov	byte ptr [rdx + 0], '/'
+	mov	byte ptr [rdx + 1], 'b'
+	mov	byte ptr [rdx + 2], 'o'
+	mov	byte ptr [rdx + 3], 'o'
+	mov	byte ptr [rdx + 4], 't'
+	mov	byte ptr [rdx + 5], '/'
+	mov	byte ptr [rdx + 6], 'h'
+	mov	byte ptr [rdx + 7], 'o'
+	mov	byte ptr [rdx + 8], 'm'
+	mov	byte ptr [rdx + 9], 'e'
+	mov	byte ptr [rdx + 10], '/'
+	mov	byte ptr [rdx + 11], 'b'
+	mov	byte ptr [rdx + 12], 'u'
+	mov	byte ptr [rdx + 13], 's'
+	mov	byte ptr [rdx + 14], 'y'
+	mov	byte ptr [rdx + 15], 'b'
+	mov	byte ptr [rdx + 16], 'o'
+	mov	byte ptr [rdx + 17], 'x'
+	clac
+	mov	rax, 18
 	sysretq
 
 .Lbrk:

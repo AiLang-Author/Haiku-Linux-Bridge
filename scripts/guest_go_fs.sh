@@ -3,6 +3,8 @@
 # License: Public Domain / CC0 1.0 Universal
 set -x
 HOST="http://10.0.2.2:8083"
+# Drop a leftover Linux CR3 so `make` is not treated as Linux.
+printf LEAVEABI > /dev/misc/sys_compat 2>/dev/null || true
 SRC=/boot/home/src
 mkdir -p "$SRC"
 cd "$SRC"

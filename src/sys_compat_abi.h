@@ -17,6 +17,7 @@
 
 #define SYS_COMPAT_DEVICE "/dev/misc/sys_compat"
 #define SYS_COMPAT_TOKEN  "LINUXABI"
+#define SYS_COMPAT_LEAVE  "LEAVEABI"
 #define SYS_COMPAT_TOKEN_LEN 8
 #define SYS_COMPAT_MARK_NR 0x1337
 
