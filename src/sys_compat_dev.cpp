@@ -51,6 +51,7 @@ extern "C" {
 	extern uint64 gLastN[8];
 	extern uint64 gLastNidx;
 	extern uint64 gUlsOff;
+	extern uint64 gLinuxFS;
 	int64 sys_compat_dispatch_fast(uint64* saved);
 }
 
@@ -170,11 +171,11 @@ discover_uls_offset(void)
 	/* thread->user_local_storage == current FS_BASE for a user thread. */
 	p = (const uint64*)(addr_t)thread;
 	match = 0;
+	/* Last match: user_local_storage sits late in Thread. An earlier
+	 * hit can be some other cached copy of the same pointer. */
 	for (i = 8; i < 256; i++) {
-		if (p[i] == fs) {
+		if (p[i] == fs)
 			match = (uint64)i * 8;
-			break;
-		}
 	}
 	if (match == 0) {
 		dprintf("[sys_compat] ULS scan missed fs=%#" B_PRIx64
@@ -285,8 +286,10 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 	PUT("brk="); PUT(hb); PUT(".."); PUT(hc); PUT(" map="); PUT(hm); PUT(" hi="); PUT(hh); PUT("\n");
 	{
 		char hu[20];
+		char hf[20];
 		fmt_hex(hu, gUlsOff);
-		PUT("uls="); PUT(hu); PUT("\n");
+		fmt_hex(hf, gLinuxFS);
+		PUT("uls="); PUT(hu); PUT(" fs="); PUT(hf); PUT("\n");
 	}
 	PUT("seq=");
 	for (k = 0; k < 8; k++) {

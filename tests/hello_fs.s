@@ -37,13 +37,19 @@ _start:
 	test	rax, rax
 	jnz	.Lfail
 
-	/* rax = %fs:0 */
+	/* Spin so a Haiku timer can run. FS must still be ours afterwards. */
+	.att_syntax prefix
+	movq	$2000000, %rcx
+	.intel_syntax noprefix
+.Lspin:
 	mov	rax, [fs:0]
 	.att_syntax prefix
 	movq	$0xA11CE5F5, %rbx
 	.intel_syntax noprefix
 	cmp	rax, rbx
 	jne	.Lfail
+	dec	rcx
+	jnz	.Lspin
 
 	.att_syntax prefix
 	movq	$1, %rax

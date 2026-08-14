@@ -146,34 +146,85 @@ int main(int argc, char** argv)
     }
 
     uint64_t* sp = (uint64_t*)((uint8_t*)stack_base + stack_size);
-
-    // 16-byte align stack pointer
     sp = (uint64_t*)((uintptr_t)sp & ~0xFULL);
 
-    // Push Auxiliary Vector (AT_NULL = 0, 0)
-    *(--sp) = 0;
-    *(--sp) = 0;
-
-    // Push AT_PAGESZ (6 = 4096)
-    *(--sp) = 4096;
-    *(--sp) = 6;
-
-    // Push envp NULL terminator
-    *(--sp) = 0;
-
-    // Prepare Linux argv pointers
     int linux_argc = argc - 1;
     char** linux_argv = &argv[1];
 
-    // Push argv NULL terminator
-    *(--sp) = 0;
+    /*
+     * SysV stack, high → low: extra strings, auxv, envp, argv, argc.
+     * glibc walks auxv for AT_RANDOM / AT_PHDR; a bare AT_PAGESZ was
+     * enough for hello_* but busybox dies in startup after rseq.
+     */
+#define AT_NULL 0
+#define AT_PHDR 3
+#define AT_PHENT 4
+#define AT_PHNUM 5
+#define AT_PAGESZ 6
+#define AT_BASE 7
+#define AT_FLAGS 8
+#define AT_ENTRY 9
+#define AT_UID 11
+#define AT_EUID 12
+#define AT_GID 13
+#define AT_EGID 14
+#define AT_HWCAP 16
+#define AT_CLKTCK 17
+#define AT_SECURE 23
+#define AT_RANDOM 25
+#define AT_EXECFN 31
 
-    // Push argv string pointers
-    for (int i = linux_argc - 1; i >= 0; i--) {
-        *(--sp) = (uint64_t)(uintptr_t)linux_argv[i];
+    *(--sp) = 0xC0FFEEA11CE5F5ULL;
+    *(--sp) = 0xDEADBEEFCAFEBABEULL;
+    uint64_t at_random = (uint64_t)(uintptr_t)sp;
+
+    uint64_t at_phdr = 0;
+    if (ehdr.e_phoff < 0x1000)
+        at_phdr = 0x400000ULL + (uint64_t)ehdr.e_phoff;
+
+    *(--sp) = 0;
+    *(--sp) = AT_NULL;
+    if (linux_argc > 0) {
+        *(--sp) = (uint64_t)(uintptr_t)linux_argv[0];
+        *(--sp) = AT_EXECFN;
+    }
+    *(--sp) = at_random;
+    *(--sp) = AT_RANDOM;
+    *(--sp) = 0;
+    *(--sp) = AT_SECURE;
+    *(--sp) = 100;
+    *(--sp) = AT_CLKTCK;
+    *(--sp) = 0;
+    *(--sp) = AT_HWCAP;
+    *(--sp) = 0;
+    *(--sp) = AT_EGID;
+    *(--sp) = 0;
+    *(--sp) = AT_GID;
+    *(--sp) = 0;
+    *(--sp) = AT_EUID;
+    *(--sp) = 0;
+    *(--sp) = AT_UID;
+    *(--sp) = (uint64_t)ehdr.e_entry;
+    *(--sp) = AT_ENTRY;
+    *(--sp) = 0;
+    *(--sp) = AT_FLAGS;
+    *(--sp) = 0;
+    *(--sp) = AT_BASE;
+    *(--sp) = 4096;
+    *(--sp) = AT_PAGESZ;
+    *(--sp) = (uint64_t)ehdr.e_phnum;
+    *(--sp) = AT_PHNUM;
+    *(--sp) = (uint64_t)ehdr.e_phentsize;
+    *(--sp) = AT_PHENT;
+    if (at_phdr != 0) {
+        *(--sp) = at_phdr;
+        *(--sp) = AT_PHDR;
     }
 
-    // Push argc
+    *(--sp) = 0; /* envp */
+    *(--sp) = 0; /* argv NULL */
+    for (int i = linux_argc - 1; i >= 0; i--)
+        *(--sp) = (uint64_t)(uintptr_t)linux_argv[i];
     *(--sp) = (uint64_t)linux_argc;
 
     printf("[+] System V ABI Stack prepared at RSP=0x%lx (argc=%d)...\n",

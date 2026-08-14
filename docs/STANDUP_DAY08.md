@@ -13,7 +13,11 @@
 ### Blocker
 busybox glibc-static still Kill Thread (not KDL) right after `rseq`. Wrapper shell stays up. Kernel stays up.
 
+### Later the same day
+- [x] Loader now builds a real Linux auxv (`AT_PHDR`, `AT_RANDOM`, `AT_UID`, …). hello_* never needed it; glibc-static busybox does.
+- [x] SET_FS uses a shared `.Lapply_fs` (ULS + `wrmsr`). Re-applying that on **every** Linux syscall was pulled — a long `%fs` spin + extra `swapgs` left the desktop without a Terminal.
+- busybox still last-seen at `rseq` (334) on the pre-auxv loader. Auxv change is in-tree, not yet proven to move `seq=` past 334.
+
 ### Next steps
-1. Figure out the rseq-adjacent userspace death (TCB layout vs fake rseq).
-2. Then `write` of `BUSYBOX_ECHO` should be one stub away.
-3. ioctl still deferred.
+1. Re-run busybox with the new auxv (no per-syscall FS hammer).
+2. ioctl still deferred.

@@ -88,8 +88,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **busybox still dies on `rseq` (334).** Host strace after rseq is `prlimit64` → `readlinkat` → `getrandom` → more `brk` → `mprotect` → `prctl` → `getuid`/`newfstatat`/`getgid`/`setgid`/`setuid` → `write` → `exit_group`. Those stubs are coded (`LEAVEABI` clears a leftover CR3 so `make` is not treated as Linux). Guest `seq=` after 2s is still `218,273,334` — it never reaches 302. Next: why userspace dies at rseq (TCB/errno vs fake rseq registration).
-2. **busybox static** `echo` / `uname` / `cat` once it gets past rseq.
+1. **busybox still dies on `rseq` (334).** Loader auxv was only `AT_PAGESZ`; glibc wants `AT_RANDOM`/`AT_PHDR`/…. That is now in `sys_compat_run.c`. Per-syscall `swapgs`+`wrmsr` FS restore was tried and pulled — too hot for the desktop. SET_FS still writes ULS+FS once via `.Lapply_fs`.
+2. **busybox static** `echo` once it gets past rseq. Then `uname`/`cat`.
 3. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
 4. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 

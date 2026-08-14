@@ -40,6 +40,7 @@
 	.globl	gLastN
 	.globl	gLastNidx
 	.globl	gUlsOff
+	.globl	gLinuxFS
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gMarkCount
@@ -52,6 +53,7 @@
 	.hidden	gLastN
 	.hidden	gLastNidx
 	.hidden	gUlsOff
+	.hidden	gLinuxFS
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -94,6 +96,7 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gMapCur], 0
 	mov	qword ptr [rip + gArenaHi], 0
 .Lmark_ok:
+	mov	qword ptr [rip + gLinuxFS], 0
 	xor	rax, rax
 	sysretq
 
@@ -163,10 +166,9 @@ sys_compat_lstar:
 	je	.Lprlimit
 	cmp	rax, 318		/* getrandom */
 	je	.Lgetrandom
-	cmp	rax, 334		/* Linux rseq — return 0, do not register.
-					 * -ENOSYS made glibc write errno via FS
-					 * and the team died before prlimit64. */
-	je	.Lok0
+	cmp	rax, 334		/* rseq: -ENOSYS so glibc does not
+					 * pretend registration succeeded. */
+	je	.Lenosys
 	cmp	rax, 60			/* Linux exit */
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
@@ -271,6 +273,7 @@ sys_compat_lstar:
 .Lexit:
 	/* Linux: rdi=code  Haiku _kern_exit_team: rdi=status */
 	mov	qword ptr [rip + gLinuxCR3], 0
+	mov	qword ptr [rip + gLinuxFS], 0
 	mov	rax, 0x29
 	jmp	[rip + gOrigLstar]
 
@@ -398,29 +401,31 @@ sys_compat_lstar:
 	mov	rax, rsi
 	jmp	.Lret
 
-.Larch_prctl:
-	/*
-	 * ARCH_SET_FS: write thread->user_local_storage (Haiku restores
-	 * that on every context switch) AND the current CPU FS_BASE.
-	 * Raw wrmsr alone left FS set when the Linux team was killed.
-	 * gUlsOff is discovered in dev_open. IF is still clear (FMASK).
-	 */
-	cmp	rdi, 0x1002		/* ARCH_SET_FS */
-	jne	.Lenosys
-	cmp	qword ptr [rip + gUlsOff], 0
-	je	.Lenosys
-	push	rcx
-	push	r11
+.Lapply_fs:
+	/* rcx/r11 must be saved by caller (SYSCALL RIP/RFLAGS). */
 	swapgs
-	mov	r8, [gs:0]		/* Thread* */
+	cmp	qword ptr [rip + gUlsOff], 0
+	je	1f
+	mov	r8, [gs:0]
 	add	r8, [rip + gUlsOff]
-	mov	[r8], rsi		/* user_local_storage = tls */
-	mov	eax, esi
-	mov	rdx, rsi
+	mov	r9, [rip + gLinuxFS]
+	mov	[r8], r9
+1:
+	mov	rax, [rip + gLinuxFS]
+	mov	rdx, rax
 	shr	rdx, 32
-	mov	ecx, 0xC0000100		/* IA32_FS_BASE */
+	mov	ecx, 0xC0000100
 	wrmsr
 	swapgs
+	ret
+
+.Larch_prctl:
+	cmp	rdi, 0x1002		/* ARCH_SET_FS */
+	jne	.Lenosys
+	mov	[rip + gLinuxFS], rsi
+	push	rcx
+	push	r11
+	call	.Lapply_fs
 	pop	r11
 	pop	rcx
 	xor	rax, rax
@@ -459,4 +464,6 @@ gLastNidx:
 gLastN:
 	.quad	0, 0, 0, 0, 0, 0, 0, 0
 gUlsOff:
+	.quad	0
+gLinuxFS:
 	.quad	0
