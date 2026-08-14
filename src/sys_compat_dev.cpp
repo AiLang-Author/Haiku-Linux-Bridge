@@ -14,10 +14,33 @@
 #include <KernelExport.h>
 #include "sys_compat_abi.h"
 
-#define LINUX_EIO     5
-#define LINUX_EFAULT 14
-#define LINUX_EINVAL 22
-#define LINUX_ENOSYS 38
+/* POSIX sys/stat.h (pulled by kernel headers) aliases st_ctime to
+ * st_ctim.tv_sec. Our layout structs need the real field names. */
+#ifdef st_atime
+#undef st_atime
+#endif
+#ifdef st_mtime
+#undef st_mtime
+#endif
+#ifdef st_ctime
+#undef st_ctime
+#endif
+#ifdef st_crtime
+#undef st_crtime
+#endif
+
+#define LINUX_EPERM         1
+#define LINUX_ENOENT        2
+#define LINUX_EIO           5
+#define LINUX_EBADF         9
+#define LINUX_ENOMEM       12
+#define LINUX_EACCES       13
+#define LINUX_EFAULT       14
+#define LINUX_ENOTDIR      20
+#define LINUX_EISDIR       21
+#define LINUX_EINVAL       22
+#define LINUX_ENAMETOOLONG 36
+#define LINUX_ENOSYS       38
 
 #define LINUX_O_RDONLY 0
 #define LINUX_O_WRONLY 1
@@ -38,7 +61,63 @@
 #define DEVICE_NAME "misc/sys_compat"
 
 /* Sandwiched by known numbers: read=0x95 write=0x97 close=0x9e. */
-#define HAIKU_READ_DIR 0x9a
+#define HAIKU_READ_DIR  0x9a
+#define HAIKU_READ_STAT 0x9c
+
+#define HAIKU_STAT_SIZE 128
+#define LINUX_STAT_SIZE 144
+#define LINUX_AT_SYMLINK_NOFOLLOW 0x100
+#define LINUX_AT_EMPTY_PATH       0x1000
+
+/* Haiku x86_64 struct stat. dev_t is 32-bit; timespec is 16 bytes. */
+struct haiku_stat {
+	int32  st_dev;
+	int32  _pad0;
+	int64  st_ino;
+	uint32 st_mode;
+	int32  st_nlink;
+	uint32 st_uid;
+	uint32 st_gid;
+	int64  st_size;
+	int32  st_rdev;
+	int32  st_blksize;
+	int64  st_atime;
+	int64  st_atime_nsec;
+	int64  st_mtime;
+	int64  st_mtime_nsec;
+	int64  st_ctime;
+	int64  st_ctime_nsec;
+	int64  st_crtime;
+	int64  st_crtime_nsec;
+	uint32 st_type;
+	int32  _pad1;
+	int64  st_blocks;
+};
+
+/* Linux x86_64 struct stat (asm-generic/stat.h). */
+struct linux_stat {
+	uint64 st_dev;
+	uint64 st_ino;
+	uint64 st_nlink;
+	uint32 st_mode;
+	uint32 st_uid;
+	uint32 st_gid;
+	uint32 _pad0;
+	uint64 st_rdev;
+	int64  st_size;
+	int64  st_blksize;
+	int64  st_blocks;
+	uint64 st_atime;
+	uint64 st_atime_nsec;
+	uint64 st_mtime;
+	uint64 st_mtime_nsec;
+	uint64 st_ctime;
+	uint64 st_ctime_nsec;
+	int64  _unused[3];
+};
+
+typedef char haiku_stat_size_ok[sizeof(struct haiku_stat) == HAIKU_STAT_SIZE ? 1 : -1];
+typedef char linux_stat_size_ok[sizeof(struct linux_stat) == LINUX_STAT_SIZE ? 1 : -1];
 
 struct ksc_info {
 	void* function;
@@ -48,13 +127,19 @@ struct ksc_info {
 
 typedef int64 (*haiku_read_dir_fn)(int32 fd, void* buf, uint64 bufSize,
 	uint32 maxCount);
+typedef int32 (*haiku_read_stat_fn)(int32 fd, const void* path, int32 traverse,
+	void* stat, uint64 statSize);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
+static uint64 sReadStatFn;
 static int64 sLastNent;
 static int64 sLastOut;
 static int sDentFallback;
 static uint64 sDentMark;
+static int64 sLastStat;
+static uint32 sLastMode;
+static int64 sLastSize;
 
 extern "C" {
 	void sys_compat_lstar(void);
@@ -76,6 +161,8 @@ extern "C" {
 	extern uint64 gRseqSig;
 	int64 sys_compat_dispatch_fast(uint64* saved);
 	int64 sys_compat_getdents64(int64 fd, void* userBuf, uint64 count);
+	int64 sys_compat_stat(int64 fd, const void* userPath, void* userStat,
+		int64 flags);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -206,11 +293,15 @@ discover_syscall_table(void)
 				sSyscallInfos = (struct ksc_info*)(addr_t)(int64)disp;
 			} else
 				continue;
-			if (sSyscallInfos != NULL)
+			if (sSyscallInfos != NULL) {
 				sReadDirFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_READ_DIR].function;
+				sReadStatFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_READ_STAT].function;
+			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
-				"\n", sSyscallInfos, sReadDirFn);
+				" read_stat=%#" B_PRIx64 "\n",
+				sSyscallInfos, sReadDirFn, sReadStatFn);
 			return;
 		}
 	}
@@ -328,6 +419,107 @@ sys_compat_getdents64(int64 fd, void* userBuf, uint64 count)
 	if (user_memcpy(userBuf, sOut, outpos) != B_OK)
 		return -LINUX_EFAULT;
 	return (int64)outpos;
+}
+
+static int64
+haiku_status_to_linux(int64 st)
+{
+	uint32 code;
+
+	if (st >= 0)
+		return 0;
+	if (st > -4096)
+		return st;
+	code = (uint32)(int32)st;
+	switch (code) {
+	case 0x80000000: return -LINUX_ENOMEM;       /* B_NO_MEMORY */
+	case 0x80000001: return -LINUX_EIO;          /* B_IO_ERROR */
+	case 0x80000002: return -LINUX_EACCES;       /* B_PERMISSION_DENIED */
+	case 0x80000005: return -LINUX_EINVAL;       /* B_BAD_VALUE */
+	case 0x8000000f: return -LINUX_EPERM;        /* B_NOT_ALLOWED */
+	case 0x80001301: return -LINUX_EFAULT;       /* B_BAD_ADDRESS */
+	case 0x80006000: return -LINUX_EBADF;        /* B_FILE_ERROR */
+	case 0x80006003: return -LINUX_ENOENT;       /* B_ENTRY_NOT_FOUND */
+	case 0x80006004: return -LINUX_ENAMETOOLONG; /* B_NAME_TOO_LONG */
+	case 0x80006005: return -LINUX_ENOTDIR;      /* B_NOT_A_DIRECTORY */
+	case 0x80006009: return -LINUX_EISDIR;       /* B_IS_A_DIRECTORY */
+	case 0x8000600e: return -LINUX_ENOSYS;       /* B_UNSUPPORTED */
+	default:         return -LINUX_EIO;
+	}
+}
+
+static void
+haiku_stat_to_linux(const struct haiku_stat* h, struct linux_stat* l)
+{
+	int i;
+	uint8* p = (uint8*)l;
+
+	for (i = 0; i < (int)sizeof(*l); i++)
+		p[i] = 0;
+	l->st_dev = (uint64)(uint32)h->st_dev;
+	l->st_ino = (uint64)h->st_ino;
+	l->st_nlink = (uint64)(uint32)h->st_nlink;
+	l->st_mode = h->st_mode & 0177777;
+	l->st_uid = h->st_uid;
+	l->st_gid = h->st_gid;
+	l->st_rdev = (uint64)(uint32)h->st_rdev;
+	l->st_size = h->st_size;
+	l->st_blksize = (int64)h->st_blksize;
+	l->st_blocks = h->st_blocks;
+	l->st_atime = (uint64)h->st_atime;
+	l->st_atime_nsec = (uint64)h->st_atime_nsec;
+	l->st_mtime = (uint64)h->st_mtime;
+	l->st_mtime_nsec = (uint64)h->st_mtime_nsec;
+	l->st_ctime = (uint64)h->st_ctime;
+	l->st_ctime_nsec = (uint64)h->st_ctime_nsec;
+}
+
+extern "C" int64
+sys_compat_stat(int64 fd, const void* userPath, void* userStat, int64 flags)
+{
+	static struct haiku_stat sH;
+	static struct linux_stat sL;
+	haiku_read_stat_fn fn;
+	int32 traverse;
+	int32 st;
+	const void* path;
+	uint8 first;
+
+	sLastStat = 0;
+	sLastMode = 0;
+	sLastSize = 0;
+	if (userStat == NULL)
+		return -LINUX_EFAULT;
+	if (sSyscallInfos == NULL || sReadStatFn == 0)
+		return -LINUX_ENOSYS;
+
+	path = userPath;
+	if (path != NULL && (flags & LINUX_AT_EMPTY_PATH) != 0) {
+		if (user_memcpy(&first, path, 1) != B_OK)
+			return -LINUX_EFAULT;
+		if (first == 0)
+			path = NULL;
+	}
+
+	if (path == NULL || (flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
+		traverse = 0;
+	else
+		traverse = 1;
+
+	fn = (haiku_read_stat_fn)(addr_t)sReadStatFn;
+	st = fn((int32)fd, path, traverse, userStat, HAIKU_STAT_SIZE);
+	sLastStat = (int64)st;
+	if (st != 0)
+		return haiku_status_to_linux((int64)st);
+
+	if (user_memcpy(&sH, userStat, sizeof(sH)) != B_OK)
+		return -LINUX_EFAULT;
+	haiku_stat_to_linux(&sH, &sL);
+	sLastMode = sL.st_mode;
+	sLastSize = sL.st_size;
+	if (user_memcpy(userStat, &sL, sizeof(sL)) != B_OK)
+		return -LINUX_EFAULT;
+	return 0;
 }
 
 static void
@@ -477,10 +669,20 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		PUT(" sig="); PUT(hs); PUT("\n");
 	}
 	{
-		char ht[20], hf[20];
+		char ht[20], hf[20], hs[20];
 		fmt_hex(ht, (uint64)(addr_t)sSyscallInfos);
 		fmt_hex(hf, sReadDirFn);
-		PUT("ksc="); PUT(ht); PUT(" rdir="); PUT(hf); PUT("\n");
+		fmt_hex(hs, sReadStatFn);
+		PUT("ksc="); PUT(ht); PUT(" rdir="); PUT(hf);
+		PUT(" rstat="); PUT(hs); PUT("\n");
+	}
+	{
+		char ns[20], nm[20], nz[20];
+		fmt_hex(ns, (uint64)sLastStat);
+		fmt_hex(nm, (uint64)sLastMode);
+		fmt_hex(nz, (uint64)sLastSize);
+		PUT("stat="); PUT(ns); PUT(" mode="); PUT(nm);
+		PUT(" size="); PUT(nz); PUT("\n");
 	}
 	{
 		char nn[20], no[20];

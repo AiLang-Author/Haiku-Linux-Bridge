@@ -48,6 +48,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `uname` (63) | **Works** — busybox printed `Linux haiku 6.1.0 sys_compat x86_64 GNU/Linux` |
 | busybox `cat` | **Works** — printed file contents via remapped `open`/`read`/`write` |
 | busybox `ls` | **Works** — `O_DIRECTORY` → `_kern_open_dir`, `getdents64` translates Haiku dirents |
+| Linux `fstat` / `newfstatat` | **Works** — `_user_read_stat` + Haiku→Linux `stat` translate. `hello_stat` / `STATOK`. busybox `ls -l` shows real types and sizes. |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

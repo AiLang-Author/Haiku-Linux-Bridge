@@ -67,6 +67,7 @@
 	.hidden	gKstackEnd
 
 	.extern	sys_compat_getdents64
+	.extern	sys_compat_stat
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -337,28 +338,50 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lfstat:
-	/* rsi = struct stat* */
-	mov	rdi, rsi
-	jmp	.Lfillstat
+	/* Linux: rdi=fd rsi=statbuf → C(fd, NULL, statbuf, 0) */
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rdx, rsi
+	xor	rsi, rsi
+	xor	r10, r10
+	jmp	.Lstat_go
 .Lnewfstatat:
-	/* rdx = struct stat* */
-	mov	rdi, rdx
-.Lfillstat:
-	/* Linux x86_64 struct stat: nlink@16, mode@24, blksize@56. */
-	test	rdi, rdi
-	jz	.Lefault
+	/* Linux: rdi=dirfd rsi=path rdx=statbuf r10=flags
+	 * C ABI 4th arg is rcx. Call C on the private stack like getdents.
+	 */
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+.Lstat_go:
 	swapgs
-	xor	eax, eax
-.Lstatz:
-	mov	byte ptr [rdi + rax], 0
-	inc	rax
-	cmp	rax, 144
-	jb	.Lstatz
-	mov	qword ptr [rdi + 16], 1
-	mov	dword ptr [rdi + 24], 0x41ed	/* S_IFDIR|0755 */
-	mov	qword ptr [rdi + 56], 4096
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	mov	rcx, r10
+	sti
+	call	sys_compat_stat
+	cli
+	mov	rsp, [rip + gSavedRsp]
 	swapgs
-	xor	rax, rax
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
 	jmp	.Lret
 
 .Lgetdents:

@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (uname/cat)  
+**Last updated:** 2026-08-14 (real fstat / ls -l)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -68,7 +68,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | busybox `cat` | **Works** | Printed `catme` from `/tmp/catme`. `seq` includes `0`/`1`/`3` (read/write/close). |
 | Linux `getdents64` (217) + `open` `O_DIRECTORY` | **Works** | Haiku needs `_kern_open_dir` (0x74) or `read_dir` is `B_UNSUPPORTED`. Convert Haiku `dirent` (`dev_t` is 32-bit) to `linux_dirent64`. busybox `ls /boot/home` printed real names. |
 | Linux `ioctl` (16) | **Stub** | `-ENOTTY`. Enough for `ls`. |
-| Linux `fstat` / `newfstatat` | **Stub** | Fake `S_IFDIR\|0755` so `ls` will open the path. Real `read_stat` later. |
+| Linux `fstat` / `newfstatat` | **Works** | `_user_read_stat` via `kSyscallInfos[0x9c]`. Haiku `stat` (128 B, 32-bit `dev_t`) → Linux `stat` (144 B). Guest: `hello_stat` printed `STATOK`; busybox `ls -l` shows real types/sizes (`results/ltp/stat_out.txt`). |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -88,6 +88,7 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 257 | `openat` | `0x72` (114) | `_kern_open` | `AT_FDCWD` is `-100` on both; flags translated |
 | 3 | `close` | `0x9e` (158) | `_kern_close` | `rdi` only |
 | 8 | `lseek` | `0x79` (121) | `_kern_seek` | args match; `SEEK_*=0/1/2` |
+| 5 / 262 | `fstat` / `newfstatat` | `0x9c` (156) | `_kern_read_stat(fd,path,traverse,stat,statSize)` | C helper; convert 128 B Haiku `stat` → 144 B Linux `stat` |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`.
 
@@ -95,9 +96,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Real `newfstatat`/`fstat` via `_kern_read_stat`** so `ls -l` is not all directories.
-2. **LTP smoke** from `tests/ltp_sys_compat.run`.
-3. **ioctl / TTY / sockets extras** — only after the CLI set is real.
+1. **LTP smoke** from `tests/ltp_sys_compat.run`.
+2. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 
 ---
 
@@ -140,5 +140,6 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `src/Makefile.driver` | official Haiku DRIVER makefile |
 | `tests/hello_linux.s` | `hello_min` source (write+exit only) |
 | `tests/hello_rseq.s` | Linux `rseq` register / EBUSY / unregister |
+| `tests/hello_stat.s` | Linux `newfstatat` + `fstat` (dir vs file, size match) |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

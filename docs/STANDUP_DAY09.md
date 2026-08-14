@@ -41,8 +41,16 @@ Preempt-abort (`RIP → abort_ip` on Haiku context switch) is **not** hooked. `c
 - [x] `O_DIRECTORY` must use Haiku `_kern_open_dir` (0x74). `_kern_open` yields an fd with no `fd_read_dir` → `B_UNSUPPORTED`.
 - [x] `getdents64` calls `_user_read_dir` via `kSyscallInfos` recovered from LSTAR (`shl $4` + `lea`).
 - [x] Haiku `dirent` has 32-bit `dev_t`; name is at +26. busybox **`ls /boot/home` printed real names** (`sys_compat_run`, `src`, screenshots, …). `hits=68`, `last=231`.
-- [x] `ioctl` → `-ENOTTY`. `fstat`/`newfstatat` still fake `S_IFDIR`.
+- [x] `ioctl` → `-ENOTTY`.
+
+### real fstat / ls -l (same day)
+- [x] Linux `fstat` (5) / `newfstatat` (262) call `_user_read_stat` (`kSyscallInfos[0x9c]`) on the private kernel stack, same pattern as `getdents64`.
+- [x] Translate Haiku `struct stat` (128 bytes, 32-bit `dev_t`) to Linux x86_64 `struct stat` (144 bytes). `S_IF*` match; mask mode with `0177777` so Haiku attr bits do not leak. Haiku `status_t` → Linux errno (`B_ENTRY_NOT_FOUND` → `-ENOENT`, etc.).
+- [x] Do **not** name C fields `st_ctime` / `st_mtime` / `st_atime` — Haiku headers `#define` those to `st_ctim.tv_sec` and the driver will not compile.
+- [x] `hello_stat` printed **`STATOK`**. `seq=262,262,257,5,1,60`. Device `mode=0x81ed` `size=0x206b40` (busybox is 2124608 bytes).
+- [x] busybox **`ls -l /boot/home`** prints real types and sizes (`drwx` vs `-rwx`, `busybox` is 2124608). `LSL_RC=0`. Kernel stayed up. `hits=158` `last=231`.
+- [x] Device dump now has `rstat=` / `stat=` / `mode=` / `size=`.
 
 ### Next steps
-1. Real `read_stat` for `ls -l`.
+1. LTP smoke from `tests/ltp_sys_compat.run`.
 2. ioctl still deferred.
