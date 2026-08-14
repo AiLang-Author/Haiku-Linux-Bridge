@@ -1,0 +1,19 @@
+# Official Haiku makefile-engine driver build for sys_compat.
+# License: Public Domain / CC0 1.0 Universal
+#
+# On Haiku:  make -f Makefile.driver && make -f Makefile.driver driverinstall
+
+NAME = sys_compat
+TYPE = DRIVER
+DRIVER_PATH = misc
+SRCS = sys_compat_dev.cpp syscall_hook.S
+COMPILER_FLAGS = -fno-rtti -fno-exceptions -fno-stack-protector
+
+DEVEL_DIRECTORY := $(shell findpaths -r "makefile_engine" B_FIND_PATH_DEVELOP_DIRECTORY 2>/dev/null)
+ifeq ($(DEVEL_DIRECTORY),)
+DEVEL_DIRECTORY := /boot/system/develop
+endif
+include $(DEVEL_DIRECTORY)/etc/makefile-engine
+
+$(OBJ_DIR)/syscall_hook.o : syscall_hook.S
+	$(CC) -c -x assembler-with-cpp $< $(CFLAGS) -o "$@"

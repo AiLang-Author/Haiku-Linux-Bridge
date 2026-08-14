@@ -1,0 +1,58 @@
+# Curated LTP syscall runlist for Haiku sys_compat.
+# Format matches LTP runtest files:  <name> <command>
+# Only first-wave tests for syscalls actually registered in src/dispatch.cpp.
+# License: Public Domain / CC0 1.0 Universal (this list only; LTP tests are GPL-2.0)
+
+# process / identity
+getpid01 getpid01
+gettid01 gettid01
+uname01 uname01
+arch_prctl01 arch_prctl01
+
+# file I/O
+access01 access01
+chdir01 chdir01
+getcwd01 getcwd01
+open01 open01
+openat01 openat01
+close01 close01
+read01 read01
+write01 write01
+lseek01 lseek01
+stat01 stat01
+fstat02 fstat02
+unlink05 unlink05
+mkdir02 mkdir02
+dup01 dup01
+dup201 dup201
+fcntl01 fcntl01
+ioctl01 ioctl01
+
+# memory
+brk01 brk01
+mmap01 mmap01
+munmap01 munmap01
+
+# events / multiplex
+pipe01 pipe01
+poll01 poll01
+select01 select01
+epoll_create1_01 epoll_create1_01
+epoll_ctl01 epoll_ctl01
+epoll_pwait01 epoll_pwait01
+
+# networking
+socket01 socket01
+connect01 connect01
+accept01 accept01
+sendto01 sendto01
+recvfrom01 recvfrom01
+
+# signals / threads / process
+rt_sigaction01 rt_sigaction01
+rt_sigprocmask01 rt_sigprocmask01
+futex_wait01 futex_wait01
+futex_wake01 futex_wake01
+clone01 clone01
+execve01 execve01
+exit01 exit01

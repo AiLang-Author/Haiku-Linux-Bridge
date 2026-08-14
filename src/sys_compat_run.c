@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <elf.h>
+#include "sys_compat_abi.h"
 
 #define SYS_ARCH_PRCTL 158
 #define ARCH_SET_FS    0x1002
@@ -68,22 +69,58 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Map PT_LOAD segments (ignoring GNU extension headers)
-    for (int i = 0; i < ehdr.e_phnum; i++) {
-        if (phdrs[i].p_type == PT_LOAD) {
-            void* addr = (void*)(phdrs[i].p_vaddr & ~0xFFFF);
-            size_t size = (phdrs[i].p_memsz + 0xFFFF) & ~0xFFFF;
-            void* mapped = mmap(addr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-            if (mapped == MAP_FAILED) {
-                mapped = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            }
+    /*
+     * One anonymous map covering every PT_LOAD, page-aligned (4K).
+     * A 64K mask made hello_min's .text/.rodata clobber each other.
+     */
+    {
+        uint64_t map_lo = ~(uint64_t)0;
+        uint64_t map_hi = 0;
+        int loads = 0;
+        for (int i = 0; i < ehdr.e_phnum; i++) {
+            if (phdrs[i].p_type != PT_LOAD)
+                continue;
+            uint64_t lo = phdrs[i].p_vaddr & ~0xFFFULL;
+            uint64_t hi = (phdrs[i].p_vaddr + phdrs[i].p_memsz + 0xFFFULL) & ~0xFFFULL;
+            if (lo < map_lo) map_lo = lo;
+            if (hi > map_hi) map_hi = hi;
+            loads++;
+        }
+        if (loads == 0 || map_hi <= map_lo) {
+            printf("[-] No PT_LOAD segments\n");
+            free(phdrs);
+            close(fd);
+            return 1;
+        }
+        size_t map_len = (size_t)(map_hi - map_lo);
+        void* mapped = mmap((void*)(uintptr_t)map_lo, map_len,
+                            PROT_READ | PROT_WRITE | PROT_EXEC,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (mapped == MAP_FAILED) {
+            perror("[-] mmap PT_LOAD range");
+            free(phdrs);
+            close(fd);
+            return 1;
+        }
+        printf("[+] Mapped PT_LOAD range 0x%lx-0x%lx (%zu bytes)\n",
+               (unsigned long)map_lo, (unsigned long)map_hi, map_len);
 
+        for (int i = 0; i < ehdr.e_phnum; i++) {
+            if (phdrs[i].p_type != PT_LOAD)
+                continue;
+            if (phdrs[i].p_filesz == 0)
+                continue;
             lseek(fd, phdrs[i].p_offset, SEEK_SET);
-            read(fd, (void*)phdrs[i].p_vaddr, phdrs[i].p_filesz);
-            printf("[+] Mapped Segment %d: 0x%lx (%zu bytes)\n",
-                   i, (unsigned long)phdrs[i].p_vaddr, (size_t)phdrs[i].p_memsz);
+            if (read(fd, (void*)(uintptr_t)phdrs[i].p_vaddr,
+                     phdrs[i].p_filesz) != (ssize_t)phdrs[i].p_filesz) {
+                perror("[-] Failed to copy PT_LOAD");
+                free(phdrs);
+                close(fd);
+                return 1;
+            }
+            printf("[+] Loaded segment %d at 0x%lx file=%zu mem=%zu\n",
+                   i, (unsigned long)phdrs[i].p_vaddr,
+                   (size_t)phdrs[i].p_filesz, (size_t)phdrs[i].p_memsz);
         }
     }
 
@@ -143,6 +180,20 @@ int main(int argc, char** argv)
            (unsigned long)(uintptr_t)sp, linux_argc);
     printf("[+] Transferring execution to Linux entry point 0x%lx...\n",
            (unsigned long)ehdr.e_entry);
+
+    int compat_fd = open(SYS_COMPAT_DEVICE, O_RDWR);
+    printf("[+] open(%s) -> %d\n", SYS_COMPAT_DEVICE, compat_fd);
+    if (compat_fd < 0)
+        perror("[-] sys_compat device");
+    fflush(stdout);
+
+    /*
+     * Mark this CR3 as Linux ABI. After this write() returns, the next
+     * syscall instruction is treated as Linux — so we must not call
+     * printf/fflush/close (those are Haiku syscalls) before the jump.
+     */
+    if (compat_fd >= 0)
+        write(compat_fd, SYS_COMPAT_TOKEN, SYS_COMPAT_TOKEN_LEN);
 
     // Assembly jump: set RSP to sp and jump to e_entry
     uint64_t entry_addr = ehdr.e_entry;

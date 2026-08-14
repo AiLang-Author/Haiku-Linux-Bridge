@@ -56,11 +56,14 @@ QEMU_CMD="qemu-system-x86_64 \
     -m ${RAM_SIZE} \
     -smp ${CPU_CORES} \
     -monitor unix:${BASE_DIR}/qemu_monitor.sock,server,nowait \
+    -qmp unix:${BASE_DIR}/qemu_qmp.sock,server,nowait \
+    -usb -device usb-tablet \
     -device e1000,netdev=net0 \
     -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::8080-:80 \
     -drive file=${DISK_IMAGE},format=qcow2,if=ide \
     -drive file=fat:rw:${PAYLOAD_DIR},format=raw \
-    -boot order=c,menu=on"
+    -serial file:${BASE_DIR}/haiku_serial.log \
+    -boot order=c,menu=off"
 
 echo "Booting directly from installed Haiku hard drive (${DISK_IMAGE})..."
 

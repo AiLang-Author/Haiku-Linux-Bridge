@@ -11,8 +11,10 @@ _start:
     /* sys_write(fd=1, buf=msg, count=len) */
     mov rax, 1          /* Linux sys_write = 1 */
     mov rdi, 1          /* stdout = 1 */
-    lea rsi, [msg]      /* message pointer */
-    mov rdx, msg_len    /* message length */
+    lea rsi, [msg]
+    .att_syntax prefix
+    movq $msg_len, %rdx
+    .intel_syntax noprefix
     syscall             /* x86_64 CPU syscall trap */
 
     /* sys_exit(error_code=0) */

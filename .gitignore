@@ -12,6 +12,8 @@ obj/
 
 # Compiled C test executables
 tests/hello_linux
+tests/hello_min
+scripts/__pycache__/
 tests/test_file
 tests/test_mem
 tests/test_sys
@@ -20,6 +22,13 @@ tests/test_ioctl
 tests/hello_dyn
 tests/hello_stat
 tests/compiled_out.x
+tests/test_vfs
+tests/test_epoll
+tests/test_signal
+tests/sys_compat_run
+
+# LTP guest results collected over the network
+results/
 
 # OS & Editor files
 .DS_Store

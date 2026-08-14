@@ -26,27 +26,22 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ---
 
-## 📊 Tested Capabilities & Realistic Audit Matrix
+## Current status (honest)
 
-We prioritize complete transparency regarding what works, what is stubbed, and what is currently untested:
+**Living pickup plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — update that file when a syscall lands or a trap changes.
 
-| Category | Component / Syscall | Status | Caveats & Implementation Notes |
-| :--- | :--- | :--- | :--- |
-| **Loader** | Pristine 64-bit Static Linux ELF | ✅ **Tested** | Loaded via `sys_compat_run` without disk binary modification. |
-| **Loader** | System V ABI Initial Stack (`RSP`) | ✅ **Tested** | Pushes `argc`, `argv`, `envp`, `auxv` (`AT_PAGESZ=4096`, `AT_NULL=0`). |
-| **Loader** | TLS `%fs` Base Setup (`arch_prctl`) | ✅ **Tested** | Configured via raw `SYS_ARCH_PRCTL` (158) inline assembly syscall. |
-| **Memory** | `mmap`, `munmap`, `brk` | ✅ **Tested** | Mapped to Haiku `create_area` / `delete_area` memory manager. |
-| **File I/O** | `read`, `write`, `open`, `close`, `lseek` | ✅ **Tested** | Trapped and translated to Haiku `_kern_read`, `_kern_write`, etc. |
-| **File I/O** | `stat`, `fstat`, `lstat` | ✅ **Tested** | Struct field mapping between Linux `stat64` and Haiku kernel `stat`. |
-| **Process** | `getpid`, `getuid`, `getgid`, `uname` | ✅ **Tested** | Basic identity and POSIX system info queries return valid data. |
-| **Networking** | `socket`, `bind`, `connect`, `listen`, `accept`, `sendto`, `recvfrom` | ✅ **Tested** | IPv4/IPv6 socket operations routed to Haiku kernel socket stack. |
-| **Events** | `poll`, `select`, `epoll_create1`, `epoll_ctl`, `epoll_pwait` | ✅ **Tested** | Integrated with Haiku kernel `_kern_poll` / `_kern_select` event engines. |
-| **Signals** | `rt_sigaction`, `rt_sigprocmask` | ✅ **Tested** | Signal action table registration & signal mask blocking supported. |
-| **VFS** | Synthetic `/proc` & `/sys` Nodes | ✅ **Tested** | `/proc/meminfo`, `/proc/cpuinfo`, `/proc/self/exe`, `/proc/mounts`, `/proc/uptime`, `/proc/stat`, `/sys/...` |
-| **I/O Control**| `ioctl` (TTY, Sockets, DRM/KMS) | ⚠️ **Partial** | Basic TTY (`0x54`), socket (`0x89`), and DRM version queries handled. |
-| **Threads** | `sys_clone`, `sys_futex` | 🚧 **In Progress** | Basic thread spawning (`spawn_thread`) and `futex` wait/wake implemented; complex thread synchronization under active development. |
-| **Linker** | Dynamic Linker (`ld-linux-x86-64.so.2`) | 🚧 **In Progress** | Dynamic shared library loading (`libc.so.6`) is currently under development. |
-| **Graphics** | X11 / Wayland / OpenGL / Vulkan | ❌ **Untested** | Desktop Linux graphical display servers are currently unsupported. |
+Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` and extra drivers are later.
+
+| Piece | Status |
+| :--- | :--- |
+| Haiku `TYPE=DRIVER` (`_KERNEL_` / `@KERNEL_BASE`) | Works — `/dev/misc/sys_compat` loads |
+| LSTAR identity passthrough for Haiku threads | Works — guest boots with the hook live |
+| `sys_compat_run` 4K `PT_LOAD` map | Works on guest |
+| Linux `write` / `exit` remap in `syscall_hook.S` | Coded (`_kern_write=0x97`, `_kern_exit_team=0x29`) — **not proven on Haiku yet** |
+| Linux `ioctl` | Deferred on purpose |
+| LTP subset | Built on the Linux host; do not run on Haiku until `hello_min` prints |
+
+Older C files under `src/sys_*.cpp` are a prior table of handlers. The live trap is `src/syscall_hook.S` + `src/sys_compat_dev.cpp`.
 
 ---
 
@@ -71,17 +66,60 @@ git clone https://github.com/AiLang-Author/Haiku-Linux-Bridge.git
 cd Haiku-Linux-Bridge
 ```
 
-### 2. Build Runtime Adapter & Test Suites
+### 2. Build the driver, loader, and hello_min
 
 ```bash
-# Build the sys_compat_run loader
+# Kernel driver (official makefile-engine — required for @KERNEL_BASE)
+make -f src/Makefile.driver
+make -f src/Makefile.driver driverinstall
+# reboot so /dev/misc/sys_compat appears
+
+# Haiku-native loader
 gcc -O2 src/sys_compat_run.c -o sys_compat_run
 
-# Build C test suite binaries
-make -C tests
+# Tiny Linux write+exit ELF is built on Linux:
+#   gcc -nostdlib -static -o tests/hello_min tests/hello_linux.s
+./sys_compat_run ./tests/hello_min
+```
 
-# Run static Linux hello test
-./sys_compat_run ./tests/hello_linux
+---
+
+## Standardized Linux Syscall Testing (LTP)
+
+The [Linux Test Project](https://github.com/linux-test-project/ltp) is the
+standard kernel syscall suite (hundreds of `testcases/kernel/syscalls/*`
+directories, `runltp` / `runtest/syscalls`, plus **kirk** — the official
+QEMU / SSH / network executor). It lives under `downloads/ltp` (gitignored,
+GPL-2.0).
+
+On the Linux host, with QEMU user-net the Haiku guest reaches this machine at
+`10.0.2.2`:
+
+```bash
+# 1. Fetch LTP + kirk
+./scripts/download_ltp.sh
+
+# 2. Statically compile the curated sys_compat subset (tests/ltp_sys_compat.run)
+./scripts/build_ltp_subset.sh
+
+# 3. Optional: gold baseline on this Linux host
+./scripts/run_ltp_host.sh
+
+# 4. Serve binaries / collect results over the QEMU network
+python3 scripts/ltp_net_server.py &          # :8083  GET payload, POST results
+
+# 5. With Haiku already running (./scripts/run_qemu.sh)
+python3 scripts/run_ltp_haiku.py             # types curl + sys_compat_run into the guest
+```
+
+Guest results land in `results/ltp/ltp_results.txt`. Kirk itself can also drive
+a *Linux* QEMU image for a comparison baseline:
+
+```bash
+./downloads/ltp/tools/kirk/kirk-src/kirk \
+    --com qemu:image=PATH.qcow2:user=root:password=root \
+    --sut default:com=qemu \
+    --run-suite syscalls
 ```
 
 ---

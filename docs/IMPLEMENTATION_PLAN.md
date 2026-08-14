@@ -1,0 +1,137 @@
+# Implementation plan (living)
+
+**Last updated:** 2026-08-13  
+**Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
+
+This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
+
+---
+
+## Goal
+
+Run **unmodified on-disk** 64-bit Linux ELFs on Haiku by trapping `syscall` and translating the Linux x86_64 ABI to Haiku `_kern_*`.
+
+Linux `ioctl` and extra kernel drivers are **out of scope** until the syscall set below works for `hello_min`, then busybox applets (`echo`, `cat`, `uname`, `ls`).
+
+---
+
+## Architecture (what is actually wired)
+
+```
+Linux ELF (pristine on disk)
+        |
+        v
+sys_compat_run  (Haiku-native loader)
+  mmap PT_LOAD @ 4K pages, SysV stack, write("LINUXABI") to /dev/misc/sys_compat
+        |
+        v
+CPU SYSCALL  -->  sys_compat_lstar  (LSTAR hook in kernel driver)
+                    |
+                    +-- CR3 != marked  -->  jmp original Haiku LSTAR  (identity)
+                    |
+                    +-- CR3 == marked  -->  remap Linux rax/args to Haiku _kern_*
+                                           then jmp original LSTAR
+                    |
+                    +-- unknown Linux # -->  sysret -ENOSYS  (no panic)
+```
+
+Handshake is **`write(/dev/misc/sys_compat, "LINUXABI")`**, not ioctl. Device `ioctl` returns `B_BAD_VALUE`.
+
+Marking CR3 must be the **last Haiku syscall** before `jmp` into the Linux image. After that, every `syscall` from that address space is treated as Linux. Doing `printf`/`echo` after the mark kills the Haiku team (that is expected, not a Haiku kernel bug).
+
+---
+
+## Proven vs not (2026-08-13)
+
+| Item | Status | Evidence |
+|---|---|---|
+| Official Haiku `TYPE=DRIVER` link (`_KERNEL_` + `haiku_version_glue.o`) | **Works** | `nm -u` shows `dprintf@KERNEL_BASE` etc. |
+| Install path `~/config/non-packaged/add-ons/kernel/drivers/` | **Works** | `/dev/misc/sys_compat` appears after reboot |
+| Identity LSTAR passthrough (Haiku syscalls) | **Works** | Guest boots to desktop with hook installed |
+| Loader 4K PT_LOAD map (no 64K clobber) | **Works** | Guest print: `Mapped PT_LOAD range 0x400000-0x403000` + 3 segments |
+| `hello_min` host-side (Linux) | **Works** | Prints hello, rc=0 |
+| Linux `write`/`exit` on Haiku via remap | **Not proven** | After `open(sys_compat)=3` the team is still `Kill Thread` |
+| Linux `ioctl` | **Deferred** | Do not implement this layer yet |
+| LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
+
+A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
+
+---
+
+## Haiku syscall numbers (this image: hrev57937)
+
+Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` order:
+
+| Linux # | Linux name | Haiku # | Haiku name | Arg remap |
+|---|---|---|---|---|
+| 1 | `write(fd,buf,n)` | `0x97` (151) | `_kern_write(fd,pos,buf,n)` | `r10=n; rdx=buf; rsi=-1` |
+| 60 / 231 | `exit` / `exit_group` | `0x29` (41) | `_kern_exit_team(status)` | `rdi` unchanged |
+| 0 | `read` | `0x95` (149) | `_kern_read` | same shuffle as write |
+| 2 | `open` | `0x72` (114) | `_kern_open` | flags differ; later |
+| 3 | `close` | `0x9e` (158) | `_kern_close` | `rdi` only |
+| 8 | `lseek` | `0x79` (121) | `_kern_seek` | later |
+
+Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`.
+
+---
+
+## Next work (in this order)
+
+1. **Prove `hello_min` on Haiku**  
+   Rebuild driver from current `syscall_hook.S` (remap, no C on hot path), reboot, run:
+   ```
+   /boot/home/sys_compat_run /boot/home/hello_min
+   ```
+   Expect the hello line on the Terminal, then a clean team exit.
+
+2. **Add remap entries one at a time** (commit + push every 4–5):  
+   `read`, `close`, `lseek`, `open`/`openat`, `brk`, `mmap`/`munmap`, `exit` already listed.
+
+3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
+
+4. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
+
+5. **ioctl / TTY / sockets extras** — only after the CLI set is real.
+
+---
+
+## How to build on Haiku
+
+```bash
+cd /boot/home/src          # or the git clone
+# sources: sys_compat_dev.cpp syscall_hook.S sys_compat_abi.h Makefile.driver sys_compat_run.c
+make -f Makefile.driver
+make -f Makefile.driver driverinstall
+gcc -O2 sys_compat_run.c -o /boot/home/sys_compat_run
+# reboot so /dev/misc/sys_compat reloads
+```
+
+Host (Linux) QEMU:
+
+```bash
+./scripts/run_qemu.sh                 # KVM, QMP, usb-tablet, serial log
+python3 scripts/ltp_net_server.py &   # guest fetches from 10.0.2.2:8083
+```
+
+Guest reaches the host at `10.0.2.2`. Do **not** `echo LINUXABI > /dev/misc/sys_compat` from a Haiku shell you still want alive.
+
+---
+
+## Commit cadence
+
+Push a small commit after each of: a working new syscall, a loader/hook safety fix, or a standup refresh. Do not wait for a giant “all syscalls” PR.
+
+---
+
+## Files that matter
+
+| Path | Role |
+|---|---|
+| `src/syscall_hook.S` | LSTAR trampoline |
+| `src/sys_compat_dev.cpp` | `/dev/misc/sys_compat`, install/restore LSTAR |
+| `src/sys_compat_abi.h` | device path + `LINUXABI` token |
+| `src/sys_compat_run.c` | Haiku loader |
+| `src/Makefile.driver` | official Haiku DRIVER makefile |
+| `tests/hello_linux.s` | `hello_min` source (write+exit only) |
+| `tests/ltp_sys_compat.run` | later LTP subset |
+| `docs/IMPLEMENTATION_PLAN.md` | this file |
