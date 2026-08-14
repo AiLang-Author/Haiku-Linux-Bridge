@@ -38,6 +38,7 @@
 #define LINUX_EFAULT       14
 #define LINUX_ENOTDIR      20
 #define LINUX_EISDIR       21
+#define LINUX_EEXIST       17
 #define LINUX_EINVAL       22
 #define LINUX_ENAMETOOLONG 36
 #define LINUX_ENOSYS       38
@@ -61,8 +62,14 @@
 #define DEVICE_NAME "misc/sys_compat"
 
 /* Sandwiched by known numbers: read=0x95 write=0x97 close=0x9e. */
-#define HAIKU_READ_DIR  0x9a
-#define HAIKU_READ_STAT 0x9c
+#define HAIKU_READ_DIR   0x9a
+#define HAIKU_READ_STAT  0x9c
+#define HAIKU_CREATE_DIR 0x7b
+#define HAIKU_REMOVE_DIR 0x7c
+#define HAIKU_UNLINK     0x80
+#define HAIKU_ACCESS     0x84
+#define HAIKU_GETCWD     0x92
+#define HAIKU_SETCWD     0x93
 
 #define HAIKU_STAT_SIZE 128
 #define LINUX_STAT_SIZE 144
@@ -129,10 +136,23 @@ typedef int64 (*haiku_read_dir_fn)(int32 fd, void* buf, uint64 bufSize,
 	uint32 maxCount);
 typedef int32 (*haiku_read_stat_fn)(int32 fd, const void* path, int32 traverse,
 	void* stat, uint64 statSize);
+typedef int32 (*haiku_create_dir_fn)(int32 fd, const void* path, int32 perms);
+typedef int32 (*haiku_path2_fn)(int32 fd, const void* path);
+typedef int32 (*haiku_access_fn)(int32 fd, const void* path, int32 mode,
+	int32 effective);
+typedef int32 (*haiku_getcwd_fn)(void* buf, uint64 size);
+typedef int32 (*haiku_setcwd_fn)(int32 fd, const void* path);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
 static uint64 sReadStatFn;
+static uint64 sCreateDirFn;
+static uint64 sRemoveDirFn;
+static uint64 sUnlinkFn;
+static uint64 sAccessFn;
+static uint64 sGetcwdFn;
+static uint64 sSetcwdFn;
+static int64 sLastPath;
 static int64 sLastNent;
 static int64 sLastOut;
 static int sDentFallback;
@@ -163,6 +183,11 @@ extern "C" {
 	int64 sys_compat_getdents64(int64 fd, void* userBuf, uint64 count);
 	int64 sys_compat_stat(int64 fd, const void* userPath, void* userStat,
 		int64 flags);
+	int64 sys_compat_mkdir(int64 fd, const void* path, int64 mode);
+	int64 sys_compat_unlink(int64 fd, const void* path, int64 flags);
+	int64 sys_compat_access(int64 fd, const void* path, int64 mode);
+	int64 sys_compat_getcwd(void* buf, uint64 size);
+	int64 sys_compat_chdir(int64 fd, const void* path);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -298,6 +323,18 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_READ_DIR].function;
 				sReadStatFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_READ_STAT].function;
+				sCreateDirFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_CREATE_DIR].function;
+				sRemoveDirFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_REMOVE_DIR].function;
+				sUnlinkFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_UNLINK].function;
+				sAccessFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_ACCESS].function;
+				sGetcwdFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_GETCWD].function;
+				sSetcwdFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_SETCWD].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 "\n",
@@ -439,6 +476,7 @@ haiku_status_to_linux(int64 st)
 	case 0x8000000f: return -LINUX_EPERM;        /* B_NOT_ALLOWED */
 	case 0x80001301: return -LINUX_EFAULT;       /* B_BAD_ADDRESS */
 	case 0x80006000: return -LINUX_EBADF;        /* B_FILE_ERROR */
+	case 0x80006002: return -LINUX_EEXIST;       /* B_FILE_EXISTS */
 	case 0x80006003: return -LINUX_ENOENT;       /* B_ENTRY_NOT_FOUND */
 	case 0x80006004: return -LINUX_ENAMETOOLONG; /* B_NAME_TOO_LONG */
 	case 0x80006005: return -LINUX_ENOTDIR;      /* B_NOT_A_DIRECTORY */
@@ -520,6 +558,97 @@ sys_compat_stat(int64 fd, const void* userPath, void* userStat, int64 flags)
 	if (user_memcpy(userStat, &sL, sizeof(sL)) != B_OK)
 		return -LINUX_EFAULT;
 	return 0;
+}
+
+extern "C" int64
+sys_compat_mkdir(int64 fd, const void* path, int64 mode)
+{
+	haiku_create_dir_fn fn;
+	int32 st;
+
+	if (path == NULL)
+		return -LINUX_EFAULT;
+	if (sCreateDirFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_create_dir_fn)(addr_t)sCreateDirFn;
+	st = fn((int32)fd, path, (int32)(mode & 07777));
+	sLastPath = (int64)st;
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_unlink(int64 fd, const void* path, int64 flags)
+{
+	int32 st;
+
+	if (path == NULL)
+		return -LINUX_EFAULT;
+	/* Linux AT_REMOVEDIR = 0x200 */
+	if ((flags & 0x200) != 0) {
+		haiku_path2_fn fn;
+		if (sRemoveDirFn == 0)
+			return -LINUX_ENOSYS;
+		fn = (haiku_path2_fn)(addr_t)sRemoveDirFn;
+		st = fn((int32)fd, path);
+	} else {
+		haiku_path2_fn fn;
+		if (sUnlinkFn == 0)
+			return -LINUX_ENOSYS;
+		fn = (haiku_path2_fn)(addr_t)sUnlinkFn;
+		st = fn((int32)fd, path);
+	}
+	sLastPath = (int64)st;
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_access(int64 fd, const void* path, int64 mode)
+{
+	haiku_access_fn fn;
+	int32 st;
+
+	if (path == NULL)
+		return -LINUX_EFAULT;
+	if (sAccessFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_access_fn)(addr_t)sAccessFn;
+	st = fn((int32)fd, path, (int32)mode, 0);
+	sLastPath = (int64)st;
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_getcwd(void* buf, uint64 size)
+{
+	haiku_getcwd_fn fn;
+	int32 st;
+
+	if (buf == NULL || size == 0)
+		return -LINUX_EINVAL;
+	if (sGetcwdFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_getcwd_fn)(addr_t)sGetcwdFn;
+	st = fn(buf, size);
+	sLastPath = (int64)st;
+	if (st != 0)
+		return haiku_status_to_linux((int64)st);
+	/* Linux getcwd returns the buffer pointer on success. */
+	return (int64)(addr_t)buf;
+}
+
+extern "C" int64
+sys_compat_chdir(int64 fd, const void* path)
+{
+	haiku_setcwd_fn fn;
+	int32 st;
+
+	if (sSetcwdFn == 0)
+		return -LINUX_ENOSYS;
+	/* fchdir: path NULL, fd is the directory. chdir: fd=AT_FDCWD. */
+	fn = (haiku_setcwd_fn)(addr_t)sSetcwdFn;
+	st = fn((int32)fd, path);
+	sLastPath = (int64)st;
+	return haiku_status_to_linux((int64)st);
 }
 
 static void
@@ -675,6 +804,14 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		fmt_hex(hs, sReadStatFn);
 		PUT("ksc="); PUT(ht); PUT(" rdir="); PUT(hf);
 		PUT(" rstat="); PUT(hs); PUT("\n");
+	}
+	{
+		char hm[20], hg[20], hp[20];
+		fmt_hex(hm, sCreateDirFn);
+		fmt_hex(hg, sGetcwdFn);
+		fmt_hex(hp, (uint64)sLastPath);
+		PUT("mkdir="); PUT(hm); PUT(" cwd="); PUT(hg);
+		PUT(" path="); PUT(hp); PUT("\n");
 	}
 	{
 		char ns[20], nm[20], nz[20];

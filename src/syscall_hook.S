@@ -68,6 +68,11 @@
 
 	.extern	sys_compat_getdents64
 	.extern	sys_compat_stat
+	.extern	sys_compat_mkdir
+	.extern	sys_compat_unlink
+	.extern	sys_compat_access
+	.extern	sys_compat_getcwd
+	.extern	sys_compat_chdir
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -145,6 +150,48 @@ sys_compat_lstar:
 	je	.Llseek
 	cmp	rax, 16			/* Linux ioctl */
 	je	.Lenotty
+	cmp	rax, 21			/* Linux access */
+	je	.Laccess
+	cmp	rax, 79			/* Linux getcwd */
+	je	.Lgetcwd
+	cmp	rax, 80			/* Linux chdir */
+	je	.Lchdir
+	cmp	rax, 81			/* Linux fchdir */
+	je	.Lfchdir
+	cmp	rax, 76			/* Linux truncate */
+	je	.Lok0
+	cmp	rax, 77			/* Linux ftruncate */
+	je	.Lok0
+	cmp	rax, 83			/* Linux mkdir */
+	je	.Lmkdir
+	cmp	rax, 84			/* Linux rmdir */
+	je	.Lrmdir
+	cmp	rax, 87			/* Linux unlink */
+	je	.Lunlink
+	cmp	rax, 90			/* chmod */
+	je	.Lok0
+	cmp	rax, 91			/* fchmod */
+	je	.Lok0
+	cmp	rax, 92			/* chown */
+	je	.Lok0
+	cmp	rax, 93			/* fchown */
+	je	.Lok0
+	cmp	rax, 94			/* lchown */
+	je	.Lok0
+	cmp	rax, 137		/* Linux statfs */
+	je	.Lstatfs
+	cmp	rax, 138		/* Linux fstatfs */
+	je	.Lstatfs
+	cmp	rax, 228		/* Linux clock_gettime */
+	je	.Lclock_gettime
+	cmp	rax, 260		/* fchownat */
+	je	.Lok0
+	cmp	rax, 268		/* fchmodat */
+	je	.Lok0
+	cmp	rax, 258		/* Linux mkdirat */
+	je	.Lmkdirat
+	cmp	rax, 263		/* Linux unlinkat */
+	je	.Lunlinkat
 	cmp	rax, 9			/* Linux mmap */
 	je	.Lmmap
 	cmp	rax, 10			/* Linux mprotect */
@@ -382,6 +429,241 @@ sys_compat_lstar:
 	pop	rdi
 	pop	r11
 	pop	rcx
+	jmp	.Lret
+
+.Lmkdir:
+	/* Linux: rdi=path rsi=mode → C(AT_FDCWD, path, mode) */
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rdx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	jmp	.Lmkdir_go
+.Lmkdirat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+.Lmkdir_go:
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_mkdir
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Lunlink:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rsi, rdi
+	mov	rdi, -100
+	xor	rdx, rdx
+	jmp	.Lunlink_go
+.Lrmdir:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rsi, rdi
+	mov	rdi, -100
+	mov	rdx, 0x200		/* AT_REMOVEDIR */
+	jmp	.Lunlink_go
+.Lunlinkat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+.Lunlink_go:
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_unlink
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Laccess:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rdx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_access
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Lgetcwd:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_getcwd
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Lchdir:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rsi, rdi
+	mov	rdi, -100
+	jmp	.Lchdir_go
+.Lfchdir:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	xor	rsi, rsi
+.Lchdir_go:
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_chdir
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Lstatfs:
+	/* Linux: rdi=path/fd rsi=struct statfs*. Fake ext4. */
+	test	rsi, rsi
+	jz	.Lefault
+	swapgs
+	xor	eax, eax
+1:
+	mov	byte ptr [rsi + rax], 0
+	inc	rax
+	cmp	rax, 120
+	jb	1b
+	mov	qword ptr [rsi], 0xEF53		/* EXT4_SUPER_MAGIC */
+	mov	qword ptr [rsi + 8], 4096	/* f_bsize */
+	mov	qword ptr [rsi + 16], 100000	/* f_blocks */
+	mov	qword ptr [rsi + 24], 50000	/* f_bfree */
+	mov	qword ptr [rsi + 32], 50000	/* f_bavail */
+	mov	qword ptr [rsi + 64], 255	/* f_namelen */
+	mov	qword ptr [rsi + 72], 4096	/* f_frsize */
+	swapgs
+	xor	rax, rax
+	jmp	.Lret
+
+.Lclock_gettime:
+	/* rdi=clockid rsi=timespec*. Fake a monotonic clock. No STAC. */
+	test	rsi, rsi
+	jz	.Lefault
+	rdtsc
+	swapgs
+	mov	qword ptr [rsi], 1700000000
+	mov	dword ptr [rsi + 8], eax
+	and	dword ptr [rsi + 8], 0x3fffffff
+	mov	dword ptr [rsi + 12], 0
+	swapgs
+	xor	rax, rax
 	jmp	.Lret
 
 .Lgetdents:

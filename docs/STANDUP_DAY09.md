@@ -51,6 +51,12 @@ Preempt-abort (`RIP → abort_ip` on Haiku context switch) is **not** hooked. `c
 - [x] busybox **`ls -l /boot/home`** prints real types and sizes (`drwx` vs `-rwx`, `busybox` is 2124608). `LSL_RC=0`. Kernel stayed up. `hits=158` `last=231`.
 - [x] Device dump now has `rstat=` / `stat=` / `mode=` / `size=`.
 
+### LTP smoke (same day)
+- [x] First-wave 17 static LTP ELFs through `sys_compat_run`. Kernel stayed up. `SUMMARY pass=1 fail=16 timeout=0`.
+- [x] 16 TBROK at `mkdtemp`: Linux `mkdir` (83) was ENOSYS. `exit01` got further and TBROK on `fork`.
+- [x] Implemented harness pack: `mkdir`/`mkdirat`/`rmdir`/`unlink`/`getcwd`/`chdir`/`fchdir`/`access` via `kSyscallInfos`. `chown`/`chmod`/`statfs`/`clock_gettime` stubbed.
+- [x] After mkdir: tmpdir is created. Next real wall for the test body is **`clone`/`wait4`** (LTP forks a child). Do not fake fork.
+
 ### Next steps
-1. LTP smoke from `tests/ltp_sys_compat.run`.
+1. Fork-style `clone` + `wait4`. Child CR3 must be marked Linux (parent mark is not inherited).
 2. ioctl still deferred.
