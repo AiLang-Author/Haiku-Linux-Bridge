@@ -87,15 +87,10 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Prove the loader arena** (`brk` / ANON `mmap` / `munmap` / `mprotect` no-op). Coded, **not proven**. Do **not** `wrmsr` `FS_BASE` from the trampoline (that crashed the Haiku wrapper shell).
-2. **busybox** is glibc-static. First failure was `Fatal glibc error: Cannot allocate TLS block` (5 syscalls then `exit_group` 231). After arena+fake `arch_prctl`, next missing call is still unknown — read `seq=` from `cat /dev/misc/sys_compat`.
-3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
-
-3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
-
-4. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
-
-5. **ioctl / TTY / sockets extras** — only after the CLI set is real.
+1. **Safe `arch_prctl(ARCH_SET_FS)`.** glibc-static busybox now does `brk, brk, arch_prctl(158)` and hangs (TLS block allocated; FS not actually set). Do **not** raw `wrmsr` `FS_BASE` — that crashed the Haiku wrapper. Need to update the thread’s saved FS so context switch stays correct.
+2. **busybox static** `echo` / `uname` / `cat` after SET_FS works. File-backed `mmap` still later.
+3. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
+4. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 
 ---
 
