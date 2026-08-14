@@ -85,8 +85,9 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Next remaps:** `brk` / `mmap`/`munmap` (Haiku has no `brk` — this is `create_area` / resize, not a one-line rax swap). Then try static busybox `echo`/`cat`/`uname`.
-2. **busybox static** `echo` / `uname` / `cat` — still no ioctl. `cat` only needs open/read/write/close/exit, but musl startup usually hits `brk`/`mmap` first.
+1. **Prove the loader arena** (`brk` / ANON `mmap` / `munmap` / `mprotect` no-op). Coded, **not proven**. Do **not** `wrmsr` `FS_BASE` from the trampoline (that crashed the Haiku wrapper shell).
+2. **busybox** is glibc-static. First failure was `Fatal glibc error: Cannot allocate TLS block` (5 syscalls then `exit_group` 231). After arena+fake `arch_prctl`, next missing call is still unknown — read `seq=` from `cat /dev/misc/sys_compat`.
+3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
 
 3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
 

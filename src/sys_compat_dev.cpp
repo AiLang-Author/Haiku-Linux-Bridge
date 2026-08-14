@@ -44,6 +44,12 @@ extern "C" {
 	extern uint64 gMarkCount;
 	extern uint64 gLinuxHits;
 	extern uint64 gLastLinuxRax;
+	extern uint64 gBrkBase;
+	extern uint64 gBrkCur;
+	extern uint64 gMapCur;
+	extern uint64 gArenaHi;
+	extern uint64 gLastN[8];
+	extern uint64 gLastNidx;
 	int64 sys_compat_dispatch_fast(uint64* saved);
 }
 
@@ -207,10 +213,11 @@ fmt_u64(char* out, uint64 v)
 static status_t
 dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 {
-	char text[256];
-	char h1[20], h2[20], n1[24], n2[24], n3[24];
+	char text[512];
+	char h1[20], h2[20], hb[20], hc[20], hm[20], hh[20];
+	char n1[24], n2[24], n3[24], nseq[8];
 	size_t n, want, off;
-	int i;
+	int i, k;
 
 	if (buf == NULL || len == NULL)
 		return B_BAD_VALUE;
@@ -221,6 +228,10 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 
 	fmt_hex(h1, gLinuxCR3);
 	fmt_hex(h2, gOrigLstar);
+	fmt_hex(hb, gBrkBase);
+	fmt_hex(hc, gBrkCur);
+	fmt_hex(hm, gMapCur);
+	fmt_hex(hh, gArenaHi);
 	fmt_u64(n1, gMarkCount);
 	fmt_u64(n2, gLinuxHits);
 	fmt_u64(n3, gLastLinuxRax);
@@ -233,6 +244,15 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 	PUT("mark="); PUT(n1); PUT("\n");
 	PUT("hits="); PUT(n2); PUT("\n");
 	PUT("last="); PUT(n3); PUT("\n");
+	PUT("brk="); PUT(hb); PUT(".."); PUT(hc); PUT(" map="); PUT(hm); PUT(" hi="); PUT(hh); PUT("\n");
+	PUT("seq=");
+	for (k = 0; k < 8; k++) {
+		fmt_u64(nseq, gLastN[k]);
+		if (k)
+			PUT(",");
+		PUT(nseq);
+	}
+	PUT("\n");
 #undef PUT
 	text[i] = '\0';
 	n = (size_t)i;

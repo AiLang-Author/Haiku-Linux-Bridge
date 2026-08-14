@@ -187,25 +187,41 @@ int main(int argc, char** argv)
         perror("[-] sys_compat device (is the driver loaded?)");
         return 1;
     }
+    /*
+     * Pre-map a brk/mmap arena while we are still a Haiku team.
+     * Passed to 0x1337 as (rdi=base, rsi=size). glibc static TLS
+     * allocation needs this before any Linux malloc.
+     */
+#define SYS_COMPAT_ARENA_SIZE (32u * 1024u * 1024u)
+    void* arena = mmap(NULL, SYS_COMPAT_ARENA_SIZE,
+                       PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (arena == MAP_FAILED) {
+        perror("[-] mmap brk/mmap arena");
+        return 1;
+    }
+    printf("[+] arena %p +%u for Linux brk/mmap\n",
+           arena, SYS_COMPAT_ARENA_SIZE);
     printf("[+] mark via raw syscall 0x%x then jmp 0x%lx (no libc after mark)\n",
            SYS_COMPAT_MARK_NR, (unsigned long)ehdr.e_entry);
     fflush(stdout);
 
     /*
-     * Mark + jump in one asm block. After 0x1337 the next syscall from
-     * this CR3 is Linux, so we must not return through libc.
-     * Keep compat_fd open so close/free can LEAVE when the team dies.
+     * Mark + jump in one asm block. r12/r13 survive the mark sysret.
+     * rdi/rsi carry the arena. Keep compat_fd open for LEAVE on death.
      */
     {
-        uint64_t entry_addr = ehdr.e_entry;
-        uint64_t mark_nr = SYS_COMPAT_MARK_NR;
+        register uint64_t rsp_val asm("r12") = (uint64_t)(uintptr_t)sp;
+        register uint64_t entry_val asm("r13") = ehdr.e_entry;
+        register uint64_t arena_val asm("rdi") = (uint64_t)(uintptr_t)arena;
+        register uint64_t size_val asm("rsi") = SYS_COMPAT_ARENA_SIZE;
         __asm__ __volatile__(
-            "mov %2, %%rax\n\t"
+            "mov $0x1337, %%rax\n\t"
             "syscall\n\t"
-            "mov %0, %%rsp\n\t"
-            "jmp *%1\n\t"
+            "mov %%r12, %%rsp\n\t"
+            "jmp *%%r13\n\t"
             :
-            : "r"(sp), "r"(entry_addr), "r"(mark_nr)
+            : "r"(rsp_val), "r"(entry_val), "D"(arena_val), "S"(size_val)
             : "rax", "rcx", "r11", "memory"
         );
     }

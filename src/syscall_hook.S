@@ -33,11 +33,23 @@
 	.globl	gMarkCount
 	.globl	gLinuxHits
 	.globl	gLastLinuxRax
+	.globl	gBrkBase
+	.globl	gBrkCur
+	.globl	gMapCur
+	.globl	gArenaHi
+	.globl	gLastN
+	.globl	gLastNidx
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gMarkCount
 	.hidden	gLinuxHits
 	.hidden	gLastLinuxRax
+	.hidden	gBrkBase
+	.hidden	gBrkCur
+	.hidden	gMapCur
+	.hidden	gArenaHi
+	.hidden	gLastN
+	.hidden	gLastNidx
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -57,11 +69,29 @@ sys_compat_lstar:
 	jmp	[rip + gOrigLstar]
 
 .Lmark:
-	/* Still on the user stack, user GS. Do not swapgs. */
+	/* Still on the user stack, user GS. Do not swapgs.
+	 * rdi = optional arena base, rsi = size (0 = no arena).
+	 */
 	mov	rax, cr3
 	and	rax, 0xfffffffffffff000
 	mov	[rip + gLinuxCR3], rax
 	inc	qword ptr [rip + gMarkCount]
+	cmp	rsi, 4096
+	jb	.Lmark_noarena
+	test	rdi, rdi
+	jz	.Lmark_noarena
+	mov	[rip + gBrkBase], rdi
+	mov	[rip + gBrkCur], rdi
+	add	rdi, rsi
+	mov	[rip + gArenaHi], rdi
+	mov	[rip + gMapCur], rdi
+	jmp	.Lmark_ok
+.Lmark_noarena:
+	mov	qword ptr [rip + gBrkBase], 0
+	mov	qword ptr [rip + gBrkCur], 0
+	mov	qword ptr [rip + gMapCur], 0
+	mov	qword ptr [rip + gArenaHi], 0
+.Lmark_ok:
 	xor	rax, rax
 	sysretq
 
@@ -69,6 +99,15 @@ sys_compat_lstar:
 	pop	rax
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
+	push	r8
+	push	r9
+	lea	r9, [rip + gLastN]
+	mov	r8, [rip + gLastNidx]
+	and	r8, 7
+	mov	[r9 + r8 * 8], rax
+	inc	qword ptr [rip + gLastNidx]
+	pop	r9
+	pop	r8
 
 	cmp	rax, 0			/* Linux read */
 	je	.Lread
@@ -80,6 +119,16 @@ sys_compat_lstar:
 	je	.Lclose
 	cmp	rax, 8			/* Linux lseek */
 	je	.Llseek
+	cmp	rax, 9			/* Linux mmap */
+	je	.Lmmap
+	cmp	rax, 10			/* Linux mprotect */
+	je	.Lok0
+	cmp	rax, 11			/* Linux munmap */
+	je	.Lok0
+	cmp	rax, 12			/* Linux brk */
+	je	.Lbrk
+	cmp	rax, 158		/* Linux arch_prctl */
+	je	.Larch_prctl
 	cmp	rax, 257		/* Linux openat */
 	je	.Lopenat
 	cmp	rax, 60			/* Linux exit */
@@ -189,6 +238,77 @@ sys_compat_lstar:
 	mov	rax, 0x29
 	jmp	[rip + gOrigLstar]
 
+.Lok0:
+	xor	rax, rax
+	sysretq
+
+.Lbrk:
+	/* Linux brk(rdi): return new break, or current on failure/query. */
+	cmp	qword ptr [rip + gBrkBase], 0
+	je	.Lenosys
+	mov	rax, [rip + gBrkCur]
+	test	rdi, rdi
+	jz	.Lret
+	cmp	rdi, [rip + gBrkBase]
+	jb	.Lret
+	cmp	rdi, [rip + gMapCur]
+	ja	.Lret
+	mov	[rip + gBrkCur], rdi
+	mov	rax, rdi
+	jmp	.Lret
+
+.Lmmap:
+	/* Linux: rdi=addr rsi=len rdx=prot r10=flags r8=fd r9=off
+	 * ANON only, carved from the loader arena. File mmap is later.
+	 */
+	cmp	qword ptr [rip + gBrkBase], 0
+	je	.Lnomem
+	test	r10, 0x20		/* MAP_ANONYMOUS */
+	jz	.Lnomem
+	mov	rax, rsi
+	add	rax, 4095
+	and	rax, 0xfffffffffffff000
+	jz	.Lnomem
+	test	r10, 0x10		/* MAP_FIXED */
+	jz	.Lmmap_carve
+	cmp	rdi, [rip + gBrkBase]
+	jb	.Lnomem
+	mov	rsi, rdi
+	add	rsi, rax
+	cmp	rsi, [rip + gArenaHi]
+	ja	.Lnomem
+	mov	rax, rdi
+	jmp	.Lret
+.Lmmap_carve:
+	mov	rsi, [rip + gMapCur]
+	sub	rsi, rax
+	cmp	rsi, [rip + gBrkCur]
+	jb	.Lnomem
+	and	rsi, 0xfffffffffffff000
+	mov	[rip + gMapCur], rsi
+	mov	rax, rsi
+	jmp	.Lret
+
+.Larch_prctl:
+	/*
+	 * Do not wrmsr FS_BASE here. That clobbers the CPU FS without
+	 * updating Haiku's thread state and took down the wrapper
+	 * shell (2026-08-13). Pretend SET_FS succeeded; the loader
+	 * arena + brk/mmap is the TLS storage. Real FS switch later.
+	 */
+	cmp	rdi, 0x1002		/* ARCH_SET_FS */
+	jne	.Lenosys
+	xor	rax, rax
+	jmp	.Lret
+
+.Lnomem:
+	mov	rax, -12		/* -ENOMEM */
+	jmp	.Lret
+.Lenosys:
+	mov	rax, -38		/* -ENOSYS */
+.Lret:
+	sysretq
+
 	.bss
 	.align	8
 gOrigLstar:
@@ -201,3 +321,15 @@ gLinuxHits:
 	.quad	0
 gLastLinuxRax:
 	.quad	0
+gBrkBase:
+	.quad	0
+gBrkCur:
+	.quad	0
+gMapCur:
+	.quad	0
+gArenaHi:
+	.quad	0
+gLastNidx:
+	.quad	0
+gLastN:
+	.quad	0, 0, 0, 0, 0, 0, 0, 0

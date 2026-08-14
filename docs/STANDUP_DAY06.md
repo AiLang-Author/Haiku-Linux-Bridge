@@ -28,9 +28,16 @@
 | O_DIRECTORY | `0x10000` | `0x200000` |
 | O_NOFOLLOW | `0x20000` | `0x80000` |
 
+### Busybox probe (same day)
+- `payload/tests/busybox` is **glibc static** (~2.1 MB), not musl.
+- First run (no arena): `Fatal glibc error: Cannot allocate TLS block`, `ECHO_RC=127`, `hits+=5 last=231`. Write of the error string worked.
+- Loader now pre-maps a 32 MB arena and passes it to `0x1337` (`rdi=base`, `rsi=size`). Trampoline implements `brk` (12), ANON `mmap` (9), `munmap`/`mprotect` as 0. **Not proven on the guest yet.**
+- `arch_prctl` SET_FS via `wrmsr IA32_FS_BASE` **crashed the Haiku wrapper shell** and bounced the desktop. Do not touch FS/GS MSRs from the trampoline. Current code returns 0 for SET_FS without `wrmsr`.
+- `cat /dev/misc/sys_compat` now prints `brk=` / `map=` / `seq=` (last 8 Linux rax values).
+
 ### Next steps
-1. `brk` / `mmap` / `munmap` — not a number swap; Haiku uses areas.
-2. Static busybox `echo` / `cat` / `uname`.
+1. Rebuild **without** `wrmsr`, prove `hello_min` still prints, then re-probe busybox and read `seq=`.
+2. Real FS/TLS via a Haiku-safe path (update the thread's saved FS, not raw `wrmsr`).
 3. ioctl still deferred.
 
 ### Proven Linux syscalls so far
