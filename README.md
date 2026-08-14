@@ -41,6 +41,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Mark handshake | Raw syscall `0x1337` (not ioctl, not libc `write`) |
 | Linux `read` / `close` remap | **Works** — `hello_rwc` echoed stdin, `hits=4` |
 | Linux `lseek` / `open` / `openat` | **Works** — `hello_fds` seeked + created `/tmp/created` |
+| Linux `brk` / ANON `mmap` / `munmap` | **Works** — `hello_mmap` printed `MMAPOK`/`BRKOK` |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

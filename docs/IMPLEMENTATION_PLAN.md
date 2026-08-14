@@ -58,6 +58,8 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Mark via raw syscall `0x1337` (no libc after) | **Works** | libc `write(LINUXABI)` was the Kill Thread; combined `syscall; jmp` is the handshake |
 | Linux `read`/`close` remap | **Works** | `hello_rwc` echoed `RWC_PAYLOAD`, `DONE_RC=0`, `hits=4 last=60` (`results/ltp/rwc_out.txt`) |
 | Linux `lseek` / `open` / `openat` | **Works** | `hello_fds` printed `DEFGABC`, created `/tmp/created` (`CREATED`), `hits=13 last=60` (`results/ltp/fds_out.txt`) |
+| Linux `brk` / ANON `mmap` / `munmap` | **Works** | `hello_mmap` printed `MMAPOK`/`BRKOK`, `seq=9,1,11,12,1,60`, arena carved 4K (`results/ltp/mem_out.txt`) |
+| Loader 32 MB arena via `0x1337` (rdi,rsi) | **Works** | Device `brk=`/`hi=` span 32 MB after mark; `hello_min` still `HELLO_RC=0` |
 | Linux `ioctl` | **Deferred** | Do not implement this layer yet |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
