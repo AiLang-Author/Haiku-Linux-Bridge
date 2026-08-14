@@ -105,6 +105,11 @@
 	.extern	sys_compat_fsync
 	.extern	sys_compat_clock_gettime
 	.extern	sys_compat_utimensat
+	.extern	sys_compat_time
+	.extern	sys_compat_gettimeofday
+	.extern	sys_compat_getppid
+	.extern	sys_compat_pipe2
+	.extern	sys_compat_nanosleep
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -234,10 +239,22 @@ sys_compat_lstar:
 	je	.Llstat
 	cmp	rax, 8			/* Linux lseek */
 	je	.Llseek
+	cmp	rax, 17			/* Linux pread64 */
+	je	.Lpread64
+	cmp	rax, 18			/* Linux pwrite64 */
+	je	.Lpwrite64
+	cmp	rax, 19			/* Linux writev */
+	je	.Lwritev
+	cmp	rax, 20			/* Linux readv */
+	je	.Lreadv
 	cmp	rax, 16			/* Linux ioctl */
 	je	.Lenotty
 	cmp	rax, 21			/* Linux access */
 	je	.Laccess
+	cmp	rax, 22			/* Linux pipe */
+	je	.Lpipe
+	cmp	rax, 35			/* Linux nanosleep */
+	je	.Lnanosleep
 	cmp	rax, 32			/* Linux dup */
 	je	.Ldup
 	cmp	rax, 33			/* Linux dup2 */
@@ -284,7 +301,13 @@ sys_compat_lstar:
 	je	.Lstatfs
 	cmp	rax, 138		/* Linux fstatfs */
 	je	.Lstatfs
+	cmp	rax, 96			/* gettimeofday */
+	je	.Lgettimeofday
+	cmp	rax, 201		/* time */
+	je	.Ltime
 	cmp	rax, 228		/* Linux clock_gettime */
+	je	.Lclock_gettime
+	cmp	rax, 403		/* clock_gettime64 */
 	je	.Lclock_gettime
 	cmp	rax, 260		/* fchownat */
 	je	.Lfchownat
@@ -316,6 +339,10 @@ sys_compat_lstar:
 	je	.Lbrk
 	cmp	rax, 39			/* Linux getpid */
 	je	.Lgetpid
+	cmp	rax, 110		/* getppid */
+	je	.Lgetppid
+	cmp	rax, 293		/* pipe2 */
+	je	.Lpipe2
 	cmp	rax, 56			/* Linux clone */
 	je	.Lclone
 	cmp	rax, 57			/* Linux fork */
@@ -390,6 +417,40 @@ sys_compat_lstar:
 	mov	rdx, rsi
 	mov	rsi, -1
 	mov	rax, 0x97
+	jmp	[rip + gOrigLstar]
+
+.Lpread64:
+	/* Linux: rdi=fd rsi=buf rdx=count r10=offset
+	 * Haiku read: rdi=fd rsi=pos rdx=buf r10=count
+	 */
+	mov	rax, r10
+	mov	r10, rdx
+	mov	rdx, rsi
+	mov	rsi, rax
+	mov	rax, 0x95
+	jmp	[rip + gOrigLstar]
+
+.Lpwrite64:
+	mov	rax, r10
+	mov	r10, rdx
+	mov	rdx, rsi
+	mov	rsi, rax
+	mov	rax, 0x97
+	jmp	[rip + gOrigLstar]
+
+.Lreadv:
+	/* Linux: rdi=fd rsi=iov rdx=iovcnt → Haiku readv(fd, pos=-1, iov, n) */
+	mov	r10, rdx
+	mov	rdx, rsi
+	mov	rsi, -1
+	mov	rax, 0x96
+	jmp	[rip + gOrigLstar]
+
+.Lwritev:
+	mov	r10, rdx
+	mov	rdx, rsi
+	mov	rsi, -1
+	mov	rax, 0x98
 	jmp	[rip + gOrigLstar]
 
 .Lclose:
@@ -1074,6 +1135,67 @@ sys_compat_lstar:
 	push	r10
 	mov	rcx, r10
 	CALL_C	sys_compat_utimensat
+.Ltime:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_time
+.Lgettimeofday:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_gettimeofday
+.Lgetppid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_getppid
+.Lpipe:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	xor	rsi, rsi
+	CALL_C	sys_compat_pipe2
+.Lpipe2:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_pipe2
+.Lnanosleep:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_nanosleep
 
 .Lget0:
 	xor	rax, rax

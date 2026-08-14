@@ -51,6 +51,8 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `fstat` / `newfstatat` | **Works** — `_user_read_stat` + Haiku→Linux `stat` translate. `hello_stat` / `STATOK`. busybox `ls -l` shows real types and sizes. |
 | Linux `mprotect` / `munmap` / `chmod` / `chown` / `truncate` / uid / tid / `prctl` | **Works** — `_kern_write_stat` 0x9d, `unmap` 0xd5, `mprotect` 0xd6. `hello_wstat` / `WSTATOK`. |
 | Linux `rename` / `symlink` / `readlink` / `stat` / `dup` / `fsync` / `clock_gettime` | **Works** — busybox `cp` `mv` `ln -s` `readlink` `touch` `rm` `cat` RC=0. `hello_util` / `UTILOK`. |
+| Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
+| Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |

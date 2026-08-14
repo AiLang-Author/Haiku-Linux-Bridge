@@ -88,6 +88,10 @@
 #define HAIKU_RENAME     0x81
 #define HAIKU_DUP        0x9f
 #define HAIKU_DUP2       0xa0
+#define HAIKU_PIPE       0x83
+#define HAIKU_GET_CLOCK  0xc0	/* guest dump; counted 0xc1 in later trees */
+#define HAIKU_CLOCK_REALTIME  ((int32)-1)
+#define HAIKU_CLOCK_MONOTONIC ((int32)0)
 
 #define BSTAT_MODE 0x0001
 #define BSTAT_UID  0x0002
@@ -208,6 +212,8 @@ typedef int32 (*haiku_readlink_fn)(int32 fd, const void* path, void* buf,
 typedef int32 (*haiku_dup_fn)(int32 fd);
 typedef int32 (*haiku_dup2_fn)(int32 ofd, int32 nfd, int32 flags);
 typedef int32 (*haiku_fsync_fn)(int32 fd, int32 dataOnly);
+typedef int32 (*haiku_getclock_fn)(int32 clockid, void* timePtr);
+typedef int32 (*haiku_pipe_fn)(void* fds, int32 flags);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -230,6 +236,8 @@ static uint64 sReadLinkFn;
 static uint64 sDupFn;
 static uint64 sDup2Fn;
 static uint64 sFsyncFn;
+static uint64 sGetClockFn;
+static uint64 sPipeFn;
 static int32 sHaveUid;
 static int32 sHaveGid;
 static uint32 sUid;
@@ -309,6 +317,11 @@ extern "C" {
 	int64 sys_compat_clock_gettime(int64 clockid, void* tp);
 	int64 sys_compat_utimensat(int64 fd, const void* path, const void* times,
 		int64 flags);
+	int64 sys_compat_time(void* tloc);
+	int64 sys_compat_gettimeofday(void* tv, void* tz);
+	int64 sys_compat_getppid(void);
+	int64 sys_compat_pipe2(void* fds, int64 flags);
+	int64 sys_compat_nanosleep(const void* req, void* rem);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -480,6 +493,10 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_DUP2].function;
 				sFsyncFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_FSYNC].function;
+				sGetClockFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_GET_CLOCK].function;
+				sPipeFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_PIPE].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -1270,7 +1287,8 @@ sys_compat_fsync(int64 fd, int64 dataOnly)
 }
 
 /* Do not call real_time_clock_usecs()/system_time() from this driver —
- * those resolve to libroot stubs (syscall) and KDL when we re-enter LSTAR. */
+ * those resolve to libroot stubs (syscall) and KDL when we re-enter LSTAR.
+ * Prefer _user_get_clock via kSyscallInfos; rdtsc is the fallback only. */
 static uint64
 compat_approx_usecs(int realtime)
 {
@@ -1285,6 +1303,31 @@ compat_approx_usecs(int realtime)
 	return t;
 }
 
+static uint64
+compat_now_us(int realtime)
+{
+	haiku_getclock_fn fn;
+	int32 st;
+	int32 hclk;
+	uint64 us;
+	void* userT;
+
+	if (sGetClockFn == 0)
+		return compat_approx_usecs(realtime);
+	hclk = realtime ? HAIKU_CLOCK_REALTIME : HAIKU_CLOCK_MONOTONIC;
+	userT = (void*)(gSavedRsp - 16);
+	us = 0;
+	if (user_memcpy(userT, &us, sizeof(us)) != B_OK)
+		return compat_approx_usecs(realtime);
+	fn = (haiku_getclock_fn)(addr_t)sGetClockFn;
+	st = fn(hclk, userT);
+	if (st != 0)
+		return compat_approx_usecs(realtime);
+	if (user_memcpy(&us, userT, sizeof(us)) != B_OK)
+		return compat_approx_usecs(realtime);
+	return us;
+}
+
 extern "C" int64
 sys_compat_clock_gettime(int64 clockid, void* tp)
 {
@@ -1293,17 +1336,19 @@ sys_compat_clock_gettime(int64 clockid, void* tp)
 	uint64 nsec;
 	uint8 out[16];
 	int i;
+	int realtime;
 
 	if (tp == NULL)
 		return -LINUX_EFAULT;
 	/* Linux 0=REALTIME 1=MONOTONIC 4=MONOTONIC_RAW 5=REALTIME_COARSE
 	 * 6=MONOTONIC_COARSE 7=BOOTTIME. */
 	if (clockid == 0 || clockid == 5)
-		us = compat_approx_usecs(1);
+		realtime = 1;
 	else if (clockid == 1 || clockid == 4 || clockid == 6 || clockid == 7)
-		us = compat_approx_usecs(0);
+		realtime = 0;
 	else
 		return -LINUX_EINVAL;
+	us = compat_now_us(realtime);
 	sec = us / 1000000;
 	nsec = (us % 1000000) * 1000;
 	for (i = 0; i < 8; i++)
@@ -1312,6 +1357,104 @@ sys_compat_clock_gettime(int64 clockid, void* tp)
 		out[8 + i] = (uint8)(nsec >> (8 * i));
 	if (user_memcpy(tp, out, 16) != B_OK)
 		return -LINUX_EFAULT;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_time(void* tloc)
+{
+	uint64 us;
+	int64 sec;
+
+	us = compat_now_us(1);
+	sec = (int64)(us / 1000000);
+	if (tloc != NULL && user_memcpy(tloc, &sec, sizeof(sec)) != B_OK)
+		return -LINUX_EFAULT;
+	return sec;
+}
+
+extern "C" int64
+sys_compat_gettimeofday(void* tv, void* tz)
+{
+	uint64 us;
+	uint8 out[16];
+	uint64 sec;
+	uint64 usec;
+	int i;
+
+	(void)tz;
+	if (tv == NULL)
+		return -LINUX_EFAULT;
+	us = compat_now_us(1);
+	sec = us / 1000000;
+	usec = us % 1000000;
+	for (i = 0; i < 8; i++) {
+		out[i] = (uint8)(sec >> (8 * i));
+		out[8 + i] = (uint8)(usec >> (8 * i));
+	}
+	if (user_memcpy(tv, out, 16) != B_OK)
+		return -LINUX_EFAULT;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_getppid(void)
+{
+	team_info info;
+
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return 1;
+	if (info.parent <= 0)
+		return 1;
+	return info.parent;
+}
+
+extern "C" int64
+sys_compat_pipe2(void* fds, int64 flags)
+{
+	haiku_pipe_fn fn;
+	int32 st;
+	int32 hflags;
+
+	if (fds == NULL)
+		return -LINUX_EFAULT;
+	if (sPipeFn == 0)
+		return -LINUX_ENOSYS;
+	hflags = 0;
+	if ((flags & LINUX_O_CLOEXEC) != 0)
+		hflags |= HAIKU_O_CLOEXEC;
+	if ((flags & 0x800) != 0)	/* LINUX O_NONBLOCK */
+		hflags |= 0x80;		/* HAIKU O_NONBLOCK */
+	if ((flags & ~(int64)(LINUX_O_CLOEXEC | 0x800)) != 0)
+		return -LINUX_EINVAL;
+	fn = (haiku_pipe_fn)(addr_t)sPipeFn;
+	st = fn(fds, hflags);
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_nanosleep(const void* req, void* rem)
+{
+	uint8 ts[16];
+	uint64 sec, nsec;
+	int i;
+
+	(void)rem;
+	if (req == NULL)
+		return -LINUX_EFAULT;
+	if (user_memcpy(ts, req, 16) != B_OK)
+		return -LINUX_EFAULT;
+	sec = 0;
+	nsec = 0;
+	for (i = 0; i < 8; i++) {
+		sec |= (uint64)ts[i] << (8 * i);
+		nsec |= (uint64)ts[8 + i] << (8 * i);
+	}
+	if ((int64)sec < 0 || nsec >= 1000000000ULL)
+		return -LINUX_EINVAL;
+	/* No snooze number proven yet. Zero-duration is enough for CLI. */
+	if (sec == 0 && nsec == 0)
+		return 0;
 	return 0;
 }
 
@@ -1335,7 +1478,7 @@ sys_compat_utimensat(int64 fd, const void* path, const void* times, int64 flags)
 		return -LINUX_EBADF;
 	for (i = 0; i < HAIKU_STAT_SIZE; i++)
 		h[i] = 0;
-	now = compat_approx_usecs(1);
+	now = compat_now_us(1);
 	asec = now / 1000000;
 	ansec = (now % 1000000) * 1000;
 	msec = asec;

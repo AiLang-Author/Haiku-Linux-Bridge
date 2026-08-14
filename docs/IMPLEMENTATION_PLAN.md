@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (busybox cp/mv/ln/readlink/touch/date/rm)  
+**Last updated:** 2026-08-14 (real `date` via time/gettimeofday/_kern_get_clock)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -72,7 +72,9 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | LTP first-wave (17 bins) | **Measured** | `hello_min` pass. 16 LTP ELFs TBROK in the harness (`mkdtemp` → `mkdir` ENOSYS). Kernel stayed up. `results/ltp/ltp_smoke.txt`. |
 | Linux `mkdir`/`getcwd`/`chdir`/`unlink`/`access` | **Works** | `_kern_create_dir` 0x7b etc. LTP tmpdir is created. Next harness walls were `chown` then `statfs` (stubbed). Real test still needs `clone`. |
 | Linux `mprotect`/`munmap`/`chmod`/`chown`/`truncate`/`getuid`/`prctl`/`gettid` | **Works** | Guest dump: `write_stat=0x9d` `unmap=0xd5` `mprotect=0xd6` `rename_thread=0x38`. `hello_wstat` printed `WSTATOK`, `WSTAT_RC=0`, `hits=32`. `setuid`/`setgid` are layer-local; `set_tid_address`/`set_robust_list` store and return 0/`tid`. |
-| Linux `rename`/`symlink`/`readlink`/`stat`/`lstat`/`dup`/`fsync`/`clock_gettime`/`utimensat` | **Works** | Guest dump: `rename=0x81` `symlink=0x7e` `read_link=0x7d` `dup=0x9f` `fsync=0x77`. `hello_util` **UTILOK**. busybox `cp`/`mv`/`ln -s`/`readlink`/`touch`/`rm`/`cat`/`echo`/`ls` all RC=0. `date` RC=0 but prints epoch (`time`/`gettimeofday` still ENOSYS). Hard `link` may EPERM on this volume. Do not call `real_time_clock_usecs()` from the driver (KDL). Adopt-on-CR3-miss is off. |
+| Linux `rename`/`symlink`/`readlink`/`stat`/`lstat`/`dup`/`fsync`/`clock_gettime`/`utimensat` | **Works** | Guest dump: `rename=0x81` `symlink=0x7e` `read_link=0x7d` `dup=0x9f` `fsync=0x77`. `hello_util` **UTILOK**. busybox `cp`/`mv`/`ln -s`/`readlink`/`touch`/`rm`/`cat`/`echo`/`ls` all RC=0. Hard `link` may EPERM. Adopt-on-CR3-miss is off. |
+| Linux `time`/`gettimeofday`/`clock_gettime` (real RTC) | **Works** | `_kern_get_clock` **0xc0** (not libroot `real_time_clock_usecs` — that KDLs). `hello_date` **DATEOK 1786731467**. busybox `date` / `date -u` printed **Fri Aug 14 18:17:47 UTC 2026**. |
+| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — ~90 numbers that dominate CLI/coreutils; remaining holes: `fcntl`, `statx`, `execve`, `futex`, `poll`, signals. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -112,7 +114,12 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 4 / 6 | `stat` / `lstat` | `0x9c` | same C helper as `newfstatat` | |
 | 32 / 33 / 292 | `dup` / `dup2` / `dup3` | `0x9f` / `0xa0` | `_kern_dup` / `_kern_dup2` | return the new fd, not 0 |
 | 74 / 75 | `fsync` / `fdatasync` | `0x77` | `_kern_fsync` | |
-| 228 / 280 | `clock_gettime` / `utimensat` | — | rdtsc-based usecs (do **not** call libroot `real_time_clock_usecs`) | `date` still needs `time`/`gettimeofday` |
+| 228 / 280 | `clock_gettime` / `utimensat` | `0xc0` | `_kern_get_clock` + rdtsc fallback | do **not** call libroot `real_time_clock_usecs` |
+| 201 / 96 | `time` / `gettimeofday` | `0xc0` | same clock helper | busybox `date` prints real UTC |
+| 17 / 18 | `pread64` / `pwrite64` | `0x95` / `0x97` | `_kern_read`/`_kern_write` with pos | remap only |
+| 19 / 20 | `writev` / `readv` | `0x98` / `0x96` | `_kern_writev`/`_kern_readv` pos=-1 | remap only |
+| 22 / 293 | `pipe` / `pipe2` | `0x83` | `_kern_create_pipe` | O_CLOEXEC/NONBLOCK translated |
+| 110 | `getppid` | — | `get_team_info.parent` | |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
@@ -120,8 +127,12 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Linux `clone` (fork-style) + `wait4`** — LTP's harness forks a child for the actual test. Haiku has `_kern_fork` (0x2f) and `_kern_wait_for_child` (0x2d). Child gets a new CR3, so the mark must become a small CR3 set, not one global.
-2. **ioctl / TTY / sockets extras** — only after the CLI set is real.
+See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
+
+1. **`fcntl` + `statx`** — modern coreutils hits these constantly.
+2. **Linux `clone` (fork-style) + `wait4` + `execve`** — shells, make, LTP, compilers.
+3. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
+4. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
 
 ---
 
@@ -167,5 +178,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_stat.s` | Linux `newfstatat` + `fstat` (dir vs file, size match) |
 | `tests/hello_wstat.s` | uid/tid/prctl/mprotect/chmod/chown/truncate pack |
 | `tests/hello_util.s` | rename/symlink/readlink/stat/clock/dup/fsync/utimensat |
+| `tests/hello_date.s` | `time` + `gettimeofday` + `clock_gettime` (unix sec) |
+| `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |
