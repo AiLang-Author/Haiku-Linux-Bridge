@@ -45,6 +45,8 @@
 	.globl	gRseqPtr
 	.globl	gRseqLen
 	.globl	gRseqSig
+	.globl	gSavedRsp
+	.globl	gKstackEnd
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gMarkCount
@@ -61,6 +63,10 @@
 	.hidden	gRseqPtr
 	.hidden	gRseqLen
 	.hidden	gRseqSig
+	.hidden	gSavedRsp
+	.hidden	gKstackEnd
+
+	.extern	sys_compat_getdents64
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -132,8 +138,12 @@ sys_compat_lstar:
 	je	.Lopen
 	cmp	rax, 3			/* Linux close */
 	je	.Lclose
+	cmp	rax, 5			/* Linux fstat */
+	je	.Lfstat
 	cmp	rax, 8			/* Linux lseek */
 	je	.Llseek
+	cmp	rax, 16			/* Linux ioctl */
+	je	.Lenotty
 	cmp	rax, 9			/* Linux mmap */
 	je	.Lmmap
 	cmp	rax, 10			/* Linux mprotect */
@@ -166,8 +176,10 @@ sys_compat_lstar:
 	je	.Lget1
 	cmp	rax, 257		/* Linux openat */
 	je	.Lopenat
+	cmp	rax, 217		/* getdents64 */
+	je	.Lgetdents
 	cmp	rax, 262		/* newfstatat */
-	je	.Lenoent
+	je	.Lnewfstatat
 	cmp	rax, 267		/* readlinkat */
 	je	.Lreadlinkat
 	cmp	rax, 273		/* Linux set_robust_list */
@@ -266,7 +278,10 @@ sys_compat_lstar:
 .Lopen:
 	/* Linux: rdi=path rsi=flags rdx=mode
 	 * Haiku _kern_open(dirfd,path,openMode,perms): AT_FDCWD=-100 on both
+	 * Directories must use _kern_open_dir (0x74) or read_dir is B_UNSUPPORTED.
 	 */
+	test	rsi, 0x10000		/* LINUX O_DIRECTORY */
+	jnz	.Lopen_dir_cwd
 	mov	r10, rdx
 	mov	rdx, rsi
 	XLAT_OFLAGS
@@ -274,11 +289,21 @@ sys_compat_lstar:
 	mov	rdi, -100
 	mov	rax, 0x72
 	jmp	[rip + gOrigLstar]
+.Lopen_dir_cwd:
+	mov	rsi, rdi
+	mov	rdi, -100
+	mov	rax, 0x74		/* _kern_open_dir */
+	jmp	[rip + gOrigLstar]
 
 .Lopenat:
 	/* Linux: rdi=dirfd rsi=path rdx=flags r10=mode — same layout */
+	test	rdx, 0x10000		/* LINUX O_DIRECTORY */
+	jnz	.Lopenat_dir
 	XLAT_OFLAGS
 	mov	rax, 0x72
+	jmp	[rip + gOrigLstar]
+.Lopenat_dir:
+	mov	rax, 0x74		/* _kern_open_dir(dirfd, path) */
 	jmp	[rip + gOrigLstar]
 
 .Lexit:
@@ -306,6 +331,51 @@ sys_compat_lstar:
 
 .Lenoent:
 	mov	rax, -2			/* -ENOENT */
+	jmp	.Lret
+.Lenotty:
+	mov	rax, -25		/* -ENOTTY */
+	jmp	.Lret
+
+.Lfstat:
+	/* rsi = struct stat* */
+	mov	rdi, rsi
+	jmp	.Lfillstat
+.Lnewfstatat:
+	/* rdx = struct stat* */
+	mov	rdi, rdx
+.Lfillstat:
+	/* Linux x86_64 struct stat: nlink@16, mode@24, blksize@56. */
+	test	rdi, rdi
+	jz	.Lefault
+	swapgs
+	xor	eax, eax
+.Lstatz:
+	mov	byte ptr [rdi + rax], 0
+	inc	rax
+	cmp	rax, 144
+	jb	.Lstatz
+	mov	qword ptr [rdi + 16], 1
+	mov	dword ptr [rdi + 24], 0x41ed	/* S_IFDIR|0755 */
+	mov	qword ptr [rdi + 56], 4096
+	swapgs
+	xor	rax, rax
+	jmp	.Lret
+
+.Lgetdents:
+	/* rdi=fd rsi=buf rdx=count. Call C on a private stack. IF is clear. */
+	push	rcx
+	push	r11
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_getdents64
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r11
+	pop	rcx
 	jmp	.Lret
 
 	/*
@@ -639,3 +709,9 @@ gRseqLen:
 	.quad	0
 gRseqSig:
 	.quad	0
+gSavedRsp:
+	.quad	0
+	.align	16
+gKstack:
+	.space	16384
+gKstackEnd:

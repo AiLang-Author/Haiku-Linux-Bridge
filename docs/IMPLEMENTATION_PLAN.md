@@ -66,6 +66,9 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | busybox `echo` (glibc-static) | **Works** | Printed `BUSYBOX_ECHO`, `hits=22`, `last=231` (`exit_group`). Kernel and wrapper shell stayed up. |
 | Linux `uname` (63) | **Works** | Fills `utsname` (`Linux`/`haiku`/`6.1.0`/`sys_compat`/`x86_64`). busybox printed `Linux haiku 6.1.0 sys_compat x86_64 GNU/Linux`. |
 | busybox `cat` | **Works** | Printed `catme` from `/tmp/catme`. `seq` includes `0`/`1`/`3` (read/write/close). |
+| Linux `getdents64` (217) + `open` `O_DIRECTORY` | **Works** | Haiku needs `_kern_open_dir` (0x74) or `read_dir` is `B_UNSUPPORTED`. Convert Haiku `dirent` (`dev_t` is 32-bit) to `linux_dirent64`. busybox `ls /boot/home` printed real names. |
+| Linux `ioctl` (16) | **Stub** | `-ENOTTY`. Enough for `ls`. |
+| Linux `fstat` / `newfstatat` | **Stub** | Fake `S_IFDIR\|0755` so `ls` will open the path. Real `read_stat` later. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -92,8 +95,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **busybox `ls`.** `echo` / `uname` / `cat` are proven.
-2. **LTP smoke** from `tests/ltp_sys_compat.run` after `ls`.
+1. **Real `newfstatat`/`fstat` via `_kern_read_stat`** so `ls -l` is not all directories.
+2. **LTP smoke** from `tests/ltp_sys_compat.run`.
 3. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 
 ---

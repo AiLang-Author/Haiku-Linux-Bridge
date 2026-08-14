@@ -37,6 +37,12 @@ Preempt-abort (`RIP → abort_ip` on Haiku context switch) is **not** hooked. `c
 - [x] Linux `uname` (63) fills `struct utsname`. busybox printed **`Linux haiku 6.1.0 sys_compat x86_64 GNU/Linux`**.
 - [x] busybox **`cat /tmp/catme`** printed `catme`. `open`/`read`/`write`/`close` already remapped.
 
+### ls (same day)
+- [x] `O_DIRECTORY` must use Haiku `_kern_open_dir` (0x74). `_kern_open` yields an fd with no `fd_read_dir` → `B_UNSUPPORTED`.
+- [x] `getdents64` calls `_user_read_dir` via `kSyscallInfos` recovered from LSTAR (`shl $4` + `lea`).
+- [x] Haiku `dirent` has 32-bit `dev_t`; name is at +26. busybox **`ls /boot/home` printed real names** (`sys_compat_run`, `src`, screenshots, …). `hits=68`, `last=231`.
+- [x] `ioctl` → `-ENOTTY`. `fstat`/`newfstatat` still fake `S_IFDIR`.
+
 ### Next steps
-1. `ls`.
+1. Real `read_stat` for `ls -l`.
 2. ioctl still deferred.

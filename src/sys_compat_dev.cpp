@@ -37,6 +37,25 @@
 
 #define DEVICE_NAME "misc/sys_compat"
 
+/* Sandwiched by known numbers: read=0x95 write=0x97 close=0x9e. */
+#define HAIKU_READ_DIR 0x9a
+
+struct ksc_info {
+	void* function;
+	int32 parameter_size;
+	int32 _pad;
+};
+
+typedef int64 (*haiku_read_dir_fn)(int32 fd, void* buf, uint64 bufSize,
+	uint32 maxCount);
+
+static struct ksc_info* sSyscallInfos;
+static uint64 sReadDirFn;
+static int64 sLastNent;
+static int64 sLastOut;
+static int sDentFallback;
+static uint64 sDentMark;
+
 extern "C" {
 	void sys_compat_lstar(void);
 	extern uint64 gOrigLstar;
@@ -56,6 +75,7 @@ extern "C" {
 	extern uint64 gRseqLen;
 	extern uint64 gRseqSig;
 	int64 sys_compat_dispatch_fast(uint64* saved);
+	int64 sys_compat_getdents64(int64 fd, void* userBuf, uint64 count);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -155,6 +175,160 @@ sys_compat_dispatch_fast(uint64* saved)
 }
 
 #define IA32_FS_BASE 0xc0000100
+
+static void
+discover_syscall_table(void)
+{
+	const uint8* p;
+	int i, j;
+
+	if (sSyscallInfos != NULL || gOrigLstar == 0)
+		return;
+
+	p = (const uint8*)(addr_t)gOrigLstar;
+	for (i = 0; i < 400; i++) {
+		/* shl $4, %rax */
+		if (p[i] != 0x48 || p[i + 1] != 0xc1 || p[i + 2] != 0xe0
+			|| p[i + 3] != 0x04)
+			continue;
+		for (j = i + 4; j < i + 24 && j < 400; j++) {
+			int32 disp;
+			/* leaq disp32(%rax), %rax  = 48 8d 80 xx xx xx xx */
+			if (p[j] == 0x48 && p[j + 1] == 0x8d && p[j + 2] == 0x80) {
+				disp = (int32)(p[j + 3] | (p[j + 4] << 8)
+					| (p[j + 5] << 16) | (p[j + 6] << 24));
+				sSyscallInfos = (struct ksc_info*)(addr_t)(int64)disp;
+			/* leaq kSyscallInfos(,%rax,1), %rax = 48 8d 04 05 xx */
+			} else if (p[j] == 0x48 && p[j + 1] == 0x8d
+				&& p[j + 2] == 0x04 && p[j + 3] == 0x05) {
+				disp = (int32)(p[j + 4] | (p[j + 5] << 8)
+					| (p[j + 6] << 16) | (p[j + 7] << 24));
+				sSyscallInfos = (struct ksc_info*)(addr_t)(int64)disp;
+			} else
+				continue;
+			if (sSyscallInfos != NULL)
+				sReadDirFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_READ_DIR].function;
+			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
+				"\n", sSyscallInfos, sReadDirFn);
+			return;
+		}
+	}
+	dprintf("[sys_compat] kSyscallInfos scan missed\n");
+}
+
+extern "C" int64
+sys_compat_getdents64(int64 fd, void* userBuf, uint64 count)
+{
+	static uint8 sIn[4096];
+	static uint8 sOut[4096];
+	haiku_read_dir_fn fn;
+	int64 nent;
+	uint64 inpos, outpos;
+	int64 i;
+
+	if (sDentMark != gMarkCount) {
+		sDentMark = gMarkCount;
+		sDentFallback = 0;
+	}
+	if (userBuf == NULL || count < 32)
+		return -LINUX_EINVAL;
+	if (sSyscallInfos == NULL || sReadDirFn == 0)
+		return -LINUX_ENOSYS;
+	if (count > 4096)
+		count = 4096;
+
+	fn = (haiku_read_dir_fn)(addr_t)sReadDirFn;
+	nent = fn((int32)fd, userBuf, count, 32);
+	sLastNent = nent;
+	if (nent < 0) {
+		sLastOut = (nent > -4096) ? nent : (int64)(-LINUX_EIO);
+		/* Still emit . and .. so ls is not silent while we debug. */
+		nent = 0;
+	}
+
+	if (user_memcpy(sIn, userBuf, count) != B_OK)
+		return -LINUX_EFAULT;
+
+	inpos = 0;
+	outpos = 0;
+	for (i = 0; i < nent; i++) {
+		uint64 ino;
+		uint16 hreclen, lreclen;
+		uint32 namelen;
+		const uint8* name;
+		uint64 off;
+
+		/* Haiku dirent: dev_t is 32-bit. ino@8, reclen@24, name@26 or @32. */
+		if (inpos + 26 > count)
+			break;
+		ino = 0;
+		hreclen = 0;
+		for (int b = 0; b < 8; b++)
+			ino |= (uint64)sIn[inpos + 8 + b] << (8 * b);
+		hreclen = (uint16)(sIn[inpos + 24] | (sIn[inpos + 25] << 8));
+		if (hreclen < 27 || inpos + hreclen > count)
+			break;
+		name = sIn + inpos + 26;
+		if (name[0] == 0 && inpos + 32 < inpos + hreclen)
+			name = sIn + inpos + 32;
+		namelen = 0;
+		while (namelen < 255 && name[namelen] != 0)
+			namelen++;
+		if (namelen == 0) {
+			inpos += hreclen;
+			continue;
+		}
+		lreclen = (uint16)((19 + namelen + 1 + 7) & ~7);
+		if (outpos + lreclen > count)
+			break;
+		for (uint16 z = 0; z < lreclen; z++)
+			sOut[outpos + z] = 0;
+		for (int b = 0; b < 8; b++)
+			sOut[outpos + b] = (uint8)(ino >> (8 * b));
+		off = outpos + lreclen;
+		for (int b = 0; b < 8; b++)
+			sOut[outpos + 8 + b] = (uint8)(off >> (8 * b));
+		sOut[outpos + 16] = (uint8)lreclen;
+		sOut[outpos + 17] = (uint8)(lreclen >> 8);
+		sOut[outpos + 18] = 0;
+		for (uint32 n = 0; n < namelen; n++)
+			sOut[outpos + 19 + n] = name[n];
+		outpos += lreclen;
+		inpos += hreclen;
+	}
+
+	if (outpos == 0) {
+		if (sDentFallback) {
+			sLastOut = 0;
+			return 0;
+		}
+		sDentFallback = 1;
+		/* Fallback: "." and ".." so a failed convert is visible. */
+		sOut[0] = 1;
+		for (int b = 1; b < 16; b++)
+			sOut[b] = 0;
+		sOut[16] = 24;
+		sOut[17] = 0;
+		sOut[18] = 4; /* DT_DIR */
+		sOut[19] = '.';
+		sOut[20] = 0;
+		sOut[24] = 2;
+		for (int b = 25; b < 40; b++)
+			sOut[b] = 0;
+		sOut[40] = 24;
+		sOut[41] = 0;
+		sOut[42] = 4;
+		sOut[43] = '.';
+		sOut[44] = '.';
+		sOut[45] = 0;
+		outpos = 48;
+	}
+	sLastOut = (int64)outpos;
+	if (user_memcpy(userBuf, sOut, outpos) != B_OK)
+		return -LINUX_EFAULT;
+	return (int64)outpos;
+}
 
 static void
 discover_uls_offset(void)
@@ -302,6 +476,18 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		PUT("rseq="); PUT(hr); PUT(" len="); PUT(hl);
 		PUT(" sig="); PUT(hs); PUT("\n");
 	}
+	{
+		char ht[20], hf[20];
+		fmt_hex(ht, (uint64)(addr_t)sSyscallInfos);
+		fmt_hex(hf, sReadDirFn);
+		PUT("ksc="); PUT(ht); PUT(" rdir="); PUT(hf); PUT("\n");
+	}
+	{
+		char nn[20], no[20];
+		fmt_hex(nn, (uint64)sLastNent);
+		fmt_hex(no, (uint64)sLastOut);
+		PUT("dent="); PUT(nn); PUT(" dout="); PUT(no); PUT("\n");
+	}
 	PUT("seq=");
 	for (k = 0; k < 8; k++) {
 		fmt_u64(nseq, gLastN[k]);
@@ -387,6 +573,7 @@ init_driver(void)
 	}
 	dprintf("[sys_compat] identity passthrough armed, orig %#" B_PRIx64 "\n",
 		gOrigLstar);
+	discover_syscall_table();
 	return B_OK;
 }
 
