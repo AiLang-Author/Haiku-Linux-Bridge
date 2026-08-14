@@ -28,7 +28,7 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ## Current status (honest)
 
-**Living pickup plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — update that file when a syscall lands or a trap changes.
+**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first. Update it when a syscall lands or a trap changes. Latest wrap: [`docs/STANDUP_DAY14.md`](docs/STANDUP_DAY14.md).
 
 Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` and extra drivers are later.
 
@@ -54,7 +54,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** — `_kern_fcntl` 0x76, `statx` from `read_stat`. `hello_fcntl` / `FCNTOK`. |
 | busybox grep / sed / wc / head / sort / cut | **Works** — single-process, no fork. All RC=0. |
-| Linux `clone` / `_kern_fork` | **Reboots** the guest from a marked Linux team. Next work. |
+| Linux `clone` / `_kern_fork` | **Reboots after mark.** Native Haiku `fork()` and Haiku `fork()` after the ELF mmap both work. Linux `clone` from a marked team silent-reboots (child IRETQ into Linux). See Day 14. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |

@@ -53,6 +53,8 @@
 	.globl	gRseqSig
 	.globl	gSavedRsp
 	.globl	gKstackEnd
+	.globl	gKstack
+	.globl	gForkPending
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gLinuxTeam
@@ -73,6 +75,8 @@
 	.hidden	gRseqSig
 	.hidden	gSavedRsp
 	.hidden	gKstackEnd
+	.hidden	gKstack
+	.hidden	gForkPending
 
 	.extern	sys_compat_getdents64
 	.extern	sys_compat_stat
@@ -112,6 +116,7 @@
 	.extern	sys_compat_nanosleep
 	.extern	sys_compat_fcntl
 	.extern	sys_compat_statx
+	.extern	sys_compat_try_fork
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -134,8 +139,37 @@ sys_compat_lstar:
 	inc	r8
 	cmp	r8, 8
 	jb	.Lcr3scan
-	/* Unmarked CR3: stay Haiku. Do not adopt (get_team_info on the
-	 * miss path KDLs; a live Linux mark must not tag Terminal). */
+	/* Unmarked CR3 after Linux fork: stamp this CR3 (no C).
+	 * Child's first syscall is often Linux exit(60). Haiku 60 is
+	 * _kern_cancel_thread. */
+	cmp	qword ptr [rip + gForkPending], 0
+	je	.Lhaiku_slow
+	cmp	qword ptr [rsp + 16], 60
+	je	.Lstamp_child
+	cmp	qword ptr [rsp + 16], 231
+	je	.Lstamp_child
+	cmp	qword ptr [rsp + 16], 1
+	je	.Lstamp_child
+	jmp	.Lhaiku_slow
+.Lstamp_child:
+	lea	r9, [rip + gLinuxCR3]
+	xor	r8, r8
+.Lstamp_scan:
+	cmp	qword ptr [r9 + r8 * 8], 0
+	je	.Lstamp_got
+	inc	r8
+	cmp	r8, 8
+	jb	.Lstamp_scan
+	jmp	.Lstamp_done
+.Lstamp_got:
+	mov	[r9 + r8 * 8], rax
+	inc	qword ptr [rip + gLinuxN]
+	mov	qword ptr [rip + gForkPending], 0
+.Lstamp_done:
+	pop	r9
+	pop	r8
+	pop	rax
+	jmp	.Llinux_go
 .Lhaiku_slow:
 	pop	r9
 	pop	r8
@@ -160,6 +194,7 @@ sys_compat_lstar:
 	and	rax, 0xfffffffffffff000
 	mov	[rip + gLinuxCR3], rax
 	mov	qword ptr [rip + gLinuxN], 1
+	mov	qword ptr [rip + gForkPending], 0
 	inc	qword ptr [rip + gMarkCount]
 	cmp	rsi, 4096
 	jb	.Lmark_noarena
@@ -213,6 +248,7 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
+.Llinux_go:
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
 	push	r8
@@ -615,10 +651,8 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lfork:
-	/* Haiku _kern_fork = 0x2f. Child iframe.ax = 0. New CR3 is
-	 * adopted on the child's first syscall via sys_compat_adopt. */
-	mov	rax, 0x2f
-	jmp	[rip + gOrigLstar]
+	/* Diagnose: call _user_fork from C (see .Lclone). */
+	jmp	.Ltry_fork
 
 .Lclone:
 	/* Fork-style only: stack==NULL, no CLONE_VM / CLONE_THREAD. */
@@ -628,6 +662,15 @@ sys_compat_lstar:
 	jnz	.Lenosys
 	test	rdi, 0x10000		/* CLONE_THREAD */
 	jnz	.Lenosys
+.Ltry_fork:
+	/* Official _kern_fork entry. We are still on the user stack
+	 * with user GS (Linux dispatch popped its temps, no swapgs).
+	 * x86_64_syscall_entry requires that: first insn is swapgs,
+	 * then RSP=gs:syscall_rsp. Calling _user_fork from C on gKstack
+	 * cannot satisfy find_previous_iframe(); a fake iframe + IRETQ
+	 * after swapgs triple-faults (no KDL). rax must be Haiku 0x2f,
+	 * not Linux clone 56. rcx=user RIP, r11=rflags. */
+	mov	qword ptr [rip + gForkPending], 1
 	mov	rax, 0x2f
 	jmp	[rip + gOrigLstar]
 
@@ -1858,6 +1901,8 @@ gRseqLen:
 gRseqSig:
 	.quad	0
 gSavedRsp:
+	.quad	0
+gForkPending:
 	.quad	0
 	.align	16
 gKstack:

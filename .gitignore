@@ -26,6 +26,13 @@ tests/test_vfs
 tests/test_epoll
 tests/test_signal
 tests/sys_compat_run
+tests/hello_fds
+tests/hello_fork
+tests/hello_fork_probe
+tests/hello_fs
+tests/hello_mmap
+tests/hello_rseq
+tests/hello_rwc
 
 # LTP guest results collected over the network
 results/

@@ -1,6 +1,7 @@
 # Design Document: Haiku Linux Compatibility Subsystem (`sys_compat`)
 
-**Status**: Draft / Architectural Specification  
+**Status**: Draft / Architectural Specification (historical)  
+**Live onboarding / pickup:** [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — that file is current. This draft still describes an older in-tree dispatcher (`linux_sys_dispatch.cpp`) that is **not** the running trap (`src/syscall_hook.S` + `src/sys_compat_dev.cpp`).  
 **Target Platform**: Haiku OS (x86_64)  
 **Location**: Kernel Subsystem / Module (`add-ons/kernel/generic/sys_compat`)  
 **License**: Public Domain / CC0 1.0 Universal  

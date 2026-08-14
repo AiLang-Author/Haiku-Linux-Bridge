@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <elf.h>
 #include "sys_compat_abi.h"
 
@@ -252,15 +253,45 @@ int main(int argc, char** argv)
      * allocation needs this before any Linux malloc.
      */
 #define SYS_COMPAT_ARENA_SIZE (32u * 1024u * 1024u)
-    void* arena = mmap(NULL, SYS_COMPAT_ARENA_SIZE,
-                       PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (arena == MAP_FAILED) {
-        perror("[-] mmap brk/mmap arena");
-        return 1;
+    /* Tiny fork probes do not malloc; skip the 32MB arena so fork_team
+     * does not COW it. Name contains "fork". */
+    int skip_arena = (strstr(elf_path, "fork") != NULL);
+    uint32_t arena_sz = skip_arena ? 0 : SYS_COMPAT_ARENA_SIZE;
+    void* arena = NULL;
+    if (arena_sz != 0) {
+        arena = mmap(NULL, SYS_COMPAT_ARENA_SIZE,
+                           PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (arena == MAP_FAILED) {
+            perror("[-] mmap brk/mmap arena");
+            return 1;
+        }
+        printf("[+] arena %p +%u for Linux brk/mmap\n",
+               arena, SYS_COMPAT_ARENA_SIZE);
+    } else
+        printf("[+] no arena (fork probe)\n");
+    /* Haiku-side fork after the Linux ELF is mapped, still a Haiku
+     * team. Isolates vm_copy_area of the 0x400000 map from the Linux
+     * clone / child IRETQ path. */
+    if (skip_arena) {
+        pid_t hp = fork();
+        if (hp < 0)
+            printf("[+] HAIKU_FORK_NEG\n");
+        else if (hp == 0) {
+            printf("[+] HAIKU_FORK_CHILD\n");
+            fflush(stdout);
+            _exit(0);
+        } else {
+            printf("[+] HAIKU_FORK_PARENT %d\n", (int)hp);
+            fflush(stdout);
+            waitpid(hp, NULL, 0);
+            printf("[+] HAIKU_FORK_OK\n");
+        }
+        fflush(stdout);
+        /* Stop here so a reboot can be blamed on Haiku fork of the
+         * 0x400000 Linux map, not on the later Linux clone/IRETQ. */
+        return 0;
     }
-    printf("[+] arena %p +%u for Linux brk/mmap\n",
-           arena, SYS_COMPAT_ARENA_SIZE);
     printf("[+] mark via raw syscall 0x%x then jmp 0x%lx (no libc after mark)\n",
            SYS_COMPAT_MARK_NR, (unsigned long)ehdr.e_entry);
     fflush(stdout);
@@ -273,7 +304,7 @@ int main(int argc, char** argv)
         register uint64_t rsp_val asm("r12") = (uint64_t)(uintptr_t)sp;
         register uint64_t entry_val asm("r13") = ehdr.e_entry;
         register uint64_t arena_val asm("rdi") = (uint64_t)(uintptr_t)arena;
-        register uint64_t size_val asm("rsi") = SYS_COMPAT_ARENA_SIZE;
+        register uint64_t size_val asm("rsi") = (uint64_t)arena_sz;
         __asm__ __volatile__(
             "mov $0x1337, %%rax\n\t"
             "syscall\n\t"

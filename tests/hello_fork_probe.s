@@ -11,6 +11,9 @@
 msg_pre:
 	.ascii "PRE\n"
 	msg_pre_len = . - msg_pre
+msg_neg:
+	.ascii "NEG\n"
+	msg_neg_len = . - msg_neg
 
 .section .text
 _start:
@@ -26,7 +29,8 @@ _start:
 	.intel_syntax noprefix
 	syscall
 	test	rax, rax
-	jle	.Lspin
+	js	.Lneg
+	jz	.Lspin
 
 	.att_syntax prefix
 	movq	$1, %rax
@@ -36,6 +40,22 @@ _start:
 	.att_syntax prefix
 	movq	$msg_pre_len, %rdx
 	.intel_syntax noprefix
+	syscall
+	jmp	.Lspin
+.Lneg:
+	.att_syntax prefix
+	movq	$1, %rax
+	movq	$1, %rdi
+	.intel_syntax noprefix
+	lea	rsi, [msg_neg]
+	.att_syntax prefix
+	movq	$msg_neg_len, %rdx
+	.intel_syntax noprefix
+	syscall
+	.att_syntax prefix
+	movq	$60, %rax
+	.intel_syntax noprefix
+	xor	rdi, rdi
 	syscall
 .Lspin:
 	pause

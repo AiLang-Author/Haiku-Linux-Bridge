@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-14
+**Last updated:** 2026-08-14 (Day 14: post-mark fork IRETQ)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -108,7 +108,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **reboots** (`_kern_fork` 0x2f from a marked team). Probe: no child syscall, parent never `PRE`. |
+| 56/57/58 | clone/fork/vfork | **reboots after mark**. Native Haiku `fork()` OK. Haiku `fork()` after ELF mmap (no mark) OK. Linux `clone` from a marked team silent-reboots (child IRETQ / parent SYSRET into Linux). |
 | 61 | wait4 | wired, unproven (blocked on fork) |
 | 59 | execve | **missing** |
 | 202 | futex | **missing** (pthread — not the grep blocker) |
@@ -144,7 +144,9 @@ ENOSYS**: ~90 (including stubs).
 **single process** (no shell spawn): echo, uname, cat, ls, cp, mv,
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
-`clone`/`fork` from a marked Linux team **reboots** the guest (see Day 13).
+`clone`/`fork` from a **marked** Linux team **reboots** the guest (see
+Day 14). `_kern_fork` itself works; `vm_copy_area` of the 0x400000 map
+works. The remaining hole is IRETQ/SYSRET into Linux after mark.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
 Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.

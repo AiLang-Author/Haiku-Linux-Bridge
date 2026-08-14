@@ -248,6 +248,7 @@ typedef int32 (*haiku_fsync_fn)(int32 fd, int32 dataOnly);
 typedef int32 (*haiku_getclock_fn)(int32 clockid, void* timePtr);
 typedef int32 (*haiku_pipe_fn)(void* fds, int32 flags);
 typedef int32 (*haiku_fcntl_fn)(int32 fd, int32 op, uint64 argument);
+typedef int32 (*haiku_fork_fn)(void);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -273,6 +274,11 @@ static uint64 sFsyncFn;
 static uint64 sGetClockFn;
 static uint64 sPipeFn;
 static uint64 sFcntlFn;
+static uint64 sForkFn;
+static uint64 sForkGs0;
+static uint64 sForkGs8;
+static uint64 sForkKtop;
+static int64 sLastFork;
 static int32 sHaveUid;
 static int32 sHaveGid;
 static uint32 sUid;
@@ -311,6 +317,8 @@ extern "C" {
 	extern uint64 gRseqLen;
 	extern uint64 gRseqSig;
 	extern uint64 gSavedRsp;
+	extern uint8 gKstack[];
+	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
 		uint32 mask, int64 a, int64 b);
 	int64 sys_compat_mprotect(void* addr, uint64 len, int64 prot);
@@ -360,6 +368,7 @@ extern "C" {
 	int64 sys_compat_fcntl(int64 fd, int64 cmd, int64 arg);
 	int64 sys_compat_statx(int64 fd, const void* path, int64 flags,
 		uint32 mask, void* buf);
+	int64 sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -537,6 +546,8 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_PIPE].function;
 				sFcntlFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_FCNTL].function;
+				sForkFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_FORK].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -940,6 +951,161 @@ sys_compat_getpid(void)
 	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
 		return 1;
 	return info.team;
+}
+
+/* x86_64 Haiku iframe — must match headers/private/kernel/arch/x86/64/iframe.h */
+struct haiku_iframe {
+	uint64 type;
+	uint64 fpu;
+	uint64 r15, r14, r13, r12, r11, r10, r9, r8;
+	uint64 bp, si, di, dx, cx, bx, ax;
+	uint64 orig_rax;
+	uint64 vector;
+	uint64 error_code;
+	uint64 ip;
+	uint64 cs;
+	uint64 flags;
+	uint64 sp;
+	uint64 ss;
+};
+
+#define IFRAME_TYPE_SYSCALL 1
+#define USER_CS 0x2b	/* (USER_CODE_SEGMENT<<3)|DPL_USER */
+#define USER_SS 0x23	/* (USER_DATA_SEGMENT<<3)|DPL_USER */
+
+static int
+kstack_top_ok(uint64 top)
+{
+	/* syscall_rsp is page-aligned kernel_stack_top. Reject kernel
+	 * text (below ~0xffffffff81000000) and non-canonical / user
+	 * addresses. Do not use 0xffffff0000000000 as an upper bound:
+	 * that is *below* 0xffffffff8xxxxxxx (Haiku kstacks live there). */
+	if ((top & 0xfff) != 0)
+		return 0;
+	if (top < 0xffffffff81000000ULL)
+		return 0;
+	return 1;
+}
+
+static uint64
+scan_thread_kstack_top(uint64 thr)
+{
+	uint64* p;
+	int i;
+
+	if (thr < 0xffff800000000000ULL)
+		return 0;
+	p = (uint64*)(addr_t)thr;
+	for (i = 2; i < 200; i++) {
+		uint64 top = p[i];
+		uint64 base = p[i - 1];
+		uint64 span;
+
+		if ((top & 0xfff) != 0 || (base & 0xfff) != 0)
+			continue;
+		if (top <= base)
+			continue;
+		span = top - base;
+		if (span != 0x4000 && span != 0x5000)
+			continue;
+		if (!kstack_top_ok(top))
+			continue;
+		return top;
+	}
+	return 0;
+}
+
+extern "C" int64
+sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
+{
+	haiku_fork_fn fn;
+	int32 st;
+	uint64 gs0, gs8, ktop, saved_rsp;
+	struct haiku_iframe* f;
+	uint8* q;
+	int j;
+
+	sLastFork = 0;
+	sForkGs0 = 0;
+	sForkGs8 = 0;
+	sForkKtop = 0;
+	dprintf("[sys_compat] try_fork rip=%#" B_PRIx64 " rsp=%#" B_PRIx64
+		" fl=%#" B_PRIx64 " fn=%#" B_PRIx64 "\n",
+		userRip, userRsp, userFlags, sForkFn);
+	if (sForkFn == 0 || userRip < 0x1000 || userRsp < 0x1000) {
+		sLastFork = -LINUX_ENOSYS;
+		return -LINUX_ENOSYS;
+	}
+
+	/* After the hook swapgs, GS is arch_thread: gs:0=Thread*,
+	 * gs:8=syscall_rsp=kernel_stack_top. */
+	__asm__ __volatile__("movq %%gs:0, %0" : "=r"(gs0));
+	__asm__ __volatile__("movq %%gs:8, %0" : "=r"(gs8));
+	sForkGs0 = gs0;
+	sForkGs8 = gs8;
+
+	/* Haiku contract (arch_thread.cpp): _user_fork -> fork_team ->
+	 * arch_store_fork_frame -> x86_get_current_iframe(). That walks
+	 * RBP only inside Thread.kernel_stack_base..top and treats a
+	 * frame whose first qword is an iframe type (low 4 bits) as the
+	 * syscall iframe. Official SYSCALL entry plants that iframe at
+	 * kernel_stack_top and sets RBP=RSP=iframe. Calling _user_fork
+	 * from a driver on gKstack without that layout yields NULL
+	 * iframe (KDL) or a smashed copy (child iretq reboot).
+	 * Plant on the *real* kstack, above the call, matching entry.S.
+	 * Do not patch Thread.kernel_stack_* (immutable after create). */
+	ktop = kstack_top_ok(gs8) ? gs8 : scan_thread_kstack_top(gs0);
+	sForkKtop = ktop;
+	dprintf("[sys_compat] gs0=%#" B_PRIx64 " gs8=%#" B_PRIx64
+		" ktop=%#" B_PRIx64 "\n", gs0, gs8, ktop);
+	if (ktop == 0) {
+		sLastFork = -LINUX_EFAULT;
+		return -LINUX_EFAULT;
+	}
+
+	f = (struct haiku_iframe*)((ktop - sizeof(*f)) & ~(uint64)15);
+	if ((uint64)(addr_t)f + sizeof(*f) > ktop
+		|| (uint64)(addr_t)f < ktop - 0x5000) {
+		sLastFork = -LINUX_EFAULT;
+		return -LINUX_EFAULT;
+	}
+	q = (uint8*)f;
+	for (j = 0; j < (int)sizeof(*f); j++)
+		q[j] = 0;
+	f->type = IFRAME_TYPE_SYSCALL;
+	f->ip = userRip;
+	f->cs = USER_CS;
+	f->flags = userFlags | 0x202;
+	f->sp = userRsp;
+	f->ss = USER_SS;
+	f->vector = 99;
+	f->ax = 0;
+
+	fn = (haiku_fork_fn)(addr_t)sForkFn;
+	__asm__ __volatile__("movq %%rsp, %0" : "=r"(saved_rsp));
+	{
+		register uint64 fnr asm("r13") = (uint64)(addr_t)fn;
+		register uint64 fr asm("r15") = (uint64)(addr_t)f;
+		register uint64 oldsp asm("r14") = saved_rsp;
+		__asm__ __volatile__(
+			"movq	%%rbp, %%r12\n\t"
+			"movq	%%r15, %%rsp\n\t"
+			"movq	%%r15, %%rbp\n\t"
+			"callq	*%%r13\n\t"
+			"movq	%%r14, %%rsp\n\t"
+			"movq	%%r12, %%rbp\n\t"
+			: "=a"(st)
+			: "r"(fnr), "r"(fr), "r"(oldsp)
+			: "rcx", "rdx", "rsi", "rdi",
+			  "r8", "r9", "r10", "r11",
+			  "r12", "memory"
+		);
+	}
+	sLastFork = (int64)st;
+	dprintf("[sys_compat] try_fork returned %" B_PRId32 "\n", st);
+	if (st < 0)
+		return haiku_status_to_linux((int64)st);
+	return (int64)st;
 }
 
 extern "C" int64
@@ -1946,6 +2112,15 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		fmt_hex(hf, sFcntlFn);
 		fmt_hex(hg, sGetClockFn);
 		PUT("fcntl="); PUT(hf); PUT(" clock="); PUT(hg); PUT("\n");
+	}
+	{
+		char fg0[20], fg8[20], fk[20], fl[20];
+		fmt_hex(fg0, sForkGs0);
+		fmt_hex(fg8, sForkGs8);
+		fmt_hex(fk, sForkKtop);
+		fmt_hex(fl, (uint64)sLastFork);
+		PUT("fgs0="); PUT(fg0); PUT(" fgs8="); PUT(fg8);
+		PUT(" ktop="); PUT(fk); PUT(" frk="); PUT(fl); PUT("\n");
 	}
 	{
 		char uid[20], gid[20], ctid[20];
