@@ -88,8 +88,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Safe `arch_prctl(ARCH_SET_FS)`.** glibc-static busybox now does `brk, brk, arch_prctl(158)` and hangs (TLS block allocated; FS not actually set). Do **not** raw `wrmsr` `FS_BASE` — that crashed the Haiku wrapper. Need to update the thread’s saved FS so context switch stays correct.
-2. **busybox static** `echo` / `uname` / `cat` after SET_FS works. File-backed `mmap` still later.
+1. **busybox glibc startup leftovers:** after SET_FS it hits `set_tid_address` (218), `set_robust_list` (273), `rseq` (334). Stubs are coded (tid=1, robust=0, rseq=-ENOSYS). Next missing number is in `seq=` after those return.
+2. **busybox static** `echo` / `uname` / `cat`. File-backed `mmap` still later.
 3. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
 4. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 
