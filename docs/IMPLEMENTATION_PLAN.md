@@ -61,8 +61,9 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `brk` / ANON `mmap` / `munmap` | **Works** | `hello_mmap` printed `MMAPOK`/`BRKOK`, `seq=9,1,11,12,1,60`, arena carved 4K (`results/ltp/mem_out.txt`) |
 | Loader 32 MB arena via `0x1337` (rdi,rsi) | **Works** | Device `brk=`/`hi=` span 32 MB after mark; `hello_min` still `HELLO_RC=0` |
 | Linux `arch_prctl(ARCH_SET_FS)` | **Works** | Writes `thread->user_local_storage` (offset `0x2b0` on this image) + `FS_BASE`. `hello_fs` printed `FSOK` (`results/ltp/fs_out.txt`) |
-| Linux `rseq` (334) | **In hook** | Register/unregister from `linux/kernel/rseq.c`. Writes `cpu_id=0`. Not a Haiku kernel PR. Guest proof is `hello_rseq` / `RSEQOK`. |
+| Linux `rseq` (334) | **Works** | Register/unregister from `linux/kernel/rseq.c`. `cpu_id=0`. No `STAC` (this Haiku has no `CR4.SMAP` — that was `#UD`/KDL). Guest: `hello_rseq` printed `RSEQOK`, `seq=334,334,334,1,60`. |
 | Linux `ioctl` | **Deferred** | Do not implement this layer yet |
+| busybox `echo` (glibc-static) | **Works** | Printed `BUSYBOX_ECHO`, `hits=22`, `last=231` (`exit_group`). Kernel and wrapper shell stayed up. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -89,10 +90,9 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Prove `hello_rseq` (`RSEQOK`) on the guest**, then re-run busybox `echo`. glibc-static used to die at `last=334`; the hook now implements register (not `-ENOSYS`).
-2. **busybox static** `echo` once `seq=` moves past 334 to `prlimit64` (302). Then `uname`/`cat`.
-3. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
-4. **ioctl / TTY / sockets extras** — only after the CLI set is real.
+1. **busybox `uname` / `cat`.** `echo` is proven (`BUSYBOX_ECHO`, `last=231`).
+2. **LTP smoke** from `tests/ltp_sys_compat.run` only after those applets work.
+3. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 
 ---
 

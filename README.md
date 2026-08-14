@@ -43,7 +43,8 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `lseek` / `open` / `openat` | **Works** — `hello_fds` seeked + created `/tmp/created` |
 | Linux `brk` / ANON `mmap` / `munmap` | **Works** — `hello_mmap` printed `MMAPOK`/`BRKOK` |
 | Linux `arch_prctl(SET_FS)` | **Works** — updates Haiku `user_local_storage` + FS_BASE; `hello_fs` printed `FSOK` |
-| Linux `rseq` (334) | **In the hook** — register/unregister + `cpu_id=0`. Not a Haiku kernel change. Guest proof: `hello_rseq` / `RSEQOK`. |
+| Linux `rseq` (334) | **Works** — register/unregister + `cpu_id=0`. No `STAC` (Haiku has no `CR4.SMAP`). Guest: `hello_rseq` / `RSEQOK`. |
+| busybox `echo` (glibc-static) | **Works** — printed `BUSYBOX_ECHO`, `last=231` (`exit_group`) |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

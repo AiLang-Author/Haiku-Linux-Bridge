@@ -25,7 +25,14 @@ Spec used: `/home/bob/linux/kernel/rseq.c` + `include/uapi/linux/rseq.h` (`ORIG_
 ### Not in this cut
 Preempt-abort (`RIP → abort_ip` on Haiku context switch) is **not** hooked. `cpu_id` never changes, so the migrate-mismatch path does not fire. Same-CPU preemption mid-CS is a known gap. Do not pretend otherwise. Do not add a Haiku scheduler hook unless a real CS user corrupts.
 
+### Guest proof (later the same day)
+- [x] First rseq cut used `STAC`/`CLAC`. This Haiku image does not set `CR4.SMAP`, so `STAC` is `#UD` → KDL (`Invalid Opcode` in `sys_compat_run`).
+- [x] Removed `STAC`/`CLAC`. User copies `swapgs` only so a `#PF` is Kill Thread, not a double fault.
+- [x] `hello_rseq` printed **`RSEQOK`**. `seq=334,334,334,1,60`, `hits=5`, `last=60`. Wrapper shell stayed up. Kernel stayed up.
+
+### busybox echo (same day)
+- [x] Static glibc busybox **`echo BUSYBOX_ECHO` printed**. `BB_RC=done`, `hits=22`, `last=231` (`exit_group`). Ring `seq=12,10,157,102,1,231,12,12` (`brk`, `mprotect`, `prctl`, `getuid`, `write`, `exit_group`). Wrapper shell stayed up. Kernel stayed up. rseq is no longer the wall.
+
 ### Next steps
-1. Guest: rebuild driver, run `hello_min` then `hello_rseq`. Want `RSEQOK` and `RSEQ_RC=0`.
-2. Re-run busybox `echo`. Watch `seq=` — success is `334` then `302` (`prlimit64`).
-3. ioctl still deferred.
+1. `uname` / `cat`.
+2. ioctl still deferred.
