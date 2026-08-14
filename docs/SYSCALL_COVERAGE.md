@@ -140,8 +140,13 @@ ptrace, mount, bpf, io_uring, inotify, epoll, mmap of files.
 Approximate unique Linux numbers we **dispatch to something other than
 ENOSYS**: ~90 (including stubs).
 
-**Guest-proven useful**: ~76 (adds `fcntl` / `statx` / `fadvise64`;
-`hello_fcntl` printed **FCNTOK**, `hello_date` still DATEOK).
+**Guest-proven useful**: ~76. Unmodified busybox CLI that works as a
+**single process** (no shell spawn): echo, uname, cat, ls, cp, mv,
+ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
+
+`clone`/`fork` from a marked Linux team **reboots** the guest. Spawn
+and pipelines stay the next layer, not this one. Rare/deprecated
+syscalls wait for a real user report.
 
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
