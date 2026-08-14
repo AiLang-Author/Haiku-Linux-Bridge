@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (chmod/chown/truncate/mprotect/uid/tid/prctl)  
+**Last updated:** 2026-08-14 (busybox cp/mv/ln/readlink/touch/date/rm)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -72,6 +72,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | LTP first-wave (17 bins) | **Measured** | `hello_min` pass. 16 LTP ELFs TBROK in the harness (`mkdtemp` → `mkdir` ENOSYS). Kernel stayed up. `results/ltp/ltp_smoke.txt`. |
 | Linux `mkdir`/`getcwd`/`chdir`/`unlink`/`access` | **Works** | `_kern_create_dir` 0x7b etc. LTP tmpdir is created. Next harness walls were `chown` then `statfs` (stubbed). Real test still needs `clone`. |
 | Linux `mprotect`/`munmap`/`chmod`/`chown`/`truncate`/`getuid`/`prctl`/`gettid` | **Works** | Guest dump: `write_stat=0x9d` `unmap=0xd5` `mprotect=0xd6` `rename_thread=0x38`. `hello_wstat` printed `WSTATOK`, `WSTAT_RC=0`, `hits=32`. `setuid`/`setgid` are layer-local; `set_tid_address`/`set_robust_list` store and return 0/`tid`. |
+| Linux `rename`/`symlink`/`readlink`/`stat`/`lstat`/`dup`/`fsync`/`clock_gettime`/`utimensat` | **Works** | Guest dump: `rename=0x81` `symlink=0x7e` `read_link=0x7d` `dup=0x9f` `fsync=0x77`. `hello_util` **UTILOK**. busybox `cp`/`mv`/`ln -s`/`readlink`/`touch`/`rm`/`cat`/`echo`/`ls` all RC=0. `date` RC=0 but prints epoch (`time`/`gettimeofday` still ENOSYS). Hard `link` may EPERM on this volume. Do not call `real_time_clock_usecs()` from the driver (KDL). Adopt-on-CR3-miss is off. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -104,6 +105,14 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 105 / 106 | `setuid` / `setgid` | — | layer-local store | enough for glibc queries; does not change Haiku creds |
 | 186 / 218 / 273 | `gettid` / `set_tid_address` / `set_robust_list` | — | `find_thread(NULL)` + store | clear-tid on exit not wired |
 | 157 | `prctl` | `0x38` | `_kern_rename_thread` for `PR_SET_NAME` | `GET_NAME` via `get_thread_info`; dumpable/pdeathsig return 0 |
+| 82 / 264 / 316 | `rename` / `renameat` / `renameat2` | `0x81` | `_kern_rename` | `renameat2` flags≠0 → `-EINVAL` |
+| 88 / 266 | `symlink` / `symlinkat` | `0x7e` | `_kern_create_symlink` | Linux (target, path) → Haiku (path, target) |
+| 89 / 267 | `readlink` / `readlinkat` | `0x7d` | `_kern_read_link` | size is in/out user pointer |
+| 86 / 265 | `link` / `linkat` | `0x7f` | `_kern_create_link` | may EPERM if the volume rejects hard links |
+| 4 / 6 | `stat` / `lstat` | `0x9c` | same C helper as `newfstatat` | |
+| 32 / 33 / 292 | `dup` / `dup2` / `dup3` | `0x9f` / `0xa0` | `_kern_dup` / `_kern_dup2` | return the new fd, not 0 |
+| 74 / 75 | `fsync` / `fdatasync` | `0x77` | `_kern_fsync` | |
+| 228 / 280 | `clock_gettime` / `utimensat` | — | rdtsc-based usecs (do **not** call libroot `real_time_clock_usecs`) | `date` still needs `time`/`gettimeofday` |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
@@ -157,5 +166,6 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_rseq.s` | Linux `rseq` register / EBUSY / unregister |
 | `tests/hello_stat.s` | Linux `newfstatat` + `fstat` (dir vs file, size match) |
 | `tests/hello_wstat.s` | uid/tid/prctl/mprotect/chmod/chown/truncate pack |
+| `tests/hello_util.s` | rename/symlink/readlink/stat/clock/dup/fsync/utimensat |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

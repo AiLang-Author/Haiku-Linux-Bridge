@@ -81,11 +81,26 @@
 #define HAIKU_UNMAP      0xd5
 #define HAIKU_MPROTECT   0xd6
 #define HAIKU_RENAME_THR 0x38
+#define HAIKU_FSYNC      0x77
+#define HAIKU_READ_LINK  0x7d
+#define HAIKU_SYMLINK    0x7e
+#define HAIKU_LINK       0x7f
+#define HAIKU_RENAME     0x81
+#define HAIKU_DUP        0x9f
+#define HAIKU_DUP2       0xa0
 
 #define BSTAT_MODE 0x0001
 #define BSTAT_UID  0x0002
 #define BSTAT_GID  0x0004
 #define BSTAT_SIZE 0x0008
+#define BSTAT_ATIME 0x0010
+#define BSTAT_MTIME 0x0020
+
+#define LINUX_UTIME_NOW  0x3fffffff
+#define LINUX_UTIME_OMIT 0x3ffffffe
+#define LINUX_AT_SYMLINK_FOLLOW 0x400
+#define HAIKU_O_CLOEXEC  0x40
+#define LINUX_O_CLOEXEC  0x80000
 
 #define LINUX_PR_SET_PDEATHSIG 1
 #define LINUX_PR_GET_DUMPABLE  3
@@ -182,6 +197,17 @@ typedef int32 (*haiku_write_stat_fn)(int32 fd, const void* path, int32 traverse,
 typedef int32 (*haiku_mprot_fn)(void* addr, uint64 size, uint32 prot);
 typedef int32 (*haiku_unmap_fn)(void* addr, uint64 size);
 typedef int32 (*haiku_rename_thr_fn)(int32 thread, const void* name);
+typedef int32 (*haiku_rename_fn)(int32 oldFd, const void* oldPath, int32 newFd,
+	const void* newPath);
+typedef int32 (*haiku_symlink_fn)(int32 fd, const void* path,
+	const void* toPath, int32 mode);
+typedef int32 (*haiku_link_fn)(int32 linkFd, const void* linkPath, int32 toFd,
+	const void* toPath, int32 traverse);
+typedef int32 (*haiku_readlink_fn)(int32 fd, const void* path, void* buf,
+	void* sizePtr);
+typedef int32 (*haiku_dup_fn)(int32 fd);
+typedef int32 (*haiku_dup2_fn)(int32 ofd, int32 nfd, int32 flags);
+typedef int32 (*haiku_fsync_fn)(int32 fd, int32 dataOnly);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -197,6 +223,13 @@ static uint64 sWriteStatFn;
 static uint64 sUnmapFn;
 static uint64 sMprotectFn;
 static uint64 sRenameThrFn;
+static uint64 sRenameFn;
+static uint64 sSymlinkFn;
+static uint64 sLinkFn;
+static uint64 sReadLinkFn;
+static uint64 sDupFn;
+static uint64 sDup2Fn;
+static uint64 sFsyncFn;
 static int32 sHaveUid;
 static int32 sHaveGid;
 static uint32 sUid;
@@ -262,6 +295,20 @@ extern "C" {
 	int64 sys_compat_getpid(void);
 	int64 sys_compat_wait4(int64 pid, int32* status, int64 options,
 		void* rusage, void* userInfo);
+	int64 sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
+		const void* newPath);
+	int64 sys_compat_symlink(int64 fd, const void* linkPath,
+		const void* target);
+	int64 sys_compat_link(int64 oldFd, const void* oldPath, int64 newFd,
+		const void* newPath, int64 flags);
+	int64 sys_compat_readlink(int64 fd, const void* path, void* buf,
+		uint64 bufsiz);
+	int64 sys_compat_dup(int64 fd);
+	int64 sys_compat_dup2(int64 ofd, int64 nfd, int64 flags);
+	int64 sys_compat_fsync(int64 fd, int64 dataOnly);
+	int64 sys_compat_clock_gettime(int64 clockid, void* tp);
+	int64 sys_compat_utimensat(int64 fd, const void* path, const void* times,
+		int64 flags);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -419,6 +466,20 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_MPROTECT].function;
 				sRenameThrFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_RENAME_THR].function;
+				sRenameFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_RENAME].function;
+				sSymlinkFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_SYMLINK].function;
+				sLinkFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_LINK].function;
+				sReadLinkFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_READ_LINK].function;
+				sDupFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_DUP].function;
+				sDup2Fn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_DUP2].function;
+				sFsyncFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_FSYNC].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -1079,6 +1140,253 @@ sys_compat_prctl(int64 option, int64 a2, int64 a3, int64 a4, int64 a5)
 	return 0;
 }
 
+extern "C" int64
+sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
+	const void* newPath)
+{
+	haiku_rename_fn fn;
+	int32 st;
+
+	if (oldPath == NULL || newPath == NULL)
+		return -LINUX_EFAULT;
+	if (sRenameFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_rename_fn)(addr_t)sRenameFn;
+	st = fn((int32)oldFd, oldPath, (int32)newFd, newPath);
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_symlink(int64 fd, const void* linkPath, const void* target)
+{
+	haiku_symlink_fn fn;
+	int32 st;
+
+	if (linkPath == NULL || target == NULL)
+		return -LINUX_EFAULT;
+	if (sSymlinkFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_symlink_fn)(addr_t)sSymlinkFn;
+	st = fn((int32)fd, linkPath, target, 0);
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_link(int64 oldFd, const void* oldPath, int64 newFd,
+	const void* newPath, int64 flags)
+{
+	haiku_link_fn fn;
+	int32 st;
+	int32 follow;
+
+	if (oldPath == NULL || newPath == NULL)
+		return -LINUX_EFAULT;
+	if (sLinkFn == 0)
+		return -LINUX_ENOSYS;
+	follow = ((flags & LINUX_AT_SYMLINK_FOLLOW) != 0) ? 1 : 0;
+	fn = (haiku_link_fn)(addr_t)sLinkFn;
+	st = fn((int32)newFd, newPath, (int32)oldFd, oldPath, follow);
+	if ((uint32)st == 0x8000600e)
+		return -LINUX_EPERM;
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_readlink(int64 fd, const void* path, void* buf, uint64 bufsiz)
+{
+	haiku_readlink_fn fn;
+	int32 st;
+	uint64 sz;
+	void* userSz;
+
+	if (path == NULL || buf == NULL)
+		return -LINUX_EFAULT;
+	if (bufsiz == 0)
+		return -LINUX_EINVAL;
+	if (sReadLinkFn == 0)
+		return -LINUX_ENOSYS;
+	sz = bufsiz;
+	userSz = (void*)(gSavedRsp - 16);
+	if (user_memcpy(userSz, &sz, sizeof(sz)) != B_OK)
+		return -LINUX_EFAULT;
+	fn = (haiku_readlink_fn)(addr_t)sReadLinkFn;
+	st = fn((int32)fd, path, buf, userSz);
+	if (st != 0)
+		return haiku_status_to_linux((int64)st);
+	if (user_memcpy(&sz, userSz, sizeof(sz)) != B_OK)
+		return -LINUX_EFAULT;
+	if (sz > bufsiz)
+		sz = bufsiz;
+	return (int64)sz;
+}
+
+extern "C" int64
+sys_compat_dup(int64 fd)
+{
+	haiku_dup_fn fn;
+	int32 st;
+
+	if (sDupFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_dup_fn)(addr_t)sDupFn;
+	st = fn((int32)fd);
+	if (st >= 0)
+		return st;
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_dup2(int64 ofd, int64 nfd, int64 flags)
+{
+	haiku_dup2_fn fn;
+	int32 st;
+	int32 hflags;
+
+	if (sDup2Fn == 0)
+		return -LINUX_ENOSYS;
+	hflags = 0;
+	if ((flags & LINUX_O_CLOEXEC) != 0)
+		hflags |= HAIKU_O_CLOEXEC;
+	if ((flags & ~(int64)LINUX_O_CLOEXEC) != 0)
+		return -LINUX_EINVAL;
+	fn = (haiku_dup2_fn)(addr_t)sDup2Fn;
+	st = fn((int32)ofd, (int32)nfd, hflags);
+	if (st >= 0)
+		return st;
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_fsync(int64 fd, int64 dataOnly)
+{
+	haiku_fsync_fn fn;
+	int32 st;
+
+	if (sFsyncFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_fsync_fn)(addr_t)sFsyncFn;
+	st = fn((int32)fd, dataOnly ? 1 : 0);
+	return haiku_status_to_linux((int64)st);
+}
+
+/* Do not call real_time_clock_usecs()/system_time() from this driver —
+ * those resolve to libroot stubs (syscall) and KDL when we re-enter LSTAR. */
+static uint64
+compat_approx_usecs(int realtime)
+{
+	uint32 lo, hi;
+	uint64 t;
+
+	__asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+	t = ((uint64)hi << 32) | lo;
+	t >>= 10;
+	if (realtime)
+		t += 1700000000ULL * 1000000ULL;
+	return t;
+}
+
+extern "C" int64
+sys_compat_clock_gettime(int64 clockid, void* tp)
+{
+	uint64 us;
+	uint64 sec;
+	uint64 nsec;
+	uint8 out[16];
+	int i;
+
+	if (tp == NULL)
+		return -LINUX_EFAULT;
+	/* Linux 0=REALTIME 1=MONOTONIC 4=MONOTONIC_RAW 5=REALTIME_COARSE
+	 * 6=MONOTONIC_COARSE 7=BOOTTIME. */
+	if (clockid == 0 || clockid == 5)
+		us = compat_approx_usecs(1);
+	else if (clockid == 1 || clockid == 4 || clockid == 6 || clockid == 7)
+		us = compat_approx_usecs(0);
+	else
+		return -LINUX_EINVAL;
+	sec = us / 1000000;
+	nsec = (us % 1000000) * 1000;
+	for (i = 0; i < 8; i++)
+		out[i] = (uint8)(sec >> (8 * i));
+	for (i = 0; i < 8; i++)
+		out[8 + i] = (uint8)(nsec >> (8 * i));
+	if (user_memcpy(tp, out, 16) != B_OK)
+		return -LINUX_EFAULT;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_utimensat(int64 fd, const void* path, const void* times, int64 flags)
+{
+	uint8 h[HAIKU_STAT_SIZE];
+	uint8 ts[32];
+	int i;
+	uint32 mask;
+	int32 traverse;
+	int32 st;
+	haiku_write_stat_fn fn;
+	void* userSt;
+	uint64 now;
+	uint64 asec, ansec, msec, mnsec;
+
+	if (sWriteStatFn == 0)
+		return -LINUX_ENOSYS;
+	if (path == NULL && fd < 0)
+		return -LINUX_EBADF;
+	for (i = 0; i < HAIKU_STAT_SIZE; i++)
+		h[i] = 0;
+	now = compat_approx_usecs(1);
+	asec = now / 1000000;
+	ansec = (now % 1000000) * 1000;
+	msec = asec;
+	mnsec = ansec;
+	mask = BSTAT_ATIME | BSTAT_MTIME;
+	if (times != NULL) {
+		if (user_memcpy(ts, times, 32) != B_OK)
+			return -LINUX_EFAULT;
+		asec = 0;
+		ansec = 0;
+		msec = 0;
+		mnsec = 0;
+		for (i = 0; i < 8; i++) {
+			asec |= (uint64)ts[i] << (8 * i);
+			ansec |= (uint64)ts[8 + i] << (8 * i);
+			msec |= (uint64)ts[16 + i] << (8 * i);
+			mnsec |= (uint64)ts[24 + i] << (8 * i);
+		}
+		if (ansec == LINUX_UTIME_OMIT)
+			mask &= ~BSTAT_ATIME;
+		else if (ansec == LINUX_UTIME_NOW) {
+			asec = now / 1000000;
+			ansec = (now % 1000000) * 1000;
+		}
+		if (mnsec == LINUX_UTIME_OMIT)
+			mask &= ~BSTAT_MTIME;
+		else if (mnsec == LINUX_UTIME_NOW) {
+			msec = now / 1000000;
+			mnsec = (now % 1000000) * 1000;
+		}
+	}
+	if (mask == 0)
+		return 0;
+	for (i = 0; i < 8; i++) {
+		h[48 + i] = (uint8)(asec >> (8 * i));
+		h[56 + i] = (uint8)(ansec >> (8 * i));
+		h[64 + i] = (uint8)(msec >> (8 * i));
+		h[72 + i] = (uint8)(mnsec >> (8 * i));
+	}
+	if ((flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
+		traverse = 0;
+	else
+		traverse = 1;
+	userSt = (void*)(gSavedRsp - 256);
+	if (user_memcpy(userSt, h, HAIKU_STAT_SIZE) != B_OK)
+		return -LINUX_EFAULT;
+	fn = (haiku_write_stat_fn)(addr_t)sWriteStatFn;
+	st = fn((int32)fd, path, traverse, userSt, HAIKU_STAT_SIZE, (int32)mask);
+	return haiku_status_to_linux((int64)st);
+}
+
 static void
 discover_uls_offset(void)
 {
@@ -1182,7 +1490,7 @@ fmt_u64(char* out, uint64 v)
 static status_t
 dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 {
-	char text[768];
+	char text[1024];
 	char h1[20], h2[20], hb[20], hc[20], hm[20], hh[20];
 	char n1[24], n2[24], n3[24], nseq[8];
 	size_t n, want, off;
@@ -1274,6 +1582,15 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		fmt_hex(hr, sRenameThrFn);
 		PUT("wstat="); PUT(hw); PUT(" unmap="); PUT(hu);
 		PUT(" mprot="); PUT(hp); PUT(" rnth="); PUT(hr); PUT("\n");
+	}
+	{
+		char hn[20], hs[20], hl[20], hd[20];
+		fmt_hex(hn, sRenameFn);
+		fmt_hex(hs, sSymlinkFn);
+		fmt_hex(hl, sReadLinkFn);
+		fmt_hex(hd, sDupFn);
+		PUT("ren="); PUT(hn); PUT(" sym="); PUT(hs);
+		PUT(" rlnk="); PUT(hl); PUT(" dup="); PUT(hd); PUT("\n");
 	}
 	{
 		char uid[20], gid[20], ctid[20];

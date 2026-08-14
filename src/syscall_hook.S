@@ -96,6 +96,15 @@
 	.extern	sys_compat_set_tid_address
 	.extern	sys_compat_set_robust_list
 	.extern	sys_compat_prctl
+	.extern	sys_compat_rename
+	.extern	sys_compat_symlink
+	.extern	sys_compat_link
+	.extern	sys_compat_readlink
+	.extern	sys_compat_dup
+	.extern	sys_compat_dup2
+	.extern	sys_compat_fsync
+	.extern	sys_compat_clock_gettime
+	.extern	sys_compat_utimensat
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -118,33 +127,8 @@ sys_compat_lstar:
 	inc	r8
 	cmp	r8, 8
 	jb	.Lcr3scan
-	cmp	qword ptr [rip + gLinuxN], 0
-	je	.Lhaiku_slow
-	/* Unmarked CR3 while a Linux team exists: maybe a fork child. */
-	push	rcx
-	push	r11
-	push	rdi
-	push	rsi
-	push	rdx
-	push	r10
-	mov	rdi, rax
-	swapgs
-	mov	[rip + gSavedRsp], rsp
-	lea	rsp, [rip + gKstackEnd]
-	and	rsp, -16
-	sti
-	call	sys_compat_adopt
-	cli
-	mov	rsp, [rip + gSavedRsp]
-	swapgs
-	pop	r10
-	pop	rdx
-	pop	rsi
-	pop	rdi
-	pop	r11
-	pop	rcx
-	test	rax, rax
-	jnz	.Llinux
+	/* Unmarked CR3: stay Haiku. Do not adopt (get_team_info on the
+	 * miss path KDLs; a live Linux mark must not tag Terminal). */
 .Lhaiku_slow:
 	pop	r9
 	pop	r8
@@ -242,14 +226,34 @@ sys_compat_lstar:
 	je	.Lopen
 	cmp	rax, 3			/* Linux close */
 	je	.Lclose
+	cmp	rax, 4			/* Linux stat */
+	je	.Lstat
 	cmp	rax, 5			/* Linux fstat */
 	je	.Lfstat
+	cmp	rax, 6			/* Linux lstat */
+	je	.Llstat
 	cmp	rax, 8			/* Linux lseek */
 	je	.Llseek
 	cmp	rax, 16			/* Linux ioctl */
 	je	.Lenotty
 	cmp	rax, 21			/* Linux access */
 	je	.Laccess
+	cmp	rax, 32			/* Linux dup */
+	je	.Ldup
+	cmp	rax, 33			/* Linux dup2 */
+	je	.Ldup2
+	cmp	rax, 74			/* Linux fsync */
+	je	.Lfsync
+	cmp	rax, 75			/* Linux fdatasync */
+	je	.Lfdatasync
+	cmp	rax, 82			/* Linux rename */
+	je	.Lrename
+	cmp	rax, 86			/* Linux link */
+	je	.Llink
+	cmp	rax, 88			/* Linux symlink */
+	je	.Lsymlink
+	cmp	rax, 89			/* Linux readlink */
+	je	.Lreadlink
 	cmp	rax, 79			/* Linux getcwd */
 	je	.Lgetcwd
 	cmp	rax, 80			/* Linux chdir */
@@ -284,12 +288,24 @@ sys_compat_lstar:
 	je	.Lclock_gettime
 	cmp	rax, 260		/* fchownat */
 	je	.Lfchownat
+	cmp	rax, 264		/* renameat */
+	je	.Lrenameat
+	cmp	rax, 265		/* linkat */
+	je	.Llinkat
+	cmp	rax, 266		/* symlinkat */
+	je	.Lsymlinkat
 	cmp	rax, 268		/* fchmodat */
 	je	.Lfchmodat
 	cmp	rax, 258		/* Linux mkdirat */
 	je	.Lmkdirat
 	cmp	rax, 263		/* Linux unlinkat */
 	je	.Lunlinkat
+	cmp	rax, 280		/* utimensat */
+	je	.Lutimensat
+	cmp	rax, 292		/* dup3 */
+	je	.Ldup3
+	cmp	rax, 316		/* renameat2 */
+	je	.Lrenameat2
 	cmp	rax, 9			/* Linux mmap */
 	je	.Lmmap
 	cmp	rax, 10			/* Linux mprotect */
@@ -876,6 +892,189 @@ sys_compat_lstar:
 	mov	rcx, r10
 	CALL_C	sys_compat_prctl
 
+.Lrename:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	mov	rdx, -100
+	CALL_C	sys_compat_rename
+.Lrenameat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, r10
+	CALL_C	sys_compat_rename
+.Lrenameat2:
+	test	r8, r8
+	jnz	.Leinval
+	jmp	.Lrenameat
+.Lsymlink:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	/* Linux symlink(target, linkpath) → C(AT_FDCWD, linkpath, target) */
+	mov	rdx, rdi
+	mov	rdi, -100
+	CALL_C	sys_compat_symlink
+.Lsymlinkat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	/* Linux symlinkat(target, dirfd, linkpath) → C(dirfd, linkpath, target) */
+	mov	rax, rdi
+	mov	rdi, rsi
+	mov	rsi, rdx
+	mov	rdx, rax
+	CALL_C	sys_compat_symlink
+.Llink:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	mov	rdx, -100
+	xor	r8, r8
+	CALL_C	sys_compat_link
+.Llinkat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, r10
+	CALL_C	sys_compat_link
+.Lreadlink:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, rdx
+	mov	rdx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	CALL_C	sys_compat_readlink
+.Lreadlinkat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, r10
+	CALL_C	sys_compat_readlink
+.Ldup:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_dup
+.Ldup2:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	xor	rdx, rdx
+	CALL_C	sys_compat_dup2
+.Ldup3:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_dup2
+.Lfsync:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	xor	rsi, rsi
+	CALL_C	sys_compat_fsync
+.Lfdatasync:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rsi, 1
+	CALL_C	sys_compat_fsync
+.Lclock_gettime:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_clock_gettime
+.Lutimensat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, r10
+	CALL_C	sys_compat_utimensat
+
 .Lget0:
 	xor	rax, rax
 	jmp	.Lret
@@ -887,6 +1086,35 @@ sys_compat_lstar:
 	mov	rax, -25		/* -ENOTTY */
 	jmp	.Lret
 
+.Lstat:
+	/* Linux: rdi=path rsi=statbuf → C(AT_FDCWD, path, statbuf, 0) */
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rdx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	xor	r10, r10
+	jmp	.Lstat_go
+.Llstat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rdx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	mov	r10, 0x100
+	jmp	.Lstat_go
 .Lfstat:
 	/* Linux: rdi=fd rsi=statbuf → C(fd, NULL, statbuf, 0) */
 	push	rcx
@@ -1155,20 +1383,6 @@ sys_compat_lstar:
 	xor	rax, rax
 	jmp	.Lret
 
-.Lclock_gettime:
-	/* rdi=clockid rsi=timespec*. Fake a monotonic clock. No STAC. */
-	test	rsi, rsi
-	jz	.Lefault
-	rdtsc
-	swapgs
-	mov	qword ptr [rsi], 1700000000
-	mov	dword ptr [rsi + 8], eax
-	and	dword ptr [rsi + 8], 0x3fffffff
-	mov	dword ptr [rsi + 12], 0
-	swapgs
-	xor	rax, rax
-	jmp	.Lret
-
 .Lgetdents:
 	/* rdi=fd rsi=buf rdx=count. Call C on a private stack. IF is clear. */
 	push	rcx
@@ -1264,35 +1478,6 @@ sys_compat_lstar:
 	cmp	rax, 8
 	jbe	.Lret
 	mov	rax, 8
-	jmp	.Lret
-
-.Lreadlinkat:
-	/* Fake /proc/self/exe → "/boot/home/busybox". rdx=buf r10=bufsiz. */
-	test	rdx, rdx
-	jz	.Lnomem
-	cmp	r10, 18
-	jb	.Lnomem
-	swapgs
-	mov	byte ptr [rdx + 0], '/'
-	mov	byte ptr [rdx + 1], 'b'
-	mov	byte ptr [rdx + 2], 'o'
-	mov	byte ptr [rdx + 3], 'o'
-	mov	byte ptr [rdx + 4], 't'
-	mov	byte ptr [rdx + 5], '/'
-	mov	byte ptr [rdx + 6], 'h'
-	mov	byte ptr [rdx + 7], 'o'
-	mov	byte ptr [rdx + 8], 'm'
-	mov	byte ptr [rdx + 9], 'e'
-	mov	byte ptr [rdx + 10], '/'
-	mov	byte ptr [rdx + 11], 'b'
-	mov	byte ptr [rdx + 12], 'u'
-	mov	byte ptr [rdx + 13], 's'
-	mov	byte ptr [rdx + 14], 'y'
-	mov	byte ptr [rdx + 15], 'b'
-	mov	byte ptr [rdx + 16], 'o'
-	mov	byte ptr [rdx + 17], 'x'
-	swapgs
-	mov	rax, 18
 	jmp	.Lret
 
 .Lbrk:
