@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (Day 12: busybox grep/sed/wc/head/sort/cut)  
+**Last updated:** 2026-08-14 (Day 13: fork diagnosis — `_kern_fork` reboots)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -76,7 +76,8 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `time`/`gettimeofday`/`clock_gettime` (real RTC) | **Works** | `_kern_get_clock` **0xc0** (not libroot `real_time_clock_usecs` — that KDLs). `hello_date` **DATEOK 1786731467**. busybox `date` / `date -u` printed **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** | `_kern_fcntl` **0x76** (guest dump). Linux F_* / O_APPEND / O_NONBLOCK translated. `statx` from `_kern_read_stat` (256 B, size@40 mode@28). `hello_fcntl` **FCNTOK**. `hello_min` + `hello_date` still green. |
 | busybox text CLI (no spawn) | **Works** | Unmodified `grep` `wc` `sed` `head` `sort` `cut` all RC=0 on `/tmp/cli.txt`. `results/ltp/cli_out.txt`. |
-| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `execve`, `futex`, `poll`, signals. ioctl after that. |
+| Linux `clone` / `_kern_fork` | **Reboots** | From a marked Linux team, `jmp` `_kern_fork` 0x2f resets the guest (no new serial KDL). Probe `hello_fork_probe`: child spins with **no syscall**, parent never printed `PRE`. Crash is `fork_team` or the child's first `sysret` (copied iframe), not `wait4`. Landmine: Linux `exit` is 60 = Haiku `_kern_cancel_thread`. |
+| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: working `fork`/`wait`/`execve`, `futex`, `poll`, signals. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -134,9 +135,10 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **Linux `clone` (fork-style) + `wait4` + `execve`** — shells, make, pipelines.
-   `_kern_fork` from a marked Linux team currently **reboots** the guest.
-   Do not enable adopt-on-CR3-miss. Single-process CLI does not need this.
+1. **Make `_kern_fork` return without resetting the machine.** Then stamp the
+   child's CR3 so Linux `exit` (60) never becomes Haiku `_kern_cancel_thread`.
+   Then `wait4`, then `execve`. Adopt-on-every-miss stays off. `CLONE_VM` /
+   futex is pthread — later.
 2. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
 3. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
@@ -188,6 +190,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_date.s` | `time` + `gettimeofday` + `clock_gettime` (unix sec) |
 | `tests/hello_fcntl.s` | `fcntl` GET/SET FL/FD + DUPFD + `statx` + `fadvise64` |
 | `scripts/guest_run_cli.sh` | busybox grep/sed/wc/head/sort/cut |
+| `tests/hello_fork_probe.s` | clone then parent `PRE` + both spin; reboot ⇒ fork_team/iframe |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

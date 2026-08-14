@@ -108,10 +108,10 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | wired, **unproven** (fork-style only) |
-| 61 | wait4 | wired, **unproven** |
+| 56/57/58 | clone/fork/vfork | **reboots** (`_kern_fork` 0x2f from a marked team). Probe: no child syscall, parent never `PRE`. |
+| 61 | wait4 | wired, unproven (blocked on fork) |
 | 59 | execve | **missing** |
-| 202 | futex | **missing** (pthread) |
+| 202 | futex | **missing** (pthread — not the grep blocker) |
 
 ### Pipes / poll (pipelines, more applets)
 
@@ -144,9 +144,10 @@ ENOSYS**: ~90 (including stubs).
 **single process** (no shell spawn): echo, uname, cat, ls, cp, mv,
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
-`clone`/`fork` from a marked Linux team **reboots** the guest. Spawn
-and pipelines stay the next layer, not this one. Rare/deprecated
-syscalls wait for a real user report.
+`clone`/`fork` from a marked Linux team **reboots** the guest (see Day 13).
+Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
+Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
+child's exit through. Rare/deprecated syscalls wait for a filed issue.
 
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
