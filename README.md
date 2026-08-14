@@ -37,9 +37,11 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Haiku `TYPE=DRIVER` (`_KERNEL_` / `@KERNEL_BASE`) | Works — `/dev/misc/sys_compat` loads |
 | LSTAR identity passthrough for Haiku threads | Works — guest boots with the hook live |
 | `sys_compat_run` 4K `PT_LOAD` map | Works on guest |
-| Linux `write` / `exit` remap in `syscall_hook.S` | Coded (`_kern_write=0x97`, `_kern_exit_team=0x29`) — **not proven on Haiku yet** |
+| Linux `write` / `exit` remap | **Works** on Haiku — unmodified `hello_min` printed, `DONE_RC=0` |
+| Mark handshake | Raw syscall `0x1337` (not ioctl, not libc `write`) |
+| Linux `read` / `close` remap | **Works** — `hello_rwc` echoed stdin, `hits=4` |
 | Linux `ioctl` | Deferred on purpose |
-| LTP subset | Built on the Linux host; do not run on Haiku until `hello_min` prints |
+| LTP subset | Built on the Linux host; run after busybox applets work |
 
 Older C files under `src/sys_*.cpp` are a prior table of handlers. The live trap is `src/syscall_hook.S` + `src/sys_compat_dev.cpp`.
 

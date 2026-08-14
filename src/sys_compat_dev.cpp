@@ -1,8 +1,9 @@
 /*
  * /dev/misc/sys_compat
  *
- * Fundamentals only: mark a team as Linux ABI via write(LINUXABI),
- * trap its syscall instructions, implement a tiny Linux syscall set.
+ * Fundamentals only: mark a team as Linux ABI via syscall 0x1337
+ * (or write(LINUXABI)), trap its syscall instructions, implement a
+ * tiny Linux syscall set.
  * Everything else returns -ENOSYS. No Linux ioctl. A bad Linux call
  * must not panic Haiku.
  *
@@ -40,6 +41,9 @@ extern "C" {
 	void sys_compat_lstar(void);
 	extern uint64 gOrigLstar;
 	extern uint64 gLinuxCR3;
+	extern uint64 gMarkCount;
+	extern uint64 gLinuxHits;
+	extern uint64 gLastLinuxRax;
 	int64 sys_compat_dispatch_fast(uint64* saved);
 }
 
@@ -155,7 +159,7 @@ dev_close(void* /*cookie*/)
 static status_t
 dev_free(void* /*cookie*/)
 {
-	uint64 cr3 = read_cr3();
+	uint64 cr3 = read_cr3() & ~(uint64)0xfff;
 	if (gLinuxCR3 != 0 && gLinuxCR3 == cr3) {
 		gLinuxCR3 = 0;
 		dprintf("[sys_compat] LEAVE cr3=%#" B_PRIx64 "\n", cr3);
@@ -170,10 +174,80 @@ dev_control(void* /*cookie*/, uint32 /*op*/, void* /*arg*/, size_t /*len*/)
 	return B_BAD_VALUE;
 }
 
-static status_t
-dev_read(void* /*cookie*/, off_t /*pos*/, void* /*buf*/, size_t* len)
+static void
+fmt_hex(char* out, uint64 v)
 {
-	*len = 0;
+	static const char hex[] = "0123456789abcdef";
+	out[0] = '0';
+	out[1] = 'x';
+	for (int i = 0; i < 16; i++)
+		out[2 + i] = hex[(v >> ((15 - i) * 4)) & 0xf];
+	out[18] = '\0';
+}
+
+static void
+fmt_u64(char* out, uint64 v)
+{
+	char tmp[20];
+	int n = 0;
+	if (v == 0) {
+		out[0] = '0';
+		out[1] = '\0';
+		return;
+	}
+	while (v > 0 && n < 20) {
+		tmp[n++] = (char)('0' + (v % 10));
+		v /= 10;
+	}
+	for (int i = 0; i < n; i++)
+		out[i] = tmp[n - 1 - i];
+	out[n] = '\0';
+}
+
+static status_t
+dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
+{
+	char text[256];
+	char h1[20], h2[20], n1[24], n2[24], n3[24];
+	size_t n, want, off;
+	int i;
+
+	if (buf == NULL || len == NULL)
+		return B_BAD_VALUE;
+	if (pos < 0) {
+		*len = 0;
+		return B_BAD_VALUE;
+	}
+
+	fmt_hex(h1, gLinuxCR3);
+	fmt_hex(h2, gOrigLstar);
+	fmt_u64(n1, gMarkCount);
+	fmt_u64(n2, gLinuxHits);
+	fmt_u64(n3, gLastLinuxRax);
+
+	/* Keep this ASCII so `cat /dev/misc/sys_compat` works from another team. */
+	i = 0;
+#define PUT(s) do { const char* _p = (s); while (*_p && i < (int)sizeof(text) - 1) text[i++] = *_p++; } while (0)
+	PUT("cr3="); PUT(h1); PUT("\n");
+	PUT("orig="); PUT(h2); PUT("\n");
+	PUT("mark="); PUT(n1); PUT("\n");
+	PUT("hits="); PUT(n2); PUT("\n");
+	PUT("last="); PUT(n3); PUT("\n");
+#undef PUT
+	text[i] = '\0';
+	n = (size_t)i;
+
+	off = (size_t)pos;
+	if (off >= n) {
+		*len = 0;
+		return B_OK;
+	}
+	want = n - off;
+	if (want > *len)
+		want = *len;
+	if (user_memcpy(buf, text + off, want) != B_OK)
+		return B_BAD_ADDRESS;
+	*len = want;
 	return B_OK;
 }
 
@@ -189,7 +263,8 @@ dev_write(void* /*cookie*/, off_t /*pos*/, const void* buf, size_t* len)
 	if (sc_memcmp(token, SYS_COMPAT_TOKEN, SYS_COMPAT_TOKEN_LEN) != 0)
 		return B_BAD_VALUE;
 
-	gLinuxCR3 = read_cr3();
+	gLinuxCR3 = read_cr3() & ~(uint64)0xfff;
+	gMarkCount++;
 	*len = SYS_COMPAT_TOKEN_LEN;
 	dprintf("[sys_compat] ENTER via write token, cr3=%#" B_PRIx64 "\n", gLinuxCR3);
 	return B_OK;

@@ -22,22 +22,26 @@ Linux ELF (pristine on disk)
         |
         v
 sys_compat_run  (Haiku-native loader)
-  mmap PT_LOAD @ 4K pages, SysV stack, write("LINUXABI") to /dev/misc/sys_compat
+  mmap PT_LOAD @ 4K pages, SysV stack, raw syscall 0x1337, jmp entry
         |
         v
 CPU SYSCALL  -->  sys_compat_lstar  (LSTAR hook in kernel driver)
                     |
-                    +-- CR3 != marked  -->  jmp original Haiku LSTAR  (identity)
+                    +-- rax == 0x1337     -->  store CR3 (PCID cleared), sysret 0
                     |
-                    +-- CR3 == marked  -->  remap Linux rax/args to Haiku _kern_*
-                                           then jmp original LSTAR
+                    +-- CR3 != marked      -->  jmp original Haiku LSTAR  (identity)
                     |
-                    +-- unknown Linux # -->  sysret -ENOSYS  (no panic)
+                    +-- CR3 == marked      -->  remap Linux rax/args to Haiku _kern_*
+                                               then jmp original LSTAR
+                    |
+                    +-- unknown Linux #    -->  sysret -ENOSYS  (no panic)
 ```
 
-Handshake is **`write(/dev/misc/sys_compat, "LINUXABI")`**, not ioctl. Device `ioctl` returns `B_BAD_VALUE`.
+Handshake is **raw syscall `0x1337`**, not ioctl. `write(/dev/misc/sys_compat, "LINUXABI")` still marks, but libc `write()` can issue more Haiku syscalls after the kernel stores CR3 — that killed `hello_min`. Device `ioctl` returns `B_BAD_VALUE`. `cat /dev/misc/sys_compat` prints mark/hit counters (safe from a Haiku shell).
 
 Marking CR3 must be the **last Haiku syscall** before `jmp` into the Linux image. After that, every `syscall` from that address space is treated as Linux. Doing `printf`/`echo` after the mark kills the Haiku team (that is expected, not a Haiku kernel bug).
+
+If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_syscall` → Kill Thread. That is why a failed mark looks like a crash with no hello text.
 
 ---
 
@@ -50,7 +54,9 @@ Marking CR3 must be the **last Haiku syscall** before `jmp` into the Linux image
 | Identity LSTAR passthrough (Haiku syscalls) | **Works** | Guest boots to desktop with hook installed |
 | Loader 4K PT_LOAD map (no 64K clobber) | **Works** | Guest print: `Mapped PT_LOAD range 0x400000-0x403000` + 3 segments |
 | `hello_min` host-side (Linux) | **Works** | Prints hello, rc=0 |
-| Linux `write`/`exit` on Haiku via remap | **Not proven** | After `open(sys_compat)=3` the team is still `Kill Thread` |
+| Linux `write`/`exit` on Haiku via remap | **Works** | `hello_min` printed the hello line, `DONE_RC=0`, `mark=1 hits=2 last=60` (`results/ltp/hello_out.txt`) |
+| Mark via raw syscall `0x1337` (no libc after) | **Works** | libc `write(LINUXABI)` was the Kill Thread; combined `syscall; jmp` is the handshake |
+| Linux `read`/`close` remap | **Works** | `hello_rwc` echoed `RWC_PAYLOAD`, `DONE_RC=0`, `hits=4 last=60` (`results/ltp/rwc_out.txt`) |
 | Linux `ioctl` | **Deferred** | Do not implement this layer yet |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -77,15 +83,9 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Prove `hello_min` on Haiku**  
-   Rebuild driver from current `syscall_hook.S` (remap, no C on hot path), reboot, run:
-   ```
-   /boot/home/sys_compat_run /boot/home/hello_min
-   ```
-   Expect the hello line on the Terminal, then a clean team exit.
-
-2. **Add remap entries one at a time** (commit + push every 4–5):  
-   `read`, `close`, `lseek`, `open`/`openat`, `brk`, `mmap`/`munmap`, `exit` already listed.
+1. **Next remaps** (commit + push every 4–5):  
+   `lseek` (`_kern_seek=0x79`), then `open`/`openat` (flag translation), then `brk` / `mmap`/`munmap`.
+2. **busybox static** `echo` / `uname` / `cat` after `open`+`brk` exist.
 
 3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
 

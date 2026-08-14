@@ -183,27 +183,32 @@ int main(int argc, char** argv)
 
     int compat_fd = open(SYS_COMPAT_DEVICE, O_RDWR);
     printf("[+] open(%s) -> %d\n", SYS_COMPAT_DEVICE, compat_fd);
-    if (compat_fd < 0)
-        perror("[-] sys_compat device");
+    if (compat_fd < 0) {
+        perror("[-] sys_compat device (is the driver loaded?)");
+        return 1;
+    }
+    printf("[+] mark via raw syscall 0x%x then jmp 0x%lx (no libc after mark)\n",
+           SYS_COMPAT_MARK_NR, (unsigned long)ehdr.e_entry);
     fflush(stdout);
 
     /*
-     * Mark this CR3 as Linux ABI. After this write() returns, the next
-     * syscall instruction is treated as Linux — so we must not call
-     * printf/fflush/close (those are Haiku syscalls) before the jump.
+     * Mark + jump in one asm block. After 0x1337 the next syscall from
+     * this CR3 is Linux, so we must not return through libc.
+     * Keep compat_fd open so close/free can LEAVE when the team dies.
      */
-    if (compat_fd >= 0)
-        write(compat_fd, SYS_COMPAT_TOKEN, SYS_COMPAT_TOKEN_LEN);
-
-    // Assembly jump: set RSP to sp and jump to e_entry
-    uint64_t entry_addr = ehdr.e_entry;
-    __asm__ __volatile__ (
-        "mov %0, %%rsp\n\t"
-        "jmp *%1\n\t"
-        :
-        : "r"(sp), "r"(entry_addr)
-        : "memory"
-    );
+    {
+        uint64_t entry_addr = ehdr.e_entry;
+        uint64_t mark_nr = SYS_COMPAT_MARK_NR;
+        __asm__ __volatile__(
+            "mov %2, %%rax\n\t"
+            "syscall\n\t"
+            "mov %0, %%rsp\n\t"
+            "jmp *%1\n\t"
+            :
+            : "r"(sp), "r"(entry_addr), "r"(mark_nr)
+            : "rax", "rcx", "r11", "memory"
+        );
+    }
 
     return 0;
 }
