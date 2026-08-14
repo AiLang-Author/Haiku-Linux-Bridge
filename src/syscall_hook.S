@@ -4,8 +4,9 @@
  * Haiku path: push/pop rax, jmp original LSTAR. No swapgs.
  * Linux-marked CR3: rewrite rax (and args if needed) to the equivalent
  * Haiku syscall and jmp original LSTAR. Unknown numbers sysret -ENOSYS.
- * Never call C from here. Never switch stacks. A bad Linux number
- * must not panic the kernel.
+ * Linux rseq (334) is implemented here (register + cpu_id=0), not
+ * in the Haiku kernel. Never call C from here. Never switch stacks.
+ * A bad Linux number must not panic the kernel.
  *
  * Mark (syscall 0x1337) is handled BEFORE the CR3 check so a Haiku
  * team can opt in. It stores CR3 with PCID bits cleared and sysrets 0.
@@ -41,6 +42,9 @@
 	.globl	gLastNidx
 	.globl	gUlsOff
 	.globl	gLinuxFS
+	.globl	gRseqPtr
+	.globl	gRseqLen
+	.globl	gRseqSig
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gMarkCount
@@ -54,6 +58,9 @@
 	.hidden	gLastNidx
 	.hidden	gUlsOff
 	.hidden	gLinuxFS
+	.hidden	gRseqPtr
+	.hidden	gRseqLen
+	.hidden	gRseqSig
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -97,6 +104,9 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gArenaHi], 0
 .Lmark_ok:
 	mov	qword ptr [rip + gLinuxFS], 0
+	mov	qword ptr [rip + gRseqPtr], 0
+	mov	qword ptr [rip + gRseqLen], 0
+	mov	qword ptr [rip + gRseqSig], 0
 	xor	rax, rax
 	sysretq
 
@@ -166,9 +176,8 @@ sys_compat_lstar:
 	je	.Lprlimit
 	cmp	rax, 318		/* getrandom */
 	je	.Lgetrandom
-	cmp	rax, 334		/* rseq: -ENOSYS so glibc does not
-					 * pretend registration succeeded. */
-	je	.Lenosys
+	cmp	rax, 334		/* Linux rseq — register in this layer */
+	je	.Lrseq
 	cmp	rax, 60			/* Linux exit */
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
@@ -176,7 +185,7 @@ sys_compat_lstar:
 
 	/* Reject, do not panic. SYSCALL already left RIP in RCX, RFLAGS in R11. */
 	mov	rax, -38		/* -ENOSYS */
-	sysretq
+	jmp	.Lret
 
 .Lread:
 	/* Linux: rdi=fd rsi=buf rdx=count
@@ -274,25 +283,28 @@ sys_compat_lstar:
 	/* Linux: rdi=code  Haiku _kern_exit_team: rdi=status */
 	mov	qword ptr [rip + gLinuxCR3], 0
 	mov	qword ptr [rip + gLinuxFS], 0
+	mov	qword ptr [rip + gRseqPtr], 0
+	mov	qword ptr [rip + gRseqLen], 0
+	mov	qword ptr [rip + gRseqSig], 0
 	mov	rax, 0x29
 	jmp	[rip + gOrigLstar]
 
 .Lok0:
 	xor	rax, rax
-	sysretq
+	jmp	.Lret
 
 .Lget1:
 	/* getpid/gettid/set_tid_address: return a fake tid of 1. */
 	mov	rax, 1
-	sysretq
+	jmp	.Lret
 
 .Lget0:
 	xor	rax, rax
-	sysretq
+	jmp	.Lret
 
 .Lenoent:
 	mov	rax, -2			/* -ENOENT */
-	sysretq
+	jmp	.Lret
 
 .Lprlimit:
 	/* rdi=pid rsi=resource rdx=new r10=old. Fill old with 8MB/∞. */
@@ -303,7 +315,7 @@ sys_compat_lstar:
 	mov	qword ptr [r10 + 8], -1
 	clac
 	xor	rax, rax
-	sysretq
+	jmp	.Lret
 
 .Lgetrandom:
 	/* rdi=buf rsi=len — write up to 8 bytes from rdtsc, return len. */
@@ -352,7 +364,7 @@ sys_compat_lstar:
 	mov	byte ptr [rdx + 17], 'x'
 	clac
 	mov	rax, 18
-	sysretq
+	jmp	.Lret
 
 .Lbrk:
 	/* Linux brk(rdi): return new break, or current on failure/query. */
@@ -434,9 +446,105 @@ sys_compat_lstar:
 .Lnomem:
 	mov	rax, -12		/* -ENOMEM */
 	jmp	.Lret
+.Leinval:
+	mov	rax, -22		/* -EINVAL */
+	jmp	.Lret
+.Leperm:
+	mov	rax, -1			/* -EPERM */
+	jmp	.Lret
+.Lebusy:
+	mov	rax, -16		/* -EBUSY */
+	jmp	.Lret
+.Lefault:
+	mov	rax, -14		/* -EFAULT */
+	jmp	.Lret
 .Lenosys:
 	mov	rax, -38		/* -ENOSYS */
+	jmp	.Lret
+
+	/*
+	 * Linux sys_rseq(rseq, rseq_len, flags, sig)
+	 *   rdi=struct rseq*  rsi=len  rdx=flags  r10=sig
+	 * Spec: linux/kernel/rseq.c (ORIG_RSEQ_SIZE=32).
+	 * This layer owns the Linux ABI. Haiku's scheduler is not rseq.
+	 * cpu_id / cpu_id_start are pinned to 0 (one logical CPU).
+	 * Preempt-abort (RIP -> abort_ip) is not hooked yet.
+	 */
+.Lrseq:
+	test	rdi, rdi
+	jz	.Lefault
+	test	rdx, 1			/* RSEQ_FLAG_UNREGISTER */
+	jnz	.Lrseq_unreg
+	test	rdx, rdx		/* no other flags (no slice ext) */
+	jnz	.Leinval
+	cmp	rsi, 32			/* ORIG_RSEQ_SIZE */
+	jb	.Leinval
+	test	rdi, 31			/* 32-byte align */
+	jnz	.Leinval
+	mov	rax, [rip + gRseqPtr]
+	test	rax, rax
+	jz	.Lrseq_new
+	cmp	rax, rdi
+	jne	.Leinval
+	cmp	rsi, [rip + gRseqLen]
+	jne	.Leinval
+	cmp	r10d, dword ptr [rip + gRseqSig]
+	jne	.Leperm
+	jmp	.Lebusy
+.Lrseq_new:
+	stac
+	mov	qword ptr [rdi + 8], 0	/* rseq_cs = NULL */
+	mov	dword ptr [rdi + 16], 0	/* flags */
+	mov	dword ptr [rdi], 0	/* cpu_id_start = 0 */
+	mov	dword ptr [rdi + 4], 0	/* cpu_id = 0 */
+	cmp	rsi, 28
+	jb	1f
+	mov	dword ptr [rdi + 20], 0	/* node_id */
+	mov	dword ptr [rdi + 24], 0	/* mm_cid */
+1:
+	clac
+	mov	[rip + gRseqPtr], rdi
+	mov	[rip + gRseqLen], rsi
+	mov	[rip + gRseqSig], r10
+	xor	rax, rax
+	jmp	.Lret
+.Lrseq_unreg:
+	cmp	rdx, 1			/* only RSEQ_FLAG_UNREGISTER */
+	jne	.Leinval
+	cmp	rdi, [rip + gRseqPtr]
+	jne	.Leinval
+	cmp	qword ptr [rip + gRseqPtr], 0
+	je	.Leinval
+	cmp	rsi, [rip + gRseqLen]
+	jne	.Leinval
+	cmp	r10d, dword ptr [rip + gRseqSig]
+	jne	.Leperm
+	stac
+	mov	dword ptr [rdi], 0		/* cpu_id_start = 0 */
+	mov	dword ptr [rdi + 4], -1		/* UNINITIALIZED */
+	clac
+	mov	qword ptr [rip + gRseqPtr], 0
+	mov	qword ptr [rip + gRseqLen], 0
+	mov	qword ptr [rip + gRseqSig], 0
+	xor	rax, rax
+	jmp	.Lret
+
 .Lret:
+	/* Keep registered cpu_id fields at 0 on every stub sysret.
+	 * Preserve rax (return) and all userspace regs except rcx/r11.
+	 */
+	cmp	qword ptr [rip + gRseqPtr], 0
+	je	.Lsysret
+	push	rax
+	push	rdi
+	mov	rdi, [rip + gRseqPtr]
+	stac
+	mov	dword ptr [rdi], 0
+	mov	dword ptr [rdi + 4], 0
+	clac
+	pop	rdi
+	pop	rax
+.Lsysret:
 	sysretq
 
 	.bss
@@ -466,4 +574,10 @@ gLastN:
 gUlsOff:
 	.quad	0
 gLinuxFS:
+	.quad	0
+gRseqPtr:
+	.quad	0
+gRseqLen:
+	.quad	0
+gRseqSig:
 	.quad	0

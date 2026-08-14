@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-13  
+**Last updated:** 2026-08-14  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -61,6 +61,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `brk` / ANON `mmap` / `munmap` | **Works** | `hello_mmap` printed `MMAPOK`/`BRKOK`, `seq=9,1,11,12,1,60`, arena carved 4K (`results/ltp/mem_out.txt`) |
 | Loader 32 MB arena via `0x1337` (rdi,rsi) | **Works** | Device `brk=`/`hi=` span 32 MB after mark; `hello_min` still `HELLO_RC=0` |
 | Linux `arch_prctl(ARCH_SET_FS)` | **Works** | Writes `thread->user_local_storage` (offset `0x2b0` on this image) + `FS_BASE`. `hello_fs` printed `FSOK` (`results/ltp/fs_out.txt`) |
+| Linux `rseq` (334) | **In hook** | Register/unregister from `linux/kernel/rseq.c`. Writes `cpu_id=0`. Not a Haiku kernel PR. Guest proof is `hello_rseq` / `RSEQOK`. |
 | Linux `ioctl` | **Deferred** | Do not implement this layer yet |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -88,8 +89,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **busybox still dies on `rseq` (334).** Loader auxv was only `AT_PAGESZ`; glibc wants `AT_RANDOM`/`AT_PHDR`/…. That is now in `sys_compat_run.c`. Per-syscall `swapgs`+`wrmsr` FS restore was tried and pulled — too hot for the desktop. SET_FS still writes ULS+FS once via `.Lapply_fs`.
-2. **busybox static** `echo` once it gets past rseq. Then `uname`/`cat`.
+1. **Prove `hello_rseq` (`RSEQOK`) on the guest**, then re-run busybox `echo`. glibc-static used to die at `last=334`; the hook now implements register (not `-ENOSYS`).
+2. **busybox static** `echo` once `seq=` moves past 334 to `prlimit64` (302). Then `uname`/`cat`.
 3. **LTP smoke** from `tests/ltp_sys_compat.run` only after busybox applets work.
 4. **ioctl / TTY / sockets extras** — only after the CLI set is real.
 
@@ -133,5 +134,6 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `src/sys_compat_run.c` | Haiku loader |
 | `src/Makefile.driver` | official Haiku DRIVER makefile |
 | `tests/hello_linux.s` | `hello_min` source (write+exit only) |
+| `tests/hello_rseq.s` | Linux `rseq` register / EBUSY / unregister |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

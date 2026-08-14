@@ -52,6 +52,9 @@ extern "C" {
 	extern uint64 gLastNidx;
 	extern uint64 gUlsOff;
 	extern uint64 gLinuxFS;
+	extern uint64 gRseqPtr;
+	extern uint64 gRseqLen;
+	extern uint64 gRseqSig;
 	int64 sys_compat_dispatch_fast(uint64* saved);
 }
 
@@ -290,6 +293,14 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		fmt_hex(hu, gUlsOff);
 		fmt_hex(hf, gLinuxFS);
 		PUT("uls="); PUT(hu); PUT(" fs="); PUT(hf); PUT("\n");
+	}
+	{
+		char hr[20], hl[20], hs[20];
+		fmt_hex(hr, gRseqPtr);
+		fmt_hex(hl, gRseqLen);
+		fmt_hex(hs, gRseqSig);
+		PUT("rseq="); PUT(hr); PUT(" len="); PUT(hl);
+		PUT(" sig="); PUT(hs); PUT("\n");
 	}
 	PUT("seq=");
 	for (k = 0; k < 8; k++) {

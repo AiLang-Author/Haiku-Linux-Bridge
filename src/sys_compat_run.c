@@ -172,6 +172,8 @@ int main(int argc, char** argv)
 #define AT_CLKTCK 17
 #define AT_SECURE 23
 #define AT_RANDOM 25
+#define AT_RSEQ_FEATURE_SIZE 27
+#define AT_RSEQ_ALIGN 28
 #define AT_EXECFN 31
 
     *(--sp) = 0xC0FFEEA11CE5F5ULL;
@@ -190,6 +192,12 @@ int main(int argc, char** argv)
     }
     *(--sp) = at_random;
     *(--sp) = AT_RANDOM;
+    /* Original rseq ABI: 20-byte used size, 32-byte alloc/align.
+     * Do not advertise more than the hook implements (cpu_id + rseq_cs). */
+    *(--sp) = 32;
+    *(--sp) = AT_RSEQ_ALIGN;
+    *(--sp) = 20;
+    *(--sp) = AT_RSEQ_FEATURE_SIZE;
     *(--sp) = 0;
     *(--sp) = AT_SECURE;
     *(--sp) = 100;
