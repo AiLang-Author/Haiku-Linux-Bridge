@@ -57,6 +57,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `write`/`exit` on Haiku via remap | **Works** | `hello_min` printed the hello line, `DONE_RC=0`, `mark=1 hits=2 last=60` (`results/ltp/hello_out.txt`) |
 | Mark via raw syscall `0x1337` (no libc after) | **Works** | libc `write(LINUXABI)` was the Kill Thread; combined `syscall; jmp` is the handshake |
 | Linux `read`/`close` remap | **Works** | `hello_rwc` echoed `RWC_PAYLOAD`, `DONE_RC=0`, `hits=4 last=60` (`results/ltp/rwc_out.txt`) |
+| Linux `lseek` / `open` / `openat` | **Works** | `hello_fds` printed `DEFGABC`, created `/tmp/created` (`CREATED`), `hits=13 last=60` (`results/ltp/fds_out.txt`) |
 | Linux `ioctl` | **Deferred** | Do not implement this layer yet |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -73,9 +74,10 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 1 | `write(fd,buf,n)` | `0x97` (151) | `_kern_write(fd,pos,buf,n)` | `r10=n; rdx=buf; rsi=-1` |
 | 60 / 231 | `exit` / `exit_group` | `0x29` (41) | `_kern_exit_team(status)` | `rdi` unchanged |
 | 0 | `read` | `0x95` (149) | `_kern_read` | same shuffle as write |
-| 2 | `open` | `0x72` (114) | `_kern_open` | flags differ; later |
+| 2 | `open` | `0x72` (114) | `_kern_open(dirfd,path,mode,perms)` | `r10=mode; rdx=xlat(flags); rsi=path; rdi=AT_FDCWD(-100)` |
+| 257 | `openat` | `0x72` (114) | `_kern_open` | `AT_FDCWD` is `-100` on both; flags translated |
 | 3 | `close` | `0x9e` (158) | `_kern_close` | `rdi` only |
-| 8 | `lseek` | `0x79` (121) | `_kern_seek` | later |
+| 8 | `lseek` | `0x79` (121) | `_kern_seek` | args match; `SEEK_*=0/1/2` |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`.
 
@@ -83,9 +85,8 @@ Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding i
 
 ## Next work (in this order)
 
-1. **Next remaps** (commit + push every 4–5):  
-   `lseek` (`_kern_seek=0x79`), then `open`/`openat` (flag translation), then `brk` / `mmap`/`munmap`.
-2. **busybox static** `echo` / `uname` / `cat` after `open`+`brk` exist.
+1. **Next remaps:** `brk` / `mmap`/`munmap` (Haiku has no `brk` — this is `create_area` / resize, not a one-line rax swap). Then try static busybox `echo`/`cat`/`uname`.
+2. **busybox static** `echo` / `uname` / `cat` — still no ioctl. `cat` only needs open/read/write/close/exit, but musl startup usually hits `brk`/`mmap` first.
 
 3. **busybox static** `echo` / `uname` / `cat` — still no ioctl.
 
