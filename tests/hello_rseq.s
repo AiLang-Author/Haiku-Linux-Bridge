@@ -6,10 +6,10 @@
 .intel_syntax noprefix
 .global _start
 
-.section .bss
+.section .data
 .align 32
 rseq_area:
-	.space 32
+	.zero 32
 
 .section .rodata
 msg_ok:

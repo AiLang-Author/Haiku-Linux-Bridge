@@ -310,10 +310,10 @@ sys_compat_lstar:
 	/* rdi=pid rsi=resource rdx=new r10=old. Fill old with 8MB/∞. */
 	test	r10, r10
 	jz	.Lok0
-	stac
+	swapgs
 	mov	qword ptr [r10], 0x800000
 	mov	qword ptr [r10 + 8], -1
-	clac
+	swapgs
 	xor	rax, rax
 	jmp	.Lret
 
@@ -324,13 +324,13 @@ sys_compat_lstar:
 	test	rsi, rsi
 	jz	.Lok0
 	rdtsc
-	stac
+	swapgs
 	mov	[rdi], eax
 	cmp	rsi, 4
 	jbe	1f
 	mov	[rdi + 4], edx
 1:
-	clac
+	swapgs
 	mov	rax, rsi
 	cmp	rax, 8
 	jbe	.Lret
@@ -343,7 +343,7 @@ sys_compat_lstar:
 	jz	.Lnomem
 	cmp	r10, 18
 	jb	.Lnomem
-	stac
+	swapgs
 	mov	byte ptr [rdx + 0], '/'
 	mov	byte ptr [rdx + 1], 'b'
 	mov	byte ptr [rdx + 2], 'o'
@@ -362,7 +362,7 @@ sys_compat_lstar:
 	mov	byte ptr [rdx + 15], 'b'
 	mov	byte ptr [rdx + 16], 'o'
 	mov	byte ptr [rdx + 17], 'x'
-	clac
+	swapgs
 	mov	rax, 18
 	jmp	.Lret
 
@@ -492,7 +492,10 @@ sys_compat_lstar:
 	jne	.Leperm
 	jmp	.Lebusy
 .Lrseq_new:
-	stac
+	/* User GS here. swapgs so a #PF is a thread kill, not a double fault.
+	 * Do not STAC/CLAC: this Haiku image does not set CR4.SMAP, so
+	 * STAC is #UD and takes the kernel down. */
+	swapgs
 	mov	qword ptr [rdi + 8], 0	/* rseq_cs = NULL */
 	mov	dword ptr [rdi + 16], 0	/* flags */
 	mov	dword ptr [rdi], 0	/* cpu_id_start = 0 */
@@ -502,7 +505,7 @@ sys_compat_lstar:
 	mov	dword ptr [rdi + 20], 0	/* node_id */
 	mov	dword ptr [rdi + 24], 0	/* mm_cid */
 1:
-	clac
+	swapgs
 	mov	[rip + gRseqPtr], rdi
 	mov	[rip + gRseqLen], rsi
 	mov	[rip + gRseqSig], r10
@@ -519,10 +522,10 @@ sys_compat_lstar:
 	jne	.Leinval
 	cmp	r10d, dword ptr [rip + gRseqSig]
 	jne	.Leperm
-	stac
+	swapgs
 	mov	dword ptr [rdi], 0		/* cpu_id_start = 0 */
 	mov	dword ptr [rdi + 4], -1		/* UNINITIALIZED */
-	clac
+	swapgs
 	mov	qword ptr [rip + gRseqPtr], 0
 	mov	qword ptr [rip + gRseqLen], 0
 	mov	qword ptr [rip + gRseqSig], 0
@@ -537,11 +540,15 @@ sys_compat_lstar:
 	je	.Lsysret
 	push	rax
 	push	rdi
+	push	rcx
+	push	r11
+	swapgs
 	mov	rdi, [rip + gRseqPtr]
-	stac
 	mov	dword ptr [rdi], 0
 	mov	dword ptr [rdi + 4], 0
-	clac
+	swapgs
+	pop	r11
+	pop	rcx
 	pop	rdi
 	pop	rax
 .Lsysret:
