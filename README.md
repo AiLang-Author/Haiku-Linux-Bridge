@@ -49,6 +49,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | busybox `cat` | **Works** — printed file contents via remapped `open`/`read`/`write` |
 | busybox `ls` | **Works** — `O_DIRECTORY` → `_kern_open_dir`, `getdents64` translates Haiku dirents |
 | Linux `fstat` / `newfstatat` | **Works** — `_user_read_stat` + Haiku→Linux `stat` translate. `hello_stat` / `STATOK`. busybox `ls -l` shows real types and sizes. |
+| Linux `mprotect` / `munmap` / `chmod` / `chown` / `truncate` / uid / tid / `prctl` | **Works** — `_kern_write_stat` 0x9d, `unmap` 0xd5, `mprotect` 0xd6. `hello_wstat` / `WSTATOK`. |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |

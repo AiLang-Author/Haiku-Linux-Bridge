@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-14 (LTP smoke + mkdir pack)  
+**Last updated:** 2026-08-14 (chmod/chown/truncate/mprotect/uid/tid/prctl)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the pickup document. If you are new, read this before the optimistic tables in older standups.
@@ -71,6 +71,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `fstat` / `newfstatat` | **Works** | `_user_read_stat` via `kSyscallInfos[0x9c]`. Haiku `stat` (128 B, 32-bit `dev_t`) → Linux `stat` (144 B). Guest: `hello_stat` printed `STATOK`; busybox `ls -l` shows real types/sizes (`results/ltp/stat_out.txt`). |
 | LTP first-wave (17 bins) | **Measured** | `hello_min` pass. 16 LTP ELFs TBROK in the harness (`mkdtemp` → `mkdir` ENOSYS). Kernel stayed up. `results/ltp/ltp_smoke.txt`. |
 | Linux `mkdir`/`getcwd`/`chdir`/`unlink`/`access` | **Works** | `_kern_create_dir` 0x7b etc. LTP tmpdir is created. Next harness walls were `chown` then `statfs` (stubbed). Real test still needs `clone`. |
+| Linux `mprotect`/`munmap`/`chmod`/`chown`/`truncate`/`getuid`/`prctl`/`gettid` | **Works** | Guest dump: `write_stat=0x9d` `unmap=0xd5` `mprotect=0xd6` `rename_thread=0x38`. `hello_wstat` printed `WSTATOK`, `WSTAT_RC=0`, `hits=32`. `setuid`/`setgid` are layer-local; `set_tid_address`/`set_robust_list` store and return 0/`tid`. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -95,8 +96,16 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 79 / 80 / 81 | `getcwd` / `chdir` / `fchdir` | `0x92` / `0x93` | `_kern_getcwd` / `_kern_setcwd` | `getcwd` returns the buffer pointer |
 | 87 / 84 / 263 | `unlink` / `rmdir` / `unlinkat` | `0x80` / `0x7c` | `_kern_unlink` / `_kern_remove_dir` | `AT_REMOVEDIR` → remove_dir |
 | 21 | `access` | `0x84` (132) | `_kern_access` | C helper |
+| 10 / 11 | `mprotect` / `munmap` | `0xd6` / `0xd5` | `_kern_set_memory_protection` / `_kern_unmap_memory` | `PROT_*` low 3 bits = `B_*_AREA`. Arena carve is a no-op unmap. |
+| 90 / 91 / 268 | `chmod` / `fchmod` / `fchmodat` | `0x9d` | `_kern_write_stat` + `B_STAT_MODE` | C helper; user-stack scratch for Haiku `stat` |
+| 92 / 93 / 94 / 260 | `chown` / `fchown` / `lchown` / `fchownat` | `0x9d` | `_kern_write_stat` + `B_STAT_UID`/`GID` | uid/gid `-1` skips that bit |
+| 76 / 77 | `truncate` / `ftruncate` | `0x9d` | `_kern_write_stat` + `B_STAT_SIZE` | C helper |
+| 102 / 107 / 104 / 108 | `getuid` / `geteuid` / `getgid` / `getegid` | — | `get_team_info` or last `setuid`/`setgid` | euid aliases uid |
+| 105 / 106 | `setuid` / `setgid` | — | layer-local store | enough for glibc queries; does not change Haiku creds |
+| 186 / 218 / 273 | `gettid` / `set_tid_address` / `set_robust_list` | — | `find_thread(NULL)` + store | clear-tid on exit not wired |
+| 157 | `prctl` | `0x38` | `_kern_rename_thread` for `PR_SET_NAME` | `GET_NAME` via `get_thread_info`; dumpable/pdeathsig return 0 |
 
-Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`.
+Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
 ---
 
@@ -147,5 +156,6 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_linux.s` | `hello_min` source (write+exit only) |
 | `tests/hello_rseq.s` | Linux `rseq` register / EBUSY / unregister |
 | `tests/hello_stat.s` | Linux `newfstatat` + `fstat` (dir vs file, size match) |
+| `tests/hello_wstat.s` | uid/tid/prctl/mprotect/chmod/chown/truncate pack |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

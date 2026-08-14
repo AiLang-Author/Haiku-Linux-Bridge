@@ -12,6 +12,7 @@
 
 #include <Drivers.h>
 #include <KernelExport.h>
+#include <OS.h>
 #include "sys_compat_abi.h"
 
 /* POSIX sys/stat.h (pulled by kernel headers) aliases st_ctime to
@@ -31,8 +32,10 @@
 
 #define LINUX_EPERM         1
 #define LINUX_ENOENT        2
+#define LINUX_EINTR         4
 #define LINUX_EIO           5
 #define LINUX_EBADF         9
+#define LINUX_ECHILD       10
 #define LINUX_ENOMEM       12
 #define LINUX_EACCES       13
 #define LINUX_EFAULT       14
@@ -70,6 +73,36 @@
 #define HAIKU_ACCESS     0x84
 #define HAIKU_GETCWD     0x92
 #define HAIKU_SETCWD     0x93
+#define HAIKU_FORK       0x2f
+#define HAIKU_WAIT_CHILD 0x2d
+#define HAIKU_WRITE_STAT 0x9d
+/* Guest libroot dump (hrev57937): unmap=0xd5 mprotect=0xd6.
+ * Later Haiku sources insert two syscalls before these. */
+#define HAIKU_UNMAP      0xd5
+#define HAIKU_MPROTECT   0xd6
+#define HAIKU_RENAME_THR 0x38
+
+#define BSTAT_MODE 0x0001
+#define BSTAT_UID  0x0002
+#define BSTAT_GID  0x0004
+#define BSTAT_SIZE 0x0008
+
+#define LINUX_PR_SET_PDEATHSIG 1
+#define LINUX_PR_GET_DUMPABLE  3
+#define LINUX_PR_SET_DUMPABLE  4
+#define LINUX_PR_SET_NAME      15
+#define LINUX_PR_GET_NAME      16
+
+#define LINUX_MARK_SLOTS 8
+#define HAIKU_WNOHANG    0x01
+#define HAIKU_WUNTRACED  0x02
+#define HAIKU_WEXITED    0x08
+#define HAIKU_WSTOPPED   0x10
+#define HAIKU_CLD_EXITED 1
+#define HAIKU_CLD_KILLED 2
+#define HAIKU_CLD_DUMPED 3
+#define HAIKU_CLD_STOPPED 5
+#define HAIKU_CLD_CONTINUED 6
 
 #define HAIKU_STAT_SIZE 128
 #define LINUX_STAT_SIZE 144
@@ -142,6 +175,13 @@ typedef int32 (*haiku_access_fn)(int32 fd, const void* path, int32 mode,
 	int32 effective);
 typedef int32 (*haiku_getcwd_fn)(void* buf, uint64 size);
 typedef int32 (*haiku_setcwd_fn)(int32 fd, const void* path);
+typedef int32 (*haiku_wait_child_fn)(int32 child, uint32 flags, void* info,
+	void* usage);
+typedef int32 (*haiku_write_stat_fn)(int32 fd, const void* path, int32 traverse,
+	void* st, uint64 statSize, int32 mask);
+typedef int32 (*haiku_mprot_fn)(void* addr, uint64 size, uint32 prot);
+typedef int32 (*haiku_unmap_fn)(void* addr, uint64 size);
+typedef int32 (*haiku_rename_thr_fn)(int32 thread, const void* name);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -152,7 +192,20 @@ static uint64 sUnlinkFn;
 static uint64 sAccessFn;
 static uint64 sGetcwdFn;
 static uint64 sSetcwdFn;
+static uint64 sWaitFn;
+static uint64 sWriteStatFn;
+static uint64 sUnmapFn;
+static uint64 sMprotectFn;
+static uint64 sRenameThrFn;
+static int32 sHaveUid;
+static int32 sHaveGid;
+static uint32 sUid;
+static uint32 sGid;
+static uint64 sClearTid;
+static uint64 sRobustList;
+static uint64 sRobustLen;
 static int64 sLastPath;
+static int64 sLastWait;
 static int64 sLastNent;
 static int64 sLastOut;
 static int sDentFallback;
@@ -164,7 +217,9 @@ static int64 sLastSize;
 extern "C" {
 	void sys_compat_lstar(void);
 	extern uint64 gOrigLstar;
-	extern uint64 gLinuxCR3;
+	extern uint64 gLinuxCR3[LINUX_MARK_SLOTS];
+	extern int64 gLinuxTeam[LINUX_MARK_SLOTS];
+	extern uint64 gLinuxN;
 	extern uint64 gMarkCount;
 	extern uint64 gLinuxHits;
 	extern uint64 gLastLinuxRax;
@@ -179,6 +234,20 @@ extern "C" {
 	extern uint64 gRseqPtr;
 	extern uint64 gRseqLen;
 	extern uint64 gRseqSig;
+	extern uint64 gSavedRsp;
+	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
+		uint32 mask, int64 a, int64 b);
+	int64 sys_compat_mprotect(void* addr, uint64 len, int64 prot);
+	int64 sys_compat_munmap(void* addr, uint64 len);
+	int64 sys_compat_getuid(void);
+	int64 sys_compat_getgid(void);
+	int64 sys_compat_setuid(int64 uid);
+	int64 sys_compat_setgid(int64 gid);
+	int64 sys_compat_gettid(void);
+	int64 sys_compat_set_tid_address(void* ptr);
+	int64 sys_compat_set_robust_list(void* head, uint64 len);
+	int64 sys_compat_prctl(int64 option, int64 a2, int64 a3, int64 a4,
+		int64 a5);
 	int64 sys_compat_dispatch_fast(uint64* saved);
 	int64 sys_compat_getdents64(int64 fd, void* userBuf, uint64 count);
 	int64 sys_compat_stat(int64 fd, const void* userPath, void* userStat,
@@ -188,6 +257,11 @@ extern "C" {
 	int64 sys_compat_access(int64 fd, const void* path, int64 mode);
 	int64 sys_compat_getcwd(void* buf, uint64 size);
 	int64 sys_compat_chdir(int64 fd, const void* path);
+	int64 sys_compat_mark_team(void);
+	int64 sys_compat_adopt(uint64 cr3);
+	int64 sys_compat_getpid(void);
+	int64 sys_compat_wait4(int64 pid, int32* status, int64 options,
+		void* rusage, void* userInfo);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -335,10 +409,23 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_GETCWD].function;
 				sSetcwdFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_SETCWD].function;
+				sWaitFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_WAIT_CHILD].function;
+				sWriteStatFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_WRITE_STAT].function;
+				sUnmapFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_UNMAP].function;
+				sMprotectFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_MPROTECT].function;
+				sRenameThrFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_RENAME_THR].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
-				" read_stat=%#" B_PRIx64 "\n",
-				sSyscallInfos, sReadDirFn, sReadStatFn);
+				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
+				" unmap=%#" B_PRIx64 " mprotect=%#" B_PRIx64
+				" rename_thr=%#" B_PRIx64 "\n",
+				sSyscallInfos, sReadDirFn, sReadStatFn, sWriteStatFn,
+				sUnmapFn, sMprotectFn, sRenameThrFn);
 			return;
 		}
 	}
@@ -473,7 +560,9 @@ haiku_status_to_linux(int64 st)
 	case 0x80000001: return -LINUX_EIO;          /* B_IO_ERROR */
 	case 0x80000002: return -LINUX_EACCES;       /* B_PERMISSION_DENIED */
 	case 0x80000005: return -LINUX_EINVAL;       /* B_BAD_VALUE */
+	case 0x8000000a: return -LINUX_EINTR;        /* B_INTERRUPTED */
 	case 0x8000000f: return -LINUX_EPERM;        /* B_NOT_ALLOWED */
+	case 0x80007002: return -LINUX_ECHILD;       /* ECHILD */
 	case 0x80001301: return -LINUX_EFAULT;       /* B_BAD_ADDRESS */
 	case 0x80006000: return -LINUX_EBADF;        /* B_FILE_ERROR */
 	case 0x80006002: return -LINUX_EEXIST;       /* B_FILE_EXISTS */
@@ -652,6 +741,345 @@ sys_compat_chdir(int64 fd, const void* path)
 }
 
 static void
+linux_clear_all(void)
+{
+	int i;
+
+	for (i = 0; i < LINUX_MARK_SLOTS; i++) {
+		gLinuxCR3[i] = 0;
+		gLinuxTeam[i] = 0;
+	}
+	gLinuxN = 0;
+}
+
+static int
+linux_slot_by_cr3(uint64 cr3)
+{
+	int i;
+
+	for (i = 0; i < LINUX_MARK_SLOTS; i++) {
+		if (gLinuxCR3[i] == cr3)
+			return i;
+	}
+	return -1;
+}
+
+extern "C" int64
+sys_compat_mark_team(void)
+{
+	team_info info;
+
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return -1;
+	gLinuxTeam[0] = info.team;
+	if (gLinuxN == 0)
+		gLinuxN = 1;
+	sHaveUid = 0;
+	sHaveGid = 0;
+	sClearTid = 0;
+	sRobustList = 0;
+	sRobustLen = 0;
+	dprintf("[sys_compat] mark team=%" B_PRId32 " parent=%" B_PRId32 "\n",
+		info.team, info.parent);
+	return info.team;
+}
+
+extern "C" int64
+sys_compat_adopt(uint64 cr3)
+{
+	team_info info;
+	int i, j;
+
+	if (cr3 == 0 || gLinuxN == 0)
+		return 0;
+	if (linux_slot_by_cr3(cr3) >= 0)
+		return 1;
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return 0;
+	for (i = 0; i < LINUX_MARK_SLOTS; i++) {
+		if (gLinuxTeam[i] == 0 || gLinuxTeam[i] != info.parent)
+			continue;
+		for (j = 0; j < LINUX_MARK_SLOTS; j++) {
+			if (gLinuxCR3[j] != 0)
+				continue;
+			gLinuxCR3[j] = cr3;
+			gLinuxTeam[j] = info.team;
+			gLinuxN++;
+			dprintf("[sys_compat] adopt cr3=%#" B_PRIx64 " team=%" B_PRId32
+				" parent=%" B_PRId32 "\n", cr3, info.team, info.parent);
+			return 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+extern "C" int64
+sys_compat_getpid(void)
+{
+	team_info info;
+
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return 1;
+	return info.team;
+}
+
+extern "C" int64
+sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
+	void* userInfo)
+{
+	haiku_wait_child_fn fn;
+	uint32 hflags;
+	int32 st;
+	uint8 info[64];
+	int32 code, exitst;
+	int32 lstatus;
+
+	(void)rusage;
+	sLastWait = 0;
+	if (sWaitFn == 0)
+		return -LINUX_ENOSYS;
+	hflags = HAIKU_WEXITED;
+	if ((options & 1) != 0)
+		hflags |= HAIKU_WNOHANG;
+	if ((options & 2) != 0)
+		hflags |= HAIKU_WUNTRACED | HAIKU_WSTOPPED;
+	fn = (haiku_wait_child_fn)(addr_t)sWaitFn;
+	st = fn((int32)pid, hflags, userInfo, NULL);
+	sLastWait = (int64)st;
+	if (st == (int32)0x8000000b) /* B_WOULD_BLOCK */
+		return 0;
+	if (st < 0)
+		return haiku_status_to_linux((int64)st);
+	if (status != NULL && userInfo != NULL) {
+		if (user_memcpy(info, userInfo, sizeof(info)) != B_OK)
+			return -LINUX_EFAULT;
+		code = (int32)(info[4] | (info[5] << 8) | (info[6] << 16)
+			| (info[7] << 24));
+		exitst = (int32)(info[32] | (info[33] << 8) | (info[34] << 16)
+			| (info[35] << 24));
+		lstatus = 0;
+		if (code == HAIKU_CLD_EXITED)
+			lstatus = (exitst & 0xff) << 8;
+		else if (code == HAIKU_CLD_KILLED)
+			lstatus = exitst & 0x7f;
+		else if (code == HAIKU_CLD_DUMPED)
+			lstatus = (exitst & 0x7f) | 0x80;
+		else if (code == HAIKU_CLD_STOPPED)
+			lstatus = 0x7f | ((exitst & 0xff) << 8);
+		else if (code == HAIKU_CLD_CONTINUED)
+			lstatus = 0xffff;
+		if (user_memcpy(status, &lstatus, sizeof(lstatus)) != B_OK)
+			return -LINUX_EFAULT;
+	}
+	return st;
+}
+
+extern "C" int64
+sys_compat_wstat(int64 fd, const void* path, int64 flags, uint32 mask,
+	int64 a, int64 b)
+{
+	int32 traverse;
+	int32 st;
+	haiku_write_stat_fn fn;
+	uint8 h[HAIKU_STAT_SIZE];
+	int i;
+	void* userSt;
+
+	if (mask == 0)
+		return 0;
+	if (sWriteStatFn == 0)
+		return -LINUX_ENOSYS;
+	if (path == NULL && fd < 0)
+		return -LINUX_EBADF;
+	if ((flags & LINUX_AT_EMPTY_PATH) != 0 && path != NULL) {
+		uint8 first;
+		if (user_memcpy(&first, path, 1) != B_OK)
+			return -LINUX_EFAULT;
+		if (first == 0)
+			path = NULL;
+	}
+	if (path == NULL || (flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
+		traverse = 0;
+	else
+		traverse = 1;
+
+	for (i = 0; i < HAIKU_STAT_SIZE; i++)
+		h[i] = 0;
+	if ((mask & BSTAT_MODE) != 0) {
+		uint32 mode = (uint32)a & 07777;
+		h[16] = (uint8)mode;
+		h[17] = (uint8)(mode >> 8);
+		h[18] = (uint8)(mode >> 16);
+		h[19] = (uint8)(mode >> 24);
+	}
+	if ((mask & BSTAT_UID) != 0) {
+		uint32 uid = (uint32)a;
+		h[24] = (uint8)uid;
+		h[25] = (uint8)(uid >> 8);
+		h[26] = (uint8)(uid >> 16);
+		h[27] = (uint8)(uid >> 24);
+	}
+	if ((mask & BSTAT_GID) != 0) {
+		uint32 gid = (uint32)b;
+		h[28] = (uint8)gid;
+		h[29] = (uint8)(gid >> 8);
+		h[30] = (uint8)(gid >> 16);
+		h[31] = (uint8)(gid >> 24);
+	}
+	if ((mask & BSTAT_SIZE) != 0) {
+		uint64 sz = (uint64)a;
+		for (i = 0; i < 8; i++)
+			h[32 + i] = (uint8)(sz >> (8 * i));
+	}
+
+	/* User scratch sits just below the saved user stack (assembly). */
+	userSt = (void*)(gSavedRsp - 256);
+	if (user_memcpy(userSt, h, HAIKU_STAT_SIZE) != B_OK)
+		return -LINUX_EFAULT;
+	fn = (haiku_write_stat_fn)(addr_t)sWriteStatFn;
+	st = fn((int32)fd, path, traverse, userSt, HAIKU_STAT_SIZE, (int32)mask);
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_mprotect(void* addr, uint64 len, int64 prot)
+{
+	haiku_mprot_fn fn;
+	int32 st;
+
+	if (sMprotectFn == 0)
+		return -LINUX_ENOSYS;
+	if (len == 0)
+		return 0;
+	fn = (haiku_mprot_fn)(addr_t)sMprotectFn;
+	st = fn(addr, len, (uint32)prot & 7);
+	return haiku_status_to_linux((int64)st);
+}
+
+extern "C" int64
+sys_compat_munmap(void* addr, uint64 len)
+{
+	haiku_unmap_fn fn;
+	int32 st;
+	uint64 a = (uint64)(addr_t)addr;
+
+	if (len == 0)
+		return 0;
+	/* Arena carve is not a Haiku mapping we should punch out. */
+	if (gBrkBase != 0 && a >= gBrkBase && a < gArenaHi)
+		return 0;
+	if (sUnmapFn == 0)
+		return 0;
+	fn = (haiku_unmap_fn)(addr_t)sUnmapFn;
+	st = fn(addr, len);
+	if (st != 0)
+		return 0;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_getuid(void)
+{
+	team_info info;
+
+	if (sHaveUid)
+		return sUid;
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return 0;
+	return info.uid;
+}
+
+extern "C" int64
+sys_compat_getgid(void)
+{
+	team_info info;
+
+	if (sHaveGid)
+		return sGid;
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return 0;
+	return info.gid;
+}
+
+extern "C" int64
+sys_compat_setuid(int64 uid)
+{
+	sHaveUid = 1;
+	sUid = (uint32)uid;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_setgid(int64 gid)
+{
+	sHaveGid = 1;
+	sGid = (uint32)gid;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_gettid(void)
+{
+	thread_id tid = find_thread(NULL);
+	if (tid < 0)
+		return 1;
+	return tid;
+}
+
+extern "C" int64
+sys_compat_set_tid_address(void* ptr)
+{
+	sClearTid = (uint64)(addr_t)ptr;
+	return sys_compat_gettid();
+}
+
+extern "C" int64
+sys_compat_set_robust_list(void* head, uint64 len)
+{
+	sRobustList = (uint64)(addr_t)head;
+	sRobustLen = len;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_prctl(int64 option, int64 a2, int64 a3, int64 a4, int64 a5)
+{
+	(void)a3;
+	(void)a4;
+	(void)a5;
+	if (option == LINUX_PR_SET_NAME) {
+		haiku_rename_thr_fn fn;
+		thread_id tid;
+		if (a2 == 0)
+			return -LINUX_EFAULT;
+		if (sRenameThrFn == 0)
+			return 0;
+		tid = find_thread(NULL);
+		fn = (haiku_rename_thr_fn)(addr_t)sRenameThrFn;
+		fn(tid, (const void*)a2);
+		return 0;
+	}
+	if (option == LINUX_PR_GET_NAME) {
+		thread_info ti;
+		thread_id tid;
+		if (a2 == 0)
+			return -LINUX_EFAULT;
+		tid = find_thread(NULL);
+		if (get_thread_info(tid, &ti) != B_OK)
+			return -LINUX_EIO;
+		if (user_memcpy((void*)a2, ti.name, 16) != B_OK)
+			return -LINUX_EFAULT;
+		return 0;
+	}
+	if (option == LINUX_PR_GET_DUMPABLE)
+		return 1;
+	if (option == LINUX_PR_SET_DUMPABLE || option == LINUX_PR_SET_PDEATHSIG)
+		return 0;
+	return 0;
+}
+
+static void
 discover_uls_offset(void)
 {
 	uint64 fs, thread, match;
@@ -703,8 +1131,12 @@ static status_t
 dev_free(void* /*cookie*/)
 {
 	uint64 cr3 = read_cr3() & ~(uint64)0xfff;
-	if (gLinuxCR3 != 0 && gLinuxCR3 == cr3) {
-		gLinuxCR3 = 0;
+	int slot = linux_slot_by_cr3(cr3);
+	if (slot >= 0) {
+		gLinuxCR3[slot] = 0;
+		gLinuxTeam[slot] = 0;
+		if (gLinuxN > 0)
+			gLinuxN--;
 		dprintf("[sys_compat] LEAVE cr3=%#" B_PRIx64 "\n", cr3);
 	}
 	return B_OK;
@@ -750,7 +1182,7 @@ fmt_u64(char* out, uint64 v)
 static status_t
 dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 {
-	char text[512];
+	char text[768];
 	char h1[20], h2[20], hb[20], hc[20], hm[20], hh[20];
 	char n1[24], n2[24], n3[24], nseq[8];
 	size_t n, want, off;
@@ -763,7 +1195,7 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		return B_BAD_VALUE;
 	}
 
-	fmt_hex(h1, gLinuxCR3);
+	fmt_hex(h1, gLinuxCR3[0]);
 	fmt_hex(h2, gOrigLstar);
 	fmt_hex(hb, gBrkBase);
 	fmt_hex(hc, gBrkCur);
@@ -776,7 +1208,14 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 	/* Keep this ASCII so `cat /dev/misc/sys_compat` works from another team. */
 	i = 0;
 #define PUT(s) do { const char* _p = (s); while (*_p && i < (int)sizeof(text) - 1) text[i++] = *_p++; } while (0)
-	PUT("cr3="); PUT(h1); PUT("\n");
+	PUT("cr3="); PUT(h1);
+	{
+		char nn[20], nt[20];
+		fmt_u64(nn, gLinuxN);
+		fmt_hex(nt, (uint64)gLinuxTeam[0]);
+		PUT(" n="); PUT(nn); PUT(" team="); PUT(nt);
+	}
+	PUT("\n");
 	PUT("orig="); PUT(h2); PUT("\n");
 	PUT("mark="); PUT(n1); PUT("\n");
 	PUT("hits="); PUT(n2); PUT("\n");
@@ -827,6 +1266,23 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		fmt_hex(no, (uint64)sLastOut);
 		PUT("dent="); PUT(nn); PUT(" dout="); PUT(no); PUT("\n");
 	}
+	{
+		char hw[20], hu[20], hp[20], hr[20];
+		fmt_hex(hw, sWriteStatFn);
+		fmt_hex(hu, sUnmapFn);
+		fmt_hex(hp, sMprotectFn);
+		fmt_hex(hr, sRenameThrFn);
+		PUT("wstat="); PUT(hw); PUT(" unmap="); PUT(hu);
+		PUT(" mprot="); PUT(hp); PUT(" rnth="); PUT(hr); PUT("\n");
+	}
+	{
+		char uid[20], gid[20], ctid[20];
+		fmt_u64(uid, sHaveUid ? (uint64)sUid : 0);
+		fmt_u64(gid, sHaveGid ? (uint64)sGid : 0);
+		fmt_hex(ctid, sClearTid);
+		PUT("uid="); PUT(uid); PUT(" gid="); PUT(gid);
+		PUT(" ctid="); PUT(ctid); PUT("\n");
+	}
 	PUT("seq=");
 	for (k = 0; k < 8; k++) {
 		fmt_u64(nseq, gLastN[k]);
@@ -863,7 +1319,7 @@ dev_write(void* /*cookie*/, off_t /*pos*/, const void* buf, size_t* len)
 	if (user_memcpy(token, buf, SYS_COMPAT_TOKEN_LEN) != B_OK)
 		return B_BAD_ADDRESS;
 	if (sc_memcmp(token, SYS_COMPAT_LEAVE, SYS_COMPAT_TOKEN_LEN) == 0) {
-		gLinuxCR3 = 0;
+		linux_clear_all();
 		*len = SYS_COMPAT_TOKEN_LEN;
 		dprintf("[sys_compat] LEAVE via write token\n");
 		return B_OK;
@@ -871,10 +1327,14 @@ dev_write(void* /*cookie*/, off_t /*pos*/, const void* buf, size_t* len)
 	if (sc_memcmp(token, SYS_COMPAT_TOKEN, SYS_COMPAT_TOKEN_LEN) != 0)
 		return B_BAD_VALUE;
 
-	gLinuxCR3 = read_cr3() & ~(uint64)0xfff;
+	linux_clear_all();
+	gLinuxCR3[0] = read_cr3() & ~(uint64)0xfff;
+	gLinuxN = 1;
 	gMarkCount++;
+	sys_compat_mark_team();
 	*len = SYS_COMPAT_TOKEN_LEN;
-	dprintf("[sys_compat] ENTER via write token, cr3=%#" B_PRIx64 "\n", gLinuxCR3);
+	dprintf("[sys_compat] ENTER via write token, cr3=%#" B_PRIx64 "\n",
+		gLinuxCR3[0]);
 	return B_OK;
 }
 
@@ -905,6 +1365,7 @@ init_driver(void)
 	}
 
 	dprintf("[sys_compat] loading, current LSTAR %#" B_PRIx64 "\n", current);
+	linux_clear_all();
 	call_all_cpus_sync(&install_lstar, NULL);
 	if (gOrigLstar == 0) {
 		dprintf("[sys_compat] refusing to stay loaded: no original LSTAR\n");
@@ -919,7 +1380,7 @@ init_driver(void)
 extern "C" void
 uninit_driver(void)
 {
-	gLinuxCR3 = 0;
+	linux_clear_all();
 	call_all_cpus_sync(&restore_lstar, NULL);
 	dprintf("[sys_compat] LSTAR restored\n");
 }

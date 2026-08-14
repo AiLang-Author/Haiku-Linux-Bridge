@@ -19,6 +19,10 @@
  *   _kern_seek       = 0x79 (121)
  *   _kern_open       = 0x72 (114)
  *   _kern_exit_team  = 0x29 (41)
+ *   _kern_write_stat = 0x9d (157)
+ *   _kern_unmap_memory            = 0xd5 (213)
+ *   _kern_set_memory_protection   = 0xd6 (214)
+ *   _kern_rename_thread           = 0x38 (56)
  *
  * Haiku x86_64 SYSCALL ABI matches Linux: 4th arg in r10 (SYSCALL
  * clobbers rcx). Kernel then moves r10 -> rcx before the _user_* call.
@@ -31,6 +35,8 @@
 	.globl	sys_compat_lstar
 	.globl	gOrigLstar
 	.globl	gLinuxCR3
+	.globl	gLinuxTeam
+	.globl	gLinuxN
 	.globl	gMarkCount
 	.globl	gLinuxHits
 	.globl	gLastLinuxRax
@@ -49,6 +55,8 @@
 	.globl	gKstackEnd
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
+	.hidden	gLinuxTeam
+	.hidden	gLinuxN
 	.hidden	gMarkCount
 	.hidden	gLinuxHits
 	.hidden	gLastLinuxRax
@@ -73,6 +81,21 @@
 	.extern	sys_compat_access
 	.extern	sys_compat_getcwd
 	.extern	sys_compat_chdir
+	.extern	sys_compat_mark_team
+	.extern	sys_compat_adopt
+	.extern	sys_compat_getpid
+	.extern	sys_compat_wait4
+	.extern	sys_compat_wstat
+	.extern	sys_compat_mprotect
+	.extern	sys_compat_munmap
+	.extern	sys_compat_getuid
+	.extern	sys_compat_getgid
+	.extern	sys_compat_setuid
+	.extern	sys_compat_setgid
+	.extern	sys_compat_gettid
+	.extern	sys_compat_set_tid_address
+	.extern	sys_compat_set_robust_list
+	.extern	sys_compat_prctl
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -81,12 +104,50 @@ sys_compat_lstar:
 	je	.Lmark
 
 	push	rax
-	mov	rax, cr3
-	and	rax, 0xfffffffffffff000	/* drop PCID */
 	cmp	qword ptr [rip + gLinuxCR3], 0
 	je	.Lhaiku
-	cmp	rax, [rip + gLinuxCR3]
+	push	r8
+	push	r9
+	mov	rax, cr3
+	and	rax, 0xfffffffffffff000	/* drop PCID */
+	lea	r9, [rip + gLinuxCR3]
+	xor	r8, r8
+.Lcr3scan:
+	cmp	rax, [r9 + r8 * 8]
 	je	.Llinux
+	inc	r8
+	cmp	r8, 8
+	jb	.Lcr3scan
+	cmp	qword ptr [rip + gLinuxN], 0
+	je	.Lhaiku_slow
+	/* Unmarked CR3 while a Linux team exists: maybe a fork child. */
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r10
+	mov	rdi, rax
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_adopt
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	test	rax, rax
+	jnz	.Llinux
+.Lhaiku_slow:
+	pop	r9
+	pop	r8
 .Lhaiku:
 	pop	rax
 	jmp	[rip + gOrigLstar]
@@ -95,9 +156,19 @@ sys_compat_lstar:
 	/* Still on the user stack, user GS. Do not swapgs.
 	 * rdi = optional arena base, rsi = size (0 = no arena).
 	 */
+	xor	r8, r8
+.Lmark_clr:
+	lea	r9, [rip + gLinuxCR3]
+	mov	qword ptr [r9 + r8 * 8], 0
+	lea	r9, [rip + gLinuxTeam]
+	mov	qword ptr [r9 + r8 * 8], 0
+	inc	r8
+	cmp	r8, 8
+	jb	.Lmark_clr
 	mov	rax, cr3
 	and	rax, 0xfffffffffffff000
 	mov	[rip + gLinuxCR3], rax
+	mov	qword ptr [rip + gLinuxN], 1
 	inc	qword ptr [rip + gMarkCount]
 	cmp	rsi, 4096
 	jb	.Lmark_noarena
@@ -119,10 +190,37 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gRseqPtr], 0
 	mov	qword ptr [rip + gRseqLen], 0
 	mov	qword ptr [rip + gRseqSig], 0
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_mark_team
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
 	xor	rax, rax
 	sysretq
 
 .Llinux:
+	pop	r9
+	pop	r8
 	pop	rax
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
@@ -159,9 +257,9 @@ sys_compat_lstar:
 	cmp	rax, 81			/* Linux fchdir */
 	je	.Lfchdir
 	cmp	rax, 76			/* Linux truncate */
-	je	.Lok0
+	je	.Ltruncate
 	cmp	rax, 77			/* Linux ftruncate */
-	je	.Lok0
+	je	.Lftruncate
 	cmp	rax, 83			/* Linux mkdir */
 	je	.Lmkdir
 	cmp	rax, 84			/* Linux rmdir */
@@ -169,15 +267,15 @@ sys_compat_lstar:
 	cmp	rax, 87			/* Linux unlink */
 	je	.Lunlink
 	cmp	rax, 90			/* chmod */
-	je	.Lok0
+	je	.Lchmod
 	cmp	rax, 91			/* fchmod */
-	je	.Lok0
+	je	.Lfchmod
 	cmp	rax, 92			/* chown */
-	je	.Lok0
+	je	.Lchown
 	cmp	rax, 93			/* fchown */
-	je	.Lok0
+	je	.Lfchown
 	cmp	rax, 94			/* lchown */
-	je	.Lok0
+	je	.Llchown
 	cmp	rax, 137		/* Linux statfs */
 	je	.Lstatfs
 	cmp	rax, 138		/* Linux fstatfs */
@@ -185,9 +283,9 @@ sys_compat_lstar:
 	cmp	rax, 228		/* Linux clock_gettime */
 	je	.Lclock_gettime
 	cmp	rax, 260		/* fchownat */
-	je	.Lok0
+	je	.Lfchownat
 	cmp	rax, 268		/* fchmodat */
-	je	.Lok0
+	je	.Lfchmodat
 	cmp	rax, 258		/* Linux mkdirat */
 	je	.Lmkdirat
 	cmp	rax, 263		/* Linux unlinkat */
@@ -195,33 +293,41 @@ sys_compat_lstar:
 	cmp	rax, 9			/* Linux mmap */
 	je	.Lmmap
 	cmp	rax, 10			/* Linux mprotect */
-	je	.Lok0
+	je	.Lmprotect
 	cmp	rax, 11			/* Linux munmap */
-	je	.Lok0
+	je	.Lmunmap
 	cmp	rax, 12			/* Linux brk */
 	je	.Lbrk
 	cmp	rax, 39			/* Linux getpid */
-	je	.Lget1
+	je	.Lgetpid
+	cmp	rax, 56			/* Linux clone */
+	je	.Lclone
+	cmp	rax, 57			/* Linux fork */
+	je	.Lfork
+	cmp	rax, 58			/* Linux vfork */
+	je	.Lfork
+	cmp	rax, 61			/* Linux wait4 */
+	je	.Lwait4
 	cmp	rax, 102		/* getuid */
-	je	.Lget0
+	je	.Lgetuid
 	cmp	rax, 104		/* getgid */
-	je	.Lget0
+	je	.Lgetgid
 	cmp	rax, 105		/* setuid */
-	je	.Lok0
+	je	.Lsetuid
 	cmp	rax, 106		/* setgid */
-	je	.Lok0
+	je	.Lsetgid
 	cmp	rax, 107		/* geteuid */
-	je	.Lget0
+	je	.Lgetuid
 	cmp	rax, 108		/* getegid */
-	je	.Lget0
+	je	.Lgetgid
 	cmp	rax, 157		/* prctl */
-	je	.Lok0
+	je	.Lprctl
 	cmp	rax, 158		/* Linux arch_prctl */
 	je	.Larch_prctl
 	cmp	rax, 186		/* Linux gettid */
-	je	.Lget1
+	je	.Lgettid
 	cmp	rax, 218		/* Linux set_tid_address */
-	je	.Lget1
+	je	.Lset_tid_address
 	cmp	rax, 257		/* Linux openat */
 	je	.Lopenat
 	cmp	rax, 217		/* getdents64 */
@@ -231,7 +337,7 @@ sys_compat_lstar:
 	cmp	rax, 267		/* readlinkat */
 	je	.Lreadlinkat
 	cmp	rax, 273		/* Linux set_robust_list */
-	je	.Lok0
+	je	.Lset_robust_list
 	cmp	rax, 302		/* prlimit64 */
 	je	.Lprlimit
 	cmp	rax, 318		/* getrandom */
@@ -355,8 +461,30 @@ sys_compat_lstar:
 	jmp	[rip + gOrigLstar]
 
 .Lexit:
-	/* Linux: rdi=code  Haiku _kern_exit_team: rdi=status */
-	mov	qword ptr [rip + gLinuxCR3], 0
+	/* Drop this CR3 only. A live child must stay marked. */
+	push	r8
+	push	r9
+	mov	rax, cr3
+	and	rax, 0xfffffffffffff000
+	lea	r9, [rip + gLinuxCR3]
+	xor	r8, r8
+.Lexit_scan:
+	cmp	rax, [r9 + r8 * 8]
+	jne	1f
+	mov	qword ptr [r9 + r8 * 8], 0
+	lea	r9, [rip + gLinuxTeam]
+	mov	qword ptr [r9 + r8 * 8], 0
+	cmp	qword ptr [rip + gLinuxN], 0
+	je	2f
+	dec	qword ptr [rip + gLinuxN]
+	jmp	2f
+1:
+	inc	r8
+	cmp	r8, 8
+	jb	.Lexit_scan
+2:
+	pop	r9
+	pop	r8
 	mov	qword ptr [rip + gLinuxFS], 0
 	mov	qword ptr [rip + gRseqPtr], 0
 	mov	qword ptr [rip + gRseqLen], 0
@@ -369,9 +497,384 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lget1:
-	/* getpid/gettid/set_tid_address: return a fake tid of 1. */
+	/* gettid/set_tid_address: fake tid 1 is enough for single-thread. */
 	mov	rax, 1
 	jmp	.Lret
+
+.Lgetpid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_getpid
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Lfork:
+	/* Haiku _kern_fork = 0x2f. Child iframe.ax = 0. New CR3 is
+	 * adopted on the child's first syscall via sys_compat_adopt. */
+	mov	rax, 0x2f
+	jmp	[rip + gOrigLstar]
+
+.Lclone:
+	/* Fork-style only: stack==NULL, no CLONE_VM / CLONE_THREAD. */
+	test	rsi, rsi
+	jnz	.Lenosys
+	test	rdi, 0x100		/* CLONE_VM */
+	jnz	.Lenosys
+	test	rdi, 0x10000		/* CLONE_THREAD */
+	jnz	.Lenosys
+	mov	rax, 0x2f
+	jmp	[rip + gOrigLstar]
+
+.Lwait4:
+	/* rdi=pid rsi=status rdx=options r10=rusage.
+	 * siginfo scratch lives just below the saved user stack. */
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	lea	r8, [rsp - 256]
+	mov	rcx, r10
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_wait4
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32
+	 * and the Haiku DRIVER link rejects it (-fPIC / shared object). */
+.macro CALL_C fn
+	swapgs
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	\fn
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	swapgs
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+.endm
+
+.Lchmod:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	xor	r9, r9
+	xor	rdx, rdx
+	mov	rcx, 1
+	mov	rsi, rdi
+	mov	rdi, -100
+	CALL_C	sys_compat_wstat
+.Lfchmod:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	xor	r9, r9
+	xor	rdx, rdx
+	mov	rcx, 1
+	xor	rsi, rsi
+	CALL_C	sys_compat_wstat
+.Lfchmodat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rdx
+	mov	rdx, r10
+	mov	rcx, 1
+	xor	r9, r9
+	CALL_C	sys_compat_wstat
+.Lchown:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	mov	r9, rdx
+	xor	ecx, ecx
+	cmp	r8d, 0xffffffff
+	je	1f
+	or	ecx, 2
+1:
+	cmp	r9d, 0xffffffff
+	je	2f
+	or	ecx, 4
+2:
+	xor	rdx, rdx
+	mov	rsi, rdi
+	mov	rdi, -100
+	CALL_C	sys_compat_wstat
+.Lfchown:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	mov	r9, rdx
+	xor	ecx, ecx
+	cmp	r8d, 0xffffffff
+	je	1f
+	or	ecx, 2
+1:
+	cmp	r9d, 0xffffffff
+	je	2f
+	or	ecx, 4
+2:
+	xor	rdx, rdx
+	xor	rsi, rsi
+	CALL_C	sys_compat_wstat
+.Llchown:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	mov	r9, rdx
+	xor	ecx, ecx
+	cmp	r8d, 0xffffffff
+	je	1f
+	or	ecx, 2
+1:
+	cmp	r9d, 0xffffffff
+	je	2f
+	or	ecx, 4
+2:
+	mov	rdx, 0x100
+	mov	rsi, rdi
+	mov	rdi, -100
+	CALL_C	sys_compat_wstat
+.Lfchownat:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	/* Linux fchownat(dirfd,path,uid,gid,flags):
+	 * rdi=dirfd rsi=path rdx=uid r10=gid r8=flags
+	 * After the 8 pushes: [rsp]=r10 [rsp+8]=r9 [rsp+16]=r8
+	 * SysV wstat(fd,path,flags,mask,uid,gid). */
+	mov	r9, r10			/* gid */
+	mov	r8, rdx			/* uid */
+	mov	rdx, [rsp + 16]		/* saved Linux r8 = flags */
+	xor	ecx, ecx
+	cmp	r8d, 0xffffffff
+	je	1f
+	or	ecx, 2
+1:
+	cmp	r9d, 0xffffffff
+	je	2f
+	or	ecx, 4
+2:
+	CALL_C	sys_compat_wstat
+.Ltruncate:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	xor	r9, r9
+	xor	rdx, rdx
+	mov	rcx, 8
+	mov	rsi, rdi
+	mov	rdi, -100
+	CALL_C	sys_compat_wstat
+.Lftruncate:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r8, rsi
+	xor	r9, r9
+	xor	rdx, rdx
+	mov	rcx, 8
+	xor	rsi, rsi
+	CALL_C	sys_compat_wstat
+.Lmprotect:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_mprotect
+.Lmunmap:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_munmap
+.Lgetuid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_getuid
+.Lgetgid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_getgid
+.Lsetuid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_setuid
+.Lsetgid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_setgid
+.Lgettid:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_gettid
+.Lset_tid_address:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_set_tid_address
+.Lset_robust_list:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_set_robust_list
+.Lprctl:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rcx, r10
+	CALL_C	sys_compat_prctl
 
 .Lget0:
 	xor	rax, rax
@@ -985,6 +1488,10 @@ sys_compat_lstar:
 gOrigLstar:
 	.quad	0
 gLinuxCR3:
+	.quad	0, 0, 0, 0, 0, 0, 0, 0
+gLinuxTeam:
+	.quad	0, 0, 0, 0, 0, 0, 0, 0
+gLinuxN:
 	.quad	0
 gMarkCount:
 	.quad	0
