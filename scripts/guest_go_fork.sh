@@ -24,8 +24,9 @@ for f in sys_compat_dev.cpp syscall_hook.S sys_compat_abi.h sys_compat_run.c Mak
 done
 curl -s -o /boot/home/hello_min "$HOST/payload/tests/hello_min"
 curl -s -o /boot/home/hello_fork_probe "$HOST/tests/hello_fork_probe"
+curl -s -o /boot/home/hello_fork "$HOST/tests/hello_fork"
 curl -s -o /boot/home/run_fork.sh "$HOST/scripts/guest_run_fork.sh"
-chmod 755 /boot/home/hello_min /boot/home/hello_fork_probe /boot/home/run_fork.sh
+chmod 755 /boot/home/hello_min /boot/home/hello_fork_probe /boot/home/hello_fork /boot/home/run_fork.sh
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }
 make -f Makefile.driver driverinstall || { echo INSTALL_FAILED; exit 1; }

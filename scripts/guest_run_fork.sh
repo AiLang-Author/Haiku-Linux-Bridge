@@ -10,9 +10,9 @@ OUT=/tmp/fork.out
 {
 	echo "=== status ==="
 	cat /dev/misc/sys_compat 2>&1
-	echo "=== hello_fork_probe ==="
-	/boot/home/sys_compat_run /boot/home/hello_fork_probe
-	echo PROBE_RC=$?
+	echo "=== hello_fork ==="
+	/boot/home/sys_compat_run /boot/home/hello_fork
+	echo FORK_RC=$?
 	echo "=== status after ==="
 	cat /dev/misc/sys_compat 2>&1
 } > "$OUT" 2>&1

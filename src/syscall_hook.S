@@ -208,22 +208,7 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
-	/* Stay on gs:8. Restore+swapgs then .Llinux_go lost the
-	 * child's write (S, no second W, no CHD). */
-	cmp	rax, 1
-	je	.Lwrite_k
-	mov	rsp, qword ptr [gs:16]
-	swapgs
 	jmp	.Llinux_go
-.Lwrite_k:
-	KSER	'W'
-	mov	r10, rdx
-	mov	rdx, rsi
-	mov	rsi, -1
-	mov	rax, 0x97
-	mov	rsp, qword ptr [gs:16]
-	swapgs
-	jmp	[rip + gOrigLstar]
 .Lhaiku_slow:
 	pop	r9
 	pop	r8
@@ -310,10 +295,8 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
-	mov	rsp, qword ptr [gs:16]
-	swapgs
+	/* Stay on gs:8 / kernel GS. Post-fork user stack is COW-RO. */
 .Llinux_go:
-	/* No KSER here: after fork this is the COW-RO user stack. */
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
 	/* After fork the user stack is COW-RO. Do not push here. */
@@ -547,23 +530,19 @@ sys_compat_lstar:
 	mov	rdx, rsi
 	mov	rsi, -1
 	mov	rax, 0x95
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lwrite:
 	/* Linux: rdi=fd rsi=buf rdx=count
 	 * Haiku _kern_write: rdi=fd rsi=pos rdx=buf rcx/r10=count
-	 * KSER pushes — do it on gs:8, not the post-fork COW-RO stack.
+	 * Already on gs:8 / kernel GS.
 	 */
-	swapgs
-	mov	rsp, qword ptr [gs:8]
 	KSER	'W'
 	mov	r10, rdx
 	mov	rdx, rsi
 	mov	rsi, -1
 	mov	rax, 0x97
-	mov	rsp, qword ptr [gs:16]
-	swapgs
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lpread64:
 	/* Linux: rdi=fd rsi=buf rdx=count r10=offset
@@ -574,7 +553,7 @@ sys_compat_lstar:
 	mov	rdx, rsi
 	mov	rsi, rax
 	mov	rax, 0x95
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lpwrite64:
 	mov	rax, r10
@@ -582,7 +561,7 @@ sys_compat_lstar:
 	mov	rdx, rsi
 	mov	rsi, rax
 	mov	rax, 0x97
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lreadv:
 	/* Linux: rdi=fd rsi=iov rdx=iovcnt → Haiku readv(fd, pos=-1, iov, n) */
@@ -590,24 +569,24 @@ sys_compat_lstar:
 	mov	rdx, rsi
 	mov	rsi, -1
 	mov	rax, 0x96
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lwritev:
 	mov	r10, rdx
 	mov	rdx, rsi
 	mov	rsi, -1
 	mov	rax, 0x98
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lclose:
 	/* Linux: rdi=fd  Haiku _kern_close: rdi=fd  (0x9e) */
 	mov	rax, 0x9e
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Llseek:
 	/* Linux lseek(fd,off,whence) == Haiku _kern_seek. SEEK_*=0/1/2. */
 	mov	rax, 0x79
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 	/*
 	 * Linux -> Haiku open flags. ACCMODE (0..2) match.
@@ -665,12 +644,12 @@ sys_compat_lstar:
 	mov	rsi, rdi
 	mov	rdi, -100
 	mov	rax, 0x72
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 .Lopen_dir_cwd:
 	mov	rsi, rdi
 	mov	rdi, -100
 	mov	rax, 0x74		/* _kern_open_dir */
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lopenat:
 	/* Linux: rdi=dirfd rsi=path rdx=flags r10=mode — same layout */
@@ -678,10 +657,10 @@ sys_compat_lstar:
 	jnz	.Lopenat_dir
 	XLAT_OFLAGS
 	mov	rax, 0x72
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 .Lopenat_dir:
 	mov	rax, 0x74		/* _kern_open_dir(dirfd, path) */
-	jmp	[rip + gOrigLstar]
+	jmp	.Llstar
 
 .Lexit:
 	/* Drop this CR3 only. A live child must stay marked. */
@@ -713,7 +692,8 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gRseqLen], 0
 	mov	qword ptr [rip + gRseqSig], 0
 	mov	rax, 0x29
-	jmp	[rip + gOrigLstar]
+	KSER	'E'
+	jmp	.Llstar
 
 .Lok0:
 	xor	rax, rax
@@ -733,7 +713,6 @@ sys_compat_lstar:
 	push	r8
 	push	r9
 	push	r10
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -741,7 +720,6 @@ sys_compat_lstar:
 	call	sys_compat_getpid
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -776,12 +754,13 @@ sys_compat_lstar:
 	KSER	'1'
 	mov	qword ptr [rip + gForkPending], 1
 	mov	qword ptr [rip + gForkUserRip], rcx
-	mov	qword ptr [rip + gForkUserRsp], rsp
+	mov	rax, qword ptr [gs:16]
+	mov	qword ptr [rip + gForkUserRsp], rax
 	mov	qword ptr [rip + gForkUserFlags], r11
 	mov	rdi, rcx
-	mov	rsi, rsp
+	mov	rsi, rax
 	mov	rdx, r11
-	swapgs
+	/* Already kernel GS / gs:8. Do not swapgs. */
 	KSER	'2'
 	/* C on gKstack, iframe on the real kstack. Running try_fork
 	 * on gs:8 left its frame 64 bytes below the iframe; _user_fork
@@ -839,18 +818,12 @@ sys_compat_lstar:
 
 .Lwait4:
 	/* rdi=pid rsi=status rdx=options r10=rusage.
-	 * siginfo scratch lives just below the saved user stack. */
-	push	rcx
-	push	r11
-	push	rdi
-	push	rsi
-	push	rdx
-	push	r8
-	push	r9
-	push	r10
-	lea	r8, [rsp - 256]
+	 * Info scratch is below the user RSP (Haiku writes it via
+	 * user_memcpy). Do not push on that COW-RO stack. */
+	KSER	'V'
+	mov	r8, qword ptr [gs:16]
+	sub	r8, 256
 	mov	rcx, r10
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -858,21 +831,11 @@ sys_compat_lstar:
 	call	sys_compat_wait4
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
-	pop	r10
-	pop	r9
-	pop	r8
-	pop	rdx
-	pop	rsi
-	pop	rdi
-	pop	r11
-	pop	rcx
 	jmp	.Lret
 
 	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32
 	 * and the Haiku DRIVER link rejects it (-fPIC / shared object). */
 .macro CALL_C fn
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -880,7 +843,6 @@ sys_compat_lstar:
 	call	\fn
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1503,7 +1465,6 @@ sys_compat_lstar:
 	push	r9
 	push	r10
 .Lstat_go:
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1512,7 +1473,6 @@ sys_compat_lstar:
 	call	sys_compat_stat
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1547,7 +1507,6 @@ sys_compat_lstar:
 	push	r9
 	push	r10
 .Lmkdir_go:
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1555,7 +1514,6 @@ sys_compat_lstar:
 	call	sys_compat_mkdir
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1602,7 +1560,6 @@ sys_compat_lstar:
 	push	r9
 	push	r10
 .Lunlink_go:
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1610,7 +1567,6 @@ sys_compat_lstar:
 	call	sys_compat_unlink
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1637,7 +1593,6 @@ sys_compat_lstar:
 	mov	rdx, rsi
 	mov	rsi, rdi
 	mov	rdi, -100
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1645,7 +1600,6 @@ sys_compat_lstar:
 	call	sys_compat_access
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1665,7 +1619,6 @@ sys_compat_lstar:
 	push	r8
 	push	r9
 	push	r10
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1673,7 +1626,6 @@ sys_compat_lstar:
 	call	sys_compat_getcwd
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1707,7 +1659,6 @@ sys_compat_lstar:
 	push	r10
 	xor	rsi, rsi
 .Lchdir_go:
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1715,7 +1666,6 @@ sys_compat_lstar:
 	call	sys_compat_chdir
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r10
 	pop	r9
 	pop	r8
@@ -1752,7 +1702,6 @@ sys_compat_lstar:
 	/* rdi=fd rsi=buf rdx=count. Call C on a private stack. IF is clear. */
 	push	rcx
 	push	r11
-	swapgs
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
@@ -1760,7 +1709,6 @@ sys_compat_lstar:
 	call	sys_compat_getdents64
 	cli
 	mov	rsp, [rip + gSavedRsp]
-	swapgs
 	pop	r11
 	pop	rcx
 	jmp	.Lret
@@ -1893,8 +1841,7 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lapply_fs:
-	/* rcx/r11 must be saved by caller (SYSCALL RIP/RFLAGS). */
-	swapgs
+	/* Already kernel GS. rcx/r11 saved by caller. */
 	cmp	qword ptr [rip + gUlsOff], 0
 	je	1f
 	mov	r8, [gs:0]
@@ -1907,7 +1854,6 @@ sys_compat_lstar:
 	shr	rdx, 32
 	mov	ecx, 0xC0000100
 	wrmsr
-	swapgs
 	ret
 
 .Larch_prctl:
@@ -2014,24 +1960,26 @@ sys_compat_lstar:
 .Lret:
 	/* Keep registered cpu_id fields at 0 on every stub sysret.
 	 * Preserve rax (return) and all userspace regs except rcx/r11.
+	 * Entered on gs:8 / kernel GS.
 	 */
 	cmp	qword ptr [rip + gRseqPtr], 0
 	je	.Lsysret
 	push	rax
 	push	rdi
-	push	rcx
-	push	r11
-	swapgs
 	mov	rdi, [rip + gRseqPtr]
 	mov	dword ptr [rdi], 0
 	mov	dword ptr [rdi + 4], 0
-	swapgs
-	pop	r11
-	pop	rcx
 	pop	rdi
 	pop	rax
 .Lsysret:
+	mov	rsp, qword ptr [gs:16]
+	swapgs
 	sysretq
+
+.Llstar:
+	mov	rsp, qword ptr [gs:16]
+	swapgs
+	jmp	[rip + gOrigLstar]
 
 	.bss
 	.align	8
