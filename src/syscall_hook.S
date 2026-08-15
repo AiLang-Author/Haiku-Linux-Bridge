@@ -187,6 +187,21 @@ sys_compat_lstar:
 	 * Linux 60 (exit) is _kern_cancel_thread. Never identity-pass. */
 	cmp	qword ptr [rip + gForkPending], 0
 	je	.Lhaiku_slow
+	/* Only stamp if this SYSCALL came from the Linux ELF or the
+	 * fork tramp page. gForkPending is global: a Haiku thread on
+	 * another CPU must not be adopted (that was SX during F2). */
+	cmp	rcx, 0x400000
+	jb	.Lstamp_trypage
+	cmp	rcx, 0x405000
+	jb	.Lstamp_child
+.Lstamp_trypage:
+	/* rax is CR3 — do not clobber. r8/r9 already pushed. */
+	mov	r8, rcx
+	and	r8, 0xfffffffffffff000
+	mov	r9, [rip + gForkTramp]
+	and	r9, 0xfffffffffffff000
+	cmp	r8, r9
+	jne	.Lhaiku_slow
 	jmp	.Lstamp_child
 .Lstamp_child:
 	lea	r9, [rip + gLinuxCR3]

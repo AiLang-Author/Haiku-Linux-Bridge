@@ -145,9 +145,9 @@ ENOSYS**: ~90 (including stubs).
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
 `clone`/`fork`/`wait4`/`exit` from a **marked** Linux team: `hello_fork`
-prints `FORKOK`, `FORK_RC=0` (Day 20). Child IRETQ uses a tramp
-`exit(60)` stub; parent official-returns to `0x40101c` and `wait4`s.
-Next: child to the real Linux RIP, then `execve`.
+prints `FORKOK`, `FORK_RC=0` (Day 20–21). Both parent and child IRETQ
+to Linux `0x40101c`. Stamp-on-fork is RIP-guarded (ELF/tramp only).
+Next: `execve`.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
 Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.

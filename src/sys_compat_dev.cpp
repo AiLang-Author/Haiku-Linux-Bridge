@@ -1178,13 +1178,13 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	/* Child IRETQ: Haiku trampoline + Haiku user stack (native
 	 * fork shape). Trampoline then loads Linux RSP/RIP.
 	 * Parent returns via hook sysretq to Linux RIP (proven). */
-	/* Child IRETQ to tramp+0 (exit(60) stub). Do not send the
-	 * child to 0x40101c until that stub is green — a non-exit
-	 * first syscall walked C on gKstack and raced try_fork. */
-	if (gForkTramp >= 0x100000ULL)
-		f->ip = gForkTramp;
-	else if (userRip >= 0x100000ULL)
+	/* Child IRETQ to the Linux clone return. ax is forced 0 by
+	 * arch_store_fork_frame. hello_fork then takes .Lchild / exit(60).
+	 * Stamp path only handles exit/write — no CALL_C on gKstack. */
+	if (userRip >= 0x100000ULL)
 		f->ip = userRip;
+	else if (gForkTramp >= 0x100000ULL)
+		f->ip = gForkTramp;
 	f->cs = USER_CS;
 	/* Official enter_userspace: RESERVED1|IF only (0x202).
 	 * userFlags|0x202 can leave VM/NT/IOPL/RF and IRETQ #GPs. */
