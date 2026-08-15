@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 15: `_user_fork` returns; reboot at Linux RIP)
+**Last updated:** 2026-08-15 (Day 16: official return; parent user mode lives)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -91,8 +91,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 72 | fcntl | **works** (`_kern_fcntl` 0x76; F_DUPFD/GETFD/SETFD/GETFL/SETFL/DUPFD_CLOEXEC; flag xlat) |
 | 332 | statx | **works** (`_kern_read_stat` → 256-byte `statx`; BASIC\|BTIME) |
 | 221 | fadvise64 | **works** (hint, return 0) |
-| 25 | mremap | **missing** |
-| 269 | faccessat | **missing** (openat-era access) |
+| 25 | mremap | **-ENOSYS** (marked path, never Haiku identity) |
+| 269 | faccessat | **wired** (AT_FDCWD + access helper) |
 
 ### Time
 
@@ -102,33 +102,33 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 201 | time | **works** |
 | 96 | gettimeofday | **works**. busybox `date` → Fri Aug 14 18:17:47 UTC 2026 |
 | 35 | nanosleep | wired (returns 0) |
-| 230 | clock_nanosleep | **missing** |
+| 230 | clock_nanosleep | **wired** (same helper as nanosleep) |
 
 ### Process spawn (LTP / shells / make)
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **`_user_fork` returns a child id.** Parent IRETQ to trampoline `eb fe` stays up. Return to Linux `0x40101c` still reboots. See Day 15. |
+| 56/57/58 | clone/fork/vfork | **`_user_fork` returns a child id.** Official `x86_return_to_userland` to tramp + Haiku stack runs user code (COM1 `U`, guest lives). Return to Linux `0x40101c` still reboots. See Day 16. |
 | 61 | wait4 | wired, unproven (blocked on fork) |
-| 59 | execve | **missing** |
-| 202 | futex | **missing** (pthread — not the grep blocker) |
+| 59 | execve | **-ENOSYS** (not identity) |
+| 202 | futex | **-ENOSYS** (pthread — not the grep blocker) |
 
 ### Pipes / poll (pipelines, more applets)
 
 | # | name | status |
 |---|---|---|
 | 22/293 | pipe/pipe2 | wired |
-| 7 | poll | **missing** |
-| 23/270 | select/pselect6 | **missing** |
-| 271 | ppoll | **missing** |
+| 7 | poll | **-ENOSYS** (never Haiku identity) |
+| 23/270 | select/pselect6 | **-ENOSYS** |
+| 271 | ppoll | **-ENOSYS** |
 
 ### Signals (many binaries install handlers and ignore them)
 
 | # | name | status |
 |---|---|---|
-| 13 | rt_sigaction | **missing** |
-| 14 | rt_sigprocmask | **missing** |
-| 15 | rt_sigreturn | **missing** |
+| 13 | rt_sigaction | **stub** (return 0 — glibc install-and-ignore) |
+| 14 | rt_sigprocmask | **stub** (return 0) |
+| 15 | rt_sigreturn | **-ENOSYS** |
 
 ### Intentionally later
 
@@ -145,9 +145,10 @@ ENOSYS**: ~90 (including stubs).
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
 `clone`/`fork` from a **marked** Linux team: `_user_fork` succeeds
-(COM1 `F5`). IRETQ itself works (parent+child can spin on a user
-trampoline). Returning into the Linux ELF at `0x40101c` still reboots
-(see Day 15). Next: stamp parent CR3, then `PRE`.
+(COM1 `F5`). Official parent return runs user code on the trampoline
+(COM1 `U`, guest lives). Returning into the Linux ELF at `0x40101c`
+still reboots (see Day 16). Next: isolate Linux RSP vs that RIP, then
+`PRE`.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
 Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.

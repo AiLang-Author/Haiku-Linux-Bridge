@@ -275,6 +275,7 @@ static uint64 sGetClockFn;
 static uint64 sPipeFn;
 static uint64 sFcntlFn;
 static uint64 sForkFn;
+static uint64 sRetUserland;
 static uint64 sForkGs0;
 static uint64 sForkGs8;
 static uint64 sForkKtop;
@@ -512,6 +513,8 @@ sys_compat_dispatch_fast(uint64* saved)
 
 #define IA32_FS_BASE 0xc0000100
 
+static void discover_return_to_userland(void);
+
 static void
 discover_syscall_table(void)
 {
@@ -598,10 +601,47 @@ discover_syscall_table(void)
 				" rename_thr=%#" B_PRIx64 "\n",
 				sSyscallInfos, sReadDirFn, sReadStatFn, sWriteStatFn,
 				sUnmapFn, sMprotectFn, sRenameThrFn);
+			discover_return_to_userland();
 			return;
 		}
 	}
 	dprintf("[sys_compat] kSyscallInfos scan missed\n");
+}
+
+/*
+ * x86_return_to_userland in interrupts.S (same TU as LSTAR):
+ *   movq %rdi, %rbp ; movq %rbp, %rsp ; movq %gs:0, %r12
+ * Official parent/child return: kernel-exit work, CLEAR_FPU,
+ * RESTORE_IFRAME, swapgs, iretq. Frame must be on this stack.
+ */
+static void
+discover_return_to_userland(void)
+{
+	const uint8* p;
+	int i;
+
+	sRetUserland = 0;
+	if (gOrigLstar == 0)
+		return;
+	p = (const uint8*)(addr_t)gOrigLstar;
+	for (i = 0; i < 65536; i++) {
+		if (p[i] == 0x48 && p[i + 1] == 0x89 && p[i + 2] == 0xfd
+			&& p[i + 3] == 0x48 && p[i + 4] == 0x89 && p[i + 5] == 0xec
+			&& p[i + 6] == 0x65 && p[i + 7] == 0x4c
+			&& p[i + 8] == 0x8b && p[i + 9] == 0x24
+			&& p[i + 10] == 0x25 && p[i + 11] == 0x00
+			&& p[i + 12] == 0x00 && p[i + 13] == 0x00
+			&& p[i + 14] == 0x00) {
+			sRetUserland = gOrigLstar + (uint64)i;
+			dprintf("[sys_compat] x86_return_to_userland=%#" B_PRIx64 "\n",
+				sRetUserland);
+			kser_puts("RETUfn=");
+			kser_hex(sRetUserland);
+			kser_putc('\n');
+			return;
+		}
+	}
+	dprintf("[sys_compat] x86_return_to_userland scan missed\n");
 }
 
 extern "C" int64
@@ -1019,6 +1059,10 @@ struct haiku_iframe {
 #define USER_CS 0x2b	/* (USER_CODE_SEGMENT<<3)|DPL_USER */
 #define USER_SS 0x23	/* (USER_DATA_SEGMENT<<3)|DPL_USER */
 
+static struct haiku_iframe sParentFrame;
+static uint8 sParkStub[2];
+static uint8 sSwitchStub[32];
+
 static int
 kstack_top_ok(uint64 top)
 {
@@ -1075,6 +1119,9 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	sForkGs0 = 0;
 	sForkGs8 = 0;
 	sForkKtop = 0;
+	/* Official contract: interrupts off until RBP=iframe on the
+	 * thread kstack. gKstack is not in kernel_stack_base..top. */
+	__asm__ __volatile__("cli");
 	kser_puts("F2 rip=");
 	kser_hex(userRip);
 	kser_puts(" rsp=");
@@ -1132,11 +1179,32 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	 * fork shape). Trampoline then loads Linux RSP/RIP.
 	 * Parent returns via hook sysretq to Linux RIP (proven). */
 	if (gForkTramp >= 0x100000ULL) {
-		/* Park the child in a user-legal spin (HLT is #GP
-		 * at CPL 3). If parent prints PRE, IRETQ is fine. */
-		uint8* t = (uint8*)(addr_t)gForkTramp;
-		t[0] = 0xeb;
-		t[1] = 0xfe;
+		/* IRETQ to this page + Haiku SP is proven (COM1 'U').
+		 * IRETQ straight to 0x40101c / Linux SP resets.
+		 * Isolation stub: load Linux RSP, then OUT 'U'. */
+		int i;
+		sParkStub[0] = 0xeb;
+		sParkStub[1] = 0xfe;
+		sSwitchStub[0] = 0x49; sSwitchStub[1] = 0xbb;
+		for (i = 0; i < 8; i++)
+			sSwitchStub[2 + i] = (uint8)(userRsp >> (8 * i));
+		sSwitchStub[10] = 0x4c; sSwitchStub[11] = 0x89;
+		sSwitchStub[12] = 0xdc;
+		sSwitchStub[13] = 0x66; sSwitchStub[14] = 0xba;
+		sSwitchStub[15] = 0xf8; sSwitchStub[16] = 0x03;
+		sSwitchStub[17] = 0xb0; sSwitchStub[18] = 0x55;
+		sSwitchStub[19] = 0xee;
+		sSwitchStub[20] = 0xeb; sSwitchStub[21] = 0xfe;
+		/* user_memcpy must be allowed to #PF. */
+		__asm__ __volatile__("sti");
+		if (user_memcpy((void*)(addr_t)gForkTramp, sParkStub, 2) != B_OK
+			|| user_memcpy((void*)(addr_t)(gForkTramp + 64),
+				sSwitchStub, 22) != B_OK) {
+			__asm__ __volatile__("cli");
+			sLastFork = -LINUX_EFAULT;
+			return -LINUX_EFAULT;
+		}
+		__asm__ __volatile__("cli");
 		f->ip = gForkTramp;
 	} else
 		f->ip = userRip;
@@ -1180,7 +1248,9 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 			"movq	%%rbp, %%r12\n\t"
 			"movq	%%r15, %%rsp\n\t"
 			"movq	%%r15, %%rbp\n\t"
+			"sti\n\t"
 			"callq	*%%r13\n\t"
+			"cli\n\t"
 			"movq	%%r14, %%rsp\n\t"
 			"movq	%%r12, %%rbp\n\t"
 			: "=a"(st)
@@ -1197,6 +1267,71 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	dprintf("[sys_compat] try_fork returned %" B_PRId32 "\n", st);
 	if (st < 0)
 		return haiku_status_to_linux((int64)st);
+
+	/* Parent may have a new CR3 after fork_team COW. Slot 0 still
+	 * holds the pre-fork value, so the next Linux syscall misses
+	 * and can hit Haiku rax=1. Stamp the live CR3 now. */
+	{
+		uint64 oldc = gLinuxCR3[0];
+		uint64 newc = read_cr3() & ~(uint64)0xfff;
+		uint32 insn = 0;
+		gLinuxCR3[0] = newc;
+		kser_puts("CR3 old=");
+		kser_hex(oldc);
+		kser_puts(" new=");
+		kser_hex(newc);
+		kser_putc('\n');
+		if (userRip >= 0x100000ULL) {
+			insn = *(volatile uint32*)(addr_t)userRip;
+			kser_puts("INSN=");
+			kser_hex((uint64)insn);
+			kser_putc('\n');
+		}
+	}
+
+	/* Parent return: copy iframe onto THIS stack (gKstack) and
+	 * call official x86_return_to_userland. Child already copied
+	 * iframe.ip=tramp+0 during fork. Do not IRETQ from the planted
+	 * kstack frame (C sat on that stack once and got smashed).
+	 * Do not return to the hook if we have the official path —
+	 * homemade 5-push skipped kernel-exit / FPU clear. */
+	{
+		typedef void (*ret_fn)(struct haiku_iframe*);
+		ret_fn ret;
+		uint64 pad = 0;
+		int n;
+
+		q = (uint8*)f;
+		for (n = 0; n < (int)sizeof(sParentFrame); n++)
+			((uint8*)&sParentFrame)[n] = q[n];
+		sParentFrame.ax = (uint64)(uint32)st;
+		if (gForkTramp >= 0x100000ULL)
+			sParentFrame.ip = gForkTramp + 64;
+		else if (userRip >= 0x100000ULL)
+			sParentFrame.ip = userRip;
+		if (gForkHaikuRsp >= 0x100000ULL)
+			sParentFrame.sp = gForkHaikuRsp;
+		sParentFrame.flags = 0x3202;
+		__asm__ __volatile__("sti");
+		if (gForkTramp >= 0x100000ULL)
+			(void)user_memcpy(&pad, (void*)(addr_t)(gForkTramp + 64), 8);
+		__asm__ __volatile__("cli");
+		kser_puts("PAD=");
+		kser_hex(pad);
+		kser_puts(" RETU ip=");
+		kser_hex(sParentFrame.ip);
+		kser_puts(" fn=");
+		kser_hex(sRetUserland);
+		kser_putc('\n');
+		dprintf("[sys_compat] try_fork parent return tramp=%#" B_PRIx64
+			" pad=%#" B_PRIx64 " ip=%#" B_PRIx64 " retu=%#" B_PRIx64 "\n",
+			gForkTramp, pad, sParentFrame.ip, sRetUserland);
+		if (sRetUserland >= 0xffffffff80000000ULL) {
+			ret = (ret_fn)(addr_t)sRetUserland;
+			__asm__ __volatile__("cli");
+			ret(&sParentFrame);
+		}
+	}
 	return (int64)st;
 }
 

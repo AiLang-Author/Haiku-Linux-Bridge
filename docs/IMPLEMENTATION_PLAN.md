@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 15: COM1 isolation — `_user_fork` works; reboot is Linux RIP)  
+**Last updated:** 2026-08-15 (Day 16: official `x86_return_to_userland` — parent user mode lives)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -9,7 +9,8 @@ before the optimistic tables in standups before Day 10.
 
 Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 14](STANDUP_DAY14.md) (ruled out Haiku fork + ELF COW) →
-[Day 15](STANDUP_DAY15.md) (COM1: IRETQ itself is fine).
+[Day 15](STANDUP_DAY15.md) (COM1: IRETQ itself is fine) →
+[Day 16](STANDUP_DAY16.md) (official return; parent user mode lives).
 
 ---
 
@@ -48,17 +49,18 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 15):** single-process Linux CLI is still guest-green.
-`_user_fork` from the planted iframe **returns a child team id** (COM1
-`F5 st=0x1ac` / `0x1ad`). Parent IRETQ to a user-legal `eb fe` spin on
-the Haiku stack **keeps the guest up**. Returning the parent to Linux
-`RIP=0x40101c` (the instruction after `clone`) still silent-reboots.
-Child IRETQ is not the reboot (parent parked in-kernel; guest lived).
+**Where we are (Day 16):** single-process Linux CLI is still guest-green.
+`_user_fork` returns a child id. Parent return is official
+`x86_return_to_userland` (scanned from LSTAR). IRETQ onto the trampoline
+page + Haiku stack **runs user code** (COM1 `U`) and **keeps the guest
+up**. That was the kernel-killing bug (bad `RBP` on `gKstack`, then C
+frame smashed by `_user_fork` on the real kstack). Returning the parent
+into Linux `RIP=0x40101c` still silent-reboots. Kernel can read that
+insn after fork (`INSN=0x78c08548`).
 
-**What needs doing next:** stamp parent CR3 after `_user_fork` (fork may
-replace it), `KSER` the parent's first Linux `write` (`PRE`), then IRETQ
-parent to `0x40101c` without a reset. Then stamp the child CR3 so Linux
-`exit` 60 ≠ `_kern_cancel_thread`, then `wait4` then `execve`.
+**What needs doing next:** isolate Linux RSP vs execute-`0x40101c` after
+the proven tramp landing, then `PRE` / `KSER W`. Stamp child CR3 so
+Linux `exit` 60 ≠ `_kern_cancel_thread`, then `wait4` then `execve`.
 `CLONE_VM` / futex is pthread — later. ioctl still later.
 
 ---
@@ -229,10 +231,9 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **Parent `PRE` without a reset.** Stamp parent CR3 after `_user_fork`
-   (COW may replace it). `KSER` Linux `write` so we can see if `PRE` is
-   reached. Then IRETQ parent to Linux `0x40101c` (or trampoline that
-   loads that RIP). Child can stay on `eb fe` until `PRE` is green.
+1. **Parent `PRE` without a reset.** Official IRETQ to the trampoline
+   already lives. Isolate Linux RSP vs `jmp 0x40101c`, then `KSER W`.
+   Child can stay on `eb fe` until `PRE` is green.
 2. **Stamp the child's CR3** so Linux `exit` (60) never becomes Haiku
    `_kern_cancel_thread`. Then `wait4`, then `execve`. Adopt-on-every-miss
    stays off. `CLONE_VM` / futex is pthread — later.
@@ -295,6 +296,8 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `scripts/guest_term.py` | Host: open Haiku Terminal via Tracker + type |
 | `docs/STANDUP_DAY14.md` | Day 14 wrap: `_kern_fork` itself is fine |
 | `docs/STANDUP_DAY15.md` | Day 15 wrap: COM1 isolation of the reboot |
+| `docs/STANDUP_DAY16.md` | Day 16 wrap: official return, parent user mode |
+| `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |
 | `docs/IMPLEMENTATION_PLAN.md` | this file |

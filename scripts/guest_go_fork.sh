@@ -12,6 +12,10 @@ if [ ! -f "$KSET" ] || ! grep -q serial_debug_output "$KSET"; then
 	printf 'serial_debug_output true\nserial_debug_speed 115200\n' >> "$KSET"
 	echo "[+] enabled serial_debug_output in $KSET"
 fi
+if ! grep -q syslog_debug_output "$KSET" 2>/dev/null; then
+	printf 'syslog_debug_output true\n' >> "$KSET"
+	echo "[+] enabled syslog_debug_output in $KSET"
+fi
 SRC=/boot/home/src
 mkdir -p "$SRC"
 cd "$SRC"

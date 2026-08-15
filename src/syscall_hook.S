@@ -173,18 +173,13 @@ sys_compat_lstar:
 	inc	r8
 	cmp	r8, 8
 	jb	.Lcr3scan
-	/* Unmarked CR3 after Linux fork: stamp this CR3 (no C).
-	 * Child's first syscall is often Linux exit(60). Haiku 60 is
-	 * _kern_cancel_thread. */
+	/* Unmarked CR3 after Linux fork: stamp on *any* syscall.
+	 * Linux 4 (stat) is Haiku _kern_shutdown(rdi≠0) → real reboot.
+	 * Linux 1 (write) is _kern_generic_syscall → Kill Thread.
+	 * Linux 60 (exit) is _kern_cancel_thread. Never identity-pass. */
 	cmp	qword ptr [rip + gForkPending], 0
 	je	.Lhaiku_slow
-	cmp	qword ptr [rsp + 16], 60
-	je	.Lstamp_child
-	cmp	qword ptr [rsp + 16], 231
-	je	.Lstamp_child
-	cmp	qword ptr [rsp + 16], 1
-	je	.Lstamp_child
-	jmp	.Lhaiku_slow
+	jmp	.Lstamp_child
 .Lstamp_child:
 	lea	r9, [rip + gLinuxCR3]
 	xor	r8, r8
@@ -289,6 +284,10 @@ sys_compat_lstar:
 	pop	r8
 	pop	rax
 .Llinux_go:
+	cmp	qword ptr [rip + gForkPending], 0
+	je	.Llinux_go_nolk
+	KSER	'L'
+.Llinux_go_nolk:
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
 	push	r8
@@ -480,8 +479,35 @@ sys_compat_lstar:
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
 	je	.Lexit
+	cmp	rax, 13			/* rt_sigaction — glibc installs and ignores */
+	je	.Lok0
+	cmp	rax, 14			/* rt_sigprocmask */
+	je	.Lok0
+	cmp	rax, 230		/* clock_nanosleep */
+	je	.Lclock_nanosleep
+	cmp	rax, 269		/* faccessat */
+	je	.Lfaccessat
+	cmp	rax, 169		/* Linux reboot — never identity-pass */
+	je	.Lenosys
+	cmp	rax, 7			/* poll */
+	je	.Lenosys
+	cmp	rax, 23			/* select */
+	je	.Lenosys
+	cmp	rax, 270		/* pselect6 */
+	je	.Lenosys
+	cmp	rax, 271		/* ppoll */
+	je	.Lenosys
+	cmp	rax, 202		/* futex */
+	je	.Lenosys
+	cmp	rax, 59			/* execve */
+	je	.Lenosys
+	cmp	rax, 25			/* mremap */
+	je	.Lenosys
+	cmp	rax, 15			/* rt_sigreturn */
+	je	.Lenosys
 
-	/* Reject, do not panic. SYSCALL already left RIP in RCX, RFLAGS in R11. */
+	/* Marked CR3: every other Linux number is -ENOSYS.
+	 * Never jmp original LSTAR with a Linux rax (Haiku 4 = shutdown). */
 	mov	rax, -38		/* -ENOSYS */
 	jmp	.Lret
 
@@ -500,6 +526,7 @@ sys_compat_lstar:
 	/* Linux: rdi=fd rsi=buf rdx=count
 	 * Haiku _kern_write: rdi=fd rsi=pos rdx=buf rcx/r10=count
 	 */
+	KSER	'W'
 	mov	r10, rdx
 	mov	rdx, rsi
 	mov	rsi, -1
@@ -724,9 +751,17 @@ sys_compat_lstar:
 	mov	rdx, r11
 	swapgs
 	KSER	'2'
+	/* C on gKstack, iframe on the real kstack. Running try_fork
+	 * on gs:8 left its frame 64 bytes below the iframe; _user_fork
+	 * smashed the return address (syslog: parent return, then
+	 * reset, never KSER 6). Must set RBP: -O3 spills -0x38(%rbp)
+	 * and leftover user RBP=0x10 #PF'd at 0xffffffffffffffd8. */
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16
-	sti
+	mov	rbp, rsp
+	/* No STI here. Official SYSCALL enables interrupts only after
+	 * RBP is the iframe on the real kstack. STI on gKstack jumped
+	 * to 0x19e1e78c0bc during F4. try_fork STIs around _user_fork. */
 	KSER	'3'
 	call	sys_compat_try_fork
 	KSER	'6'
@@ -744,9 +779,10 @@ sys_compat_lstar:
 	 * Double Faulted — kernel code on the Linux stack. IRETQ
 	 * loads user RSP from the frame so we never do that. */
 	KSER	'Y'
-	/* IRETQ to user works (tramp+Haiku stack stayed up).
-	 * Now parent goes to the real Linux RIP on the Haiku
-	 * stack — isolate Linux RSP vs Linux RIP as the reboot. */
+	/* 5-push IRETQ to tramp+64. Stub is COM1 'U' then eb fe —
+	 * no SYSCALL. RFLAGS=0x3202 (IF|IOPL=3) so CPL3 OUT works.
+	 * COM1 'U' after Z => user mode ran. Silence after Z =>
+	 * IRETQ itself triple-faulted (matches empty previous_syslog). */
 	push	0x23
 	mov	rdx, [rip + gForkHaikuRsp]
 	test	rdx, rdx
@@ -754,9 +790,17 @@ sys_compat_lstar:
 	mov	rdx, [rip + gForkUserRsp]
 .Lprsp:
 	push	rdx
-	push	0x202
+	push	0x3202
 	push	0x2b
-	push	qword ptr [rip + gForkUserRip]
+	mov	rdx, [rip + gForkTramp]
+	test	rdx, rdx
+	jz	.Lprip_user
+	add	rdx, 64			/* UART stub; +0 is child eb fe */
+	jmp	.Lprip
+.Lprip_user:
+	mov	rdx, [rip + gForkUserRip]
+.Lprip:
+	push	rdx
 	KSER	'Z'
 	swapgs
 	iretq
@@ -1324,6 +1368,10 @@ sys_compat_lstar:
 	push	r9
 	push	r10
 	CALL_C	sys_compat_pipe2
+.Lclock_nanosleep:
+	/* rdi=clockid rsi=flags rdx=req r10=rem → nanosleep(req, rem) */
+	mov	rdi, rdx
+	mov	rsi, r10
 .Lnanosleep:
 	push	rcx
 	push	r11
@@ -1541,6 +1589,10 @@ sys_compat_lstar:
 	pop	rcx
 	jmp	.Lret
 
+.Lfaccessat:
+	/* rdi=dirfd rsi=path rdx=mode — ignore dirfd/flags. */
+	mov	rdi, rsi
+	mov	rsi, rdx
 .Laccess:
 	push	rcx
 	push	r11
@@ -2003,5 +2055,5 @@ gForkUserFlags:
 	.quad	0
 	.align	16
 gKstack:
-	.space	16384
+	.space	32768
 gKstackEnd:
