@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 19: Linux dispatch stays on `gs:8`; `wait4` entered)  
+**Last updated:** 2026-08-15 (Day 20: `hello_fork` prints `FORKOK`, RC=0)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -13,7 +13,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 16](STANDUP_DAY16.md) (official return; parent user mode lives) →
 [Day 17](STANDUP_DAY17.md) (parent `PRE` after fork; guest lives) →
 [Day 18](STANDUP_DAY18.md) (IRETQ to `0x40101c`; child CR3 stamps) →
-[Day 19](STANDUP_DAY19.md) (kstack Linux dispatch; `wait4` reached).
+[Day 19](STANDUP_DAY19.md) (kstack Linux dispatch; `wait4` reached) →
+[Day 20](STANDUP_DAY20.md) (`hello_fork` / `FORKOK`).
 
 ---
 
@@ -52,18 +53,18 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 19):** single-process Linux CLI is still guest-green.
-Parent IRETQ to `0x40101c` still prints `PRE`. Linux dispatch after a
-CR3 hit (and after a child stamp) now stays on `gs:8` / kernel GS
-until `.Llstar` / `.Lret` — no hook `push` on the post-fork COW-RO
-user stack. Child iframe.ip is the Linux clone return. `hello_fork`
-reaches parent `wait4` (`KSER V`). COM1 `F4` / `S` / `5R` / `V`.
-No `KSER E` (child `exit` remap) and no `FORKOK`; `sys_compat_run`
-then hits a Haiku team crash dialog. Guest kernel stays up.
+**Where we are (Day 20):** single-process Linux CLI is still guest-green.
+`hello_fork` (clone + `wait4` + `FORKOK` + `exit`) is guest-green:
+COM1 `F4` / `5R` / `S` / `eE` / `Vv` / `W` / `eE`, `fork.out` has
+`FORKOK` and `FORK_RC=0`. Child IRETQ lands on a tramp `exit(60)`
+stub (stamps CR3, remaps to `_kern_exit_team`). Parent `wait4` saves
+`rcx`/`r11` (SYSCALL RIP/RFLAGS) before C. Linux dispatch stays on
+`gs:8`. Child first-syscall during `_user_fork` must not `CALL_C`
+(`gKstack` is one global). Never use `1f`/`2f` next to `KSER`.
 
-**What needs doing next:** child `exit` after stamp (`S` but no `E`),
-then a `wait4` that returns `FORKOK`, then `execve`. `CLONE_VM` /
-futex is pthread — later. ioctl still later.
+**What needs doing next:** IRETQ child to the real Linux RIP (not
+just the tramp stub), then `execve`. `CLONE_VM` / futex is pthread
+— later. ioctl still later.
 
 ---
 
@@ -233,9 +234,8 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **Child `exit` after CR3 stamp, then `wait4` → `FORKOK`.** Stamp
-   (`S`) and parent `wait4` (`V`) are reached. Child remap `E` and
-   `FORKOK` are not. Then `execve`. Adopt-on-every-miss stays off.
+1. **Child IRETQ to the real Linux RIP, then `execve`.** `FORKOK` is
+   green with a tramp `exit(60)` stub. Adopt-on-every-miss stays off.
 2. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
 3. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
@@ -299,6 +299,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY17.md` | Day 17 wrap: parent `PRE` after fork |
 | `docs/STANDUP_DAY18.md` | Day 18 wrap: IRETQ to `0x40101c`; child stamp |
 | `docs/STANDUP_DAY19.md` | Day 19 wrap: kstack dispatch; `wait4` entered |
+| `docs/STANDUP_DAY20.md` | Day 20 wrap: `hello_fork` / `FORKOK` |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |

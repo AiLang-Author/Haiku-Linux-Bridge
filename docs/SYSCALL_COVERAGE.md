@@ -144,10 +144,10 @@ ENOSYS**: ~90 (including stubs).
 **single process** (no shell spawn): echo, uname, cat, ls, cp, mv,
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
-`clone`/`fork` from a **marked** Linux team: parent IRETQ to `0x40101c`
-prints `PRE` (Day 18). Linux dispatch stays on `gs:8` (Day 19). Child
-CR3 stamps (`S`); parent `wait4` is entered (`V`). Child `exit` remap
-(`E`) and `FORKOK` are not guest-green yet. Then `execve`.
+`clone`/`fork`/`wait4`/`exit` from a **marked** Linux team: `hello_fork`
+prints `FORKOK`, `FORK_RC=0` (Day 20). Child IRETQ uses a tramp
+`exit(60)` stub; parent official-returns to `0x40101c` and `wait4`s.
+Next: child to the real Linux RIP, then `execve`.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
 Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.

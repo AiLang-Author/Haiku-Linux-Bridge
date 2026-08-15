@@ -208,7 +208,39 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
-	jmp	.Llinux_go
+	/* Child first syscall during _user_fork. Parent is still on
+	 * gKstack in try_fork — do not CALL_C. Only exit/write.
+	 * Never use 1f/2f next to KSER (macro owns those labels). */
+	cmp	rax, 60
+	je	.Lexit
+	cmp	rax, 231
+	je	.Lexit
+	cmp	rax, 1
+	je	.Lwrite
+	mov	[rip + gLastLinuxRax], rax
+	KSER	'X'
+	mov	[rip + gTmpR8], rdx
+	mov	dx, 0x3f8
+	mov	rax, [rip + gLastLinuxRax]
+	shr	al, 4
+	and	al, 0xf
+	add	al, '0'
+	cmp	al, '9'
+	jbe	.Lsthex1
+	add	al, 7
+.Lsthex1:
+	out	dx, al
+	mov	rax, [rip + gLastLinuxRax]
+	and	al, 0xf
+	add	al, '0'
+	cmp	al, '9'
+	jbe	.Lsthex2
+	add	al, 7
+.Lsthex2:
+	out	dx, al
+	mov	rdx, [rip + gTmpR8]
+	mov	rax, -38
+	jmp	.Lret
 .Lhaiku_slow:
 	pop	r9
 	pop	r8
@@ -663,6 +695,7 @@ sys_compat_lstar:
 	jmp	.Llstar
 
 .Lexit:
+	KSER	'e'
 	/* Drop this CR3 only. A live child must stay marked. */
 	push	r8
 	push	r9
@@ -819,8 +852,11 @@ sys_compat_lstar:
 .Lwait4:
 	/* rdi=pid rsi=status rdx=options r10=rusage.
 	 * Info scratch is below the user RSP (Haiku writes it via
-	 * user_memcpy). Do not push on that COW-RO stack. */
+	 * user_memcpy). Do not push on that COW-RO stack.
+	 * rcx/r11 are SYSCALL RIP/RFLAGS — must survive to sysretq. */
 	KSER	'V'
+	push	rcx
+	push	r11
 	mov	r8, qword ptr [gs:16]
 	sub	r8, 256
 	mov	rcx, r10
@@ -831,6 +867,9 @@ sys_compat_lstar:
 	call	sys_compat_wait4
 	cli
 	mov	rsp, [rip + gSavedRsp]
+	pop	r11
+	pop	rcx
+	KSER	'v'
 	jmp	.Lret
 
 	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32

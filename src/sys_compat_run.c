@@ -311,20 +311,17 @@ int main(int argc, char** argv)
         return 1;
     }
     {
-        /* Child IRETQ lands at +0. Parent now returns to 0x40101c.
-         * Child write stamps the new CR3 (gForkPending). */
-        static const unsigned char chd[] = {
-            0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
-            0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
-            0x48, 0x8d, 0x35, 0x0b, 0x00, 0x00, 0x00,
-            0x48, 0xc7, 0xc2, 0x04, 0x00, 0x00, 0x00,
+        /* Child IRETQ lands at +0: xor edi,edi; mov eax,60; syscall.
+         * First syscall is Linux exit — stamps CR3, then _kern_exit_team. */
+        static const unsigned char ex[] = {
+            0x48, 0x31, 0xff,
+            0xb8, 0x3c, 0x00, 0x00, 0x00,
             0x0f, 0x05,
-            0xeb, 0xfe,
-            'C', 'H', 'D', '\n'
+            0xeb, 0xfe
         };
         unsigned i;
-        for (i = 0; i < sizeof(chd); i++)
-            tramp[i] = chd[i];
+        for (i = 0; i < sizeof(ex); i++)
+            tramp[i] = ex[i];
     }
     printf("[+] fork IRETQ trampoline %p\n", (void*)tramp);
     /* Do not Haiku-fork here. Serial showed mark+jmp after a Haiku

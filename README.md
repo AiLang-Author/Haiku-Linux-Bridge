@@ -54,7 +54,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** — `_kern_fcntl` 0x76, `statx` from `read_stat`. `hello_fcntl` / `FCNTOK`. |
 | busybox grep / sed / wc / head / sort / cut | **Works** — single-process, no fork. All RC=0. |
-| Linux `clone` / `_kern_fork` | **Parent `PRE` + child CR3 stamp + `wait4` entered (`V`).** Child `exit`/`FORKOK` not green yet. Dispatch stays on `gs:8`. See Day 19. |
+| Linux `clone` / `wait4` / `exit` | **`hello_fork` `FORKOK`, RC=0.** Child tramp `exit(60)` + parent `wait4`. See Day 20. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |
