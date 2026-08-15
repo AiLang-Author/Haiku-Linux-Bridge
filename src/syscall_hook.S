@@ -158,6 +158,14 @@ sys_compat_lstar:
 	cmp	rax, SYS_COMPAT_MARK_NR
 	je	.Lmark
 
+	/* SYSCALL leaves user GS + user RSP. After fork that stack is
+	 * COW-RO; a push here #PFs in kernel (PRE reset, no W).
+	 * Official LSTAR: swapgs, save RSP at arch_thread.user_rsp
+	 * (gs:16), RSP = syscall_rsp (gs:8). Then restore before
+	 * jmp LSTAR so official swapgs is still correct. */
+	swapgs
+	mov	qword ptr [gs:16], rsp
+	mov	rsp, qword ptr [gs:8]
 	push	rax
 	cmp	qword ptr [rip + gLinuxCR3], 0
 	je	.Lhaiku
@@ -198,12 +206,16 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
+	mov	rsp, qword ptr [gs:16]
+	swapgs
 	jmp	.Llinux_go
 .Lhaiku_slow:
 	pop	r9
 	pop	r8
 .Lhaiku:
 	pop	rax
+	mov	rsp, qword ptr [gs:16]
+	swapgs
 	jmp	[rip + gOrigLstar]
 
 .Lmark:
@@ -283,22 +295,22 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
+	mov	rsp, qword ptr [gs:16]
+	swapgs
 .Llinux_go:
-	cmp	qword ptr [rip + gForkPending], 0
-	je	.Llinux_go_nolk
-	KSER	'L'
-.Llinux_go_nolk:
+	/* No KSER here: after fork this is the COW-RO user stack. */
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
-	push	r8
-	push	r9
+	/* After fork the user stack is COW-RO. Do not push here. */
+	mov	[rip + gTmpR8], r8
+	mov	[rip + gTmpR9], r9
 	lea	r9, [rip + gLastN]
 	mov	r8, [rip + gLastNidx]
 	and	r8, 7
 	mov	[r9 + r8 * 8], rax
 	inc	qword ptr [rip + gLastNidx]
-	pop	r9
-	pop	r8
+	mov	r8, [rip + gTmpR8]
+	mov	r9, [rip + gTmpR9]
 
 	cmp	rax, 0			/* Linux read */
 	je	.Lread
@@ -525,12 +537,17 @@ sys_compat_lstar:
 .Lwrite:
 	/* Linux: rdi=fd rsi=buf rdx=count
 	 * Haiku _kern_write: rdi=fd rsi=pos rdx=buf rcx/r10=count
+	 * KSER pushes — do it on gs:8, not the post-fork COW-RO stack.
 	 */
+	swapgs
+	mov	rsp, qword ptr [gs:8]
 	KSER	'W'
 	mov	r10, rdx
 	mov	rdx, rsi
 	mov	rsi, -1
 	mov	rax, 0x97
+	mov	rsp, qword ptr [gs:16]
+	swapgs
 	jmp	[rip + gOrigLstar]
 
 .Lpread64:
@@ -2040,6 +2057,10 @@ gRseqLen:
 gRseqSig:
 	.quad	0
 gSavedRsp:
+	.quad	0
+gTmpR8:
+	.quad	0
+gTmpR9:
 	.quad	0
 gForkPending:
 	.quad	0

@@ -54,7 +54,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** — `_kern_fcntl` 0x76, `statx` from `read_stat`. `hello_fcntl` / `FCNTOK`. |
 | busybox grep / sed / wc / head / sort / cut | **Works** — single-process, no fork. All RC=0. |
-| Linux `clone` / `_kern_fork` | **`_user_fork` returns a child id.** Official `x86_return_to_userland` runs parent user code (COM1 `U`). Return to Linux `0x40101c` still reboots. See Day 16. |
+| Linux `clone` / `_kern_fork` | **Parent `PRE` after `_user_fork`.** Official IRETQ to tramp+64 + Linux `write` (`KSER W`). Guest lives. Return to `0x40101c` still open. See Day 17. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |

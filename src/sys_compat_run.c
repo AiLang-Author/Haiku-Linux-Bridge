@@ -122,6 +122,34 @@ int main(int argc, char** argv)
                    i, (unsigned long)phdrs[i].p_vaddr,
                    (size_t)phdrs[i].p_filesz, (size_t)phdrs[i].p_memsz);
         }
+        /* Drop W on RX text before fork. One RWX dirty map made
+         * IRETQ to 0x40101c reset while tramp (also RWX) lived —
+         * fork COW can strip X on writable pages. */
+#ifndef PF_R
+#define PF_R 4
+#define PF_W 2
+#define PF_X 1
+#endif
+        for (int i = 0; i < ehdr.e_phnum; i++) {
+            int prot;
+            uintptr_t lo;
+            size_t len;
+            if (phdrs[i].p_type != PT_LOAD)
+                continue;
+            prot = 0;
+            if (phdrs[i].p_flags & PF_R) prot |= PROT_READ;
+            if (phdrs[i].p_flags & PF_W) prot |= PROT_WRITE;
+            if (phdrs[i].p_flags & PF_X) prot |= PROT_EXEC;
+            if (prot == 0) prot = PROT_READ;
+            lo = (uintptr_t)phdrs[i].p_vaddr & ~0xFFFULL;
+            len = (((uintptr_t)phdrs[i].p_vaddr + phdrs[i].p_memsz + 0xFFFULL)
+                & ~0xFFFULL) - lo;
+            if (mprotect((void*)lo, len, prot) != 0)
+                perror("[-] mprotect PT_LOAD");
+            else
+                printf("[+] mprotect 0x%lx +%zu prot=%d\n",
+                       (unsigned long)lo, len, prot);
+        }
     }
 
     free(phdrs);
@@ -283,15 +311,22 @@ int main(int argc, char** argv)
         return 1;
     }
     {
-        static const unsigned char stub[] = {
-            0x49, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0,
-            0x4c, 0x89, 0xdc,
-            0x49, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0,
-            0x41, 0xff, 0xe3
+        /* Official IRETQ + local iframe + UART 'U' just lived.
+         * Same return, PRE write on this page (not 0x40101c). */
+        static const unsigned char pre[] = {
+            0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
+            0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
+            0x48, 0x8d, 0x35, 0x0b, 0x00, 0x00, 0x00,
+            0x48, 0xc7, 0xc2, 0x04, 0x00, 0x00, 0x00,
+            0x0f, 0x05,
+            0xeb, 0xfe,
+            'P', 'R', 'E', '\n'
         };
         unsigned i;
-        for (i = 0; i < sizeof(stub); i++)
-            tramp[i] = stub[i];
+        tramp[0] = 0xeb;
+        tramp[1] = 0xfe;
+        for (i = 0; i < sizeof(pre); i++)
+            tramp[64 + i] = pre[i];
     }
     printf("[+] fork IRETQ trampoline %p\n", (void*)tramp);
     /* Do not Haiku-fork here. Serial showed mark+jmp after a Haiku

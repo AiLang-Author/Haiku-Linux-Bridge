@@ -145,10 +145,10 @@ ENOSYS**: ~90 (including stubs).
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
 `clone`/`fork` from a **marked** Linux team: `_user_fork` succeeds
-(COM1 `F5`). Official parent return runs user code on the trampoline
-(COM1 `U`, guest lives). Returning into the Linux ELF at `0x40101c`
-still reboots (see Day 16). Next: isolate Linux RSP vs that RIP, then
-`PRE`.
+(COM1 `5`). Official parent return to tramp+64 runs Linux `write`
+(`KSER W`, `fork.out` has `PRE`, guest lives — Day 17). Returning
+into the Linux ELF at `0x40101c` still reboots. Next: that RIP, then
+stamp child CR3 / `wait4` / `execve`.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
 Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.
