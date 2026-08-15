@@ -202,13 +202,28 @@ sys_compat_lstar:
 	mov	[r9 + r8 * 8], rax
 	inc	qword ptr [rip + gLinuxN]
 	mov	qword ptr [rip + gForkPending], 0
+	/* Still on gs:8. Do not KSER after restoring the user stack. */
+	KSER	'S'
 .Lstamp_done:
 	pop	r9
 	pop	r8
 	pop	rax
+	/* Stay on gs:8. Restore+swapgs then .Llinux_go lost the
+	 * child's write (S, no second W, no CHD). */
+	cmp	rax, 1
+	je	.Lwrite_k
 	mov	rsp, qword ptr [gs:16]
 	swapgs
 	jmp	.Llinux_go
+.Lwrite_k:
+	KSER	'W'
+	mov	r10, rdx
+	mov	rdx, rsi
+	mov	rsi, -1
+	mov	rax, 0x97
+	mov	rsp, qword ptr [gs:16]
+	swapgs
+	jmp	[rip + gOrigLstar]
 .Lhaiku_slow:
 	pop	r9
 	pop	r8

@@ -1253,10 +1253,11 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		for (n = 0; n < (int)sizeof(local); n++)
 			((uint8*)&local)[n] = q[n];
 		local.ax = (uint64)(uint32)st;
-		if (gForkTramp >= 0x100000ULL)
-			local.ip = gForkTramp + 64;
-		else if (userRip >= 0x100000ULL)
+		/* PRE on tramp+64 is green. Now the real clone return. */
+		if (userRip >= 0x100000ULL)
 			local.ip = userRip;
+		else if (gForkTramp >= 0x100000ULL)
+			local.ip = gForkTramp + 64;
 		if (gForkHaikuRsp >= 0x100000ULL)
 			local.sp = gForkHaikuRsp;
 		/* Same IRETQ flags as the live COM1 'U' run. 0x202

@@ -311,22 +311,20 @@ int main(int argc, char** argv)
         return 1;
     }
     {
-        /* Official IRETQ + local iframe + UART 'U' just lived.
-         * Same return, PRE write on this page (not 0x40101c). */
-        static const unsigned char pre[] = {
+        /* Child IRETQ lands at +0. Parent now returns to 0x40101c.
+         * Child write stamps the new CR3 (gForkPending). */
+        static const unsigned char chd[] = {
             0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
             0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
             0x48, 0x8d, 0x35, 0x0b, 0x00, 0x00, 0x00,
             0x48, 0xc7, 0xc2, 0x04, 0x00, 0x00, 0x00,
             0x0f, 0x05,
             0xeb, 0xfe,
-            'P', 'R', 'E', '\n'
+            'C', 'H', 'D', '\n'
         };
         unsigned i;
-        tramp[0] = 0xeb;
-        tramp[1] = 0xfe;
-        for (i = 0; i < sizeof(pre); i++)
-            tramp[64 + i] = pre[i];
+        for (i = 0; i < sizeof(chd); i++)
+            tramp[i] = chd[i];
     }
     printf("[+] fork IRETQ trampoline %p\n", (void*)tramp);
     /* Do not Haiku-fork here. Serial showed mark+jmp after a Haiku

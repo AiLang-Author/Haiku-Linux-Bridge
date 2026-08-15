@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 17: parent `PRE` / `KSER W` after `_user_fork`)  
+**Last updated:** 2026-08-15 (Day 18: parent IRETQ to Linux `0x40101c`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -11,7 +11,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 14](STANDUP_DAY14.md) (ruled out Haiku fork + ELF COW) →
 [Day 15](STANDUP_DAY15.md) (COM1: IRETQ itself is fine) →
 [Day 16](STANDUP_DAY16.md) (official return; parent user mode lives) →
-[Day 17](STANDUP_DAY17.md) (parent `PRE` after fork; guest lives).
+[Day 17](STANDUP_DAY17.md) (parent `PRE` after fork; guest lives) →
+[Day 18](STANDUP_DAY18.md) (IRETQ to `0x40101c`; child CR3 stamps).
 
 ---
 
@@ -50,18 +51,17 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 17):** single-process Linux CLI is still guest-green.
-`_user_fork` returns a child id. Parent official IRETQ onto tramp+64
-runs a Linux `write` of `PRE`. COM1 `F4` / `5` / `R` / `W`,
-`fork.out` contains `PRE`, desktop stays up. After fork the user stack
-is COW-RO — the hook must not `push` there (that was the post-`R`
-triple fault). Returning the parent into Linux `RIP=0x40101c` is still
-open. Kernel can read that insn after fork (`INSN=0x78c08548`).
+**Where we are (Day 18):** single-process Linux CLI is still guest-green.
+Parent official IRETQ to Linux `RIP=0x40101c` (`test rax,rax` then the
+ELF's own `write`) prints `PRE`, COM1 `F4` / `5` / `R` / `W`, guest
+lives. The post-fork COW-RO hook-push bug was the old `0x40101c` reset.
+Child IRETQ runs during `_user_fork` (`STI`): first child syscall
+stamps CR3 (`KSER S` before parent `5`). Child `write` after that stamp
+does not yet print `CHD`.
 
-**What needs doing next:** IRETQ parent to `0x40101c` (RX text, not the
-tramp stub). Stamp child CR3 so Linux `exit` 60 ≠ `_kern_cancel_thread`,
-then `wait4` then `execve`. `CLONE_VM` / futex is pthread — later.
-ioctl still later.
+**What needs doing next:** child `write`/`exit` that races with parent
+still in `_user_fork`, then `wait4`, then `execve`. `CLONE_VM` / futex
+is pthread — later. ioctl still later.
 
 ---
 
@@ -231,14 +231,12 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **IRETQ parent to Linux `RIP=0x40101c`.** `PRE` on the tramp pad is
-   green. The real clone return is still a hard reset. Loader already
-   `mprotect`s `.text` RX so fork COW cannot strip X.
-2. **Stamp the child's CR3** so Linux `exit` (60) never becomes Haiku
-   `_kern_cancel_thread`. Then `wait4`, then `execve`. Adopt-on-every-miss
-   stays off. `CLONE_VM` / futex is pthread — later.
-3. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
-4. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
+1. **Child first syscall while parent is still in `_user_fork`.** CR3
+   stamp (`S`) is green. Child `write`/`exit` after that is not. Then
+   `wait4`, then `execve`. Adopt-on-every-miss stays off. `CLONE_VM` /
+   futex is pthread — later.
+2. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
+3. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
 ---
@@ -298,6 +296,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY15.md` | Day 15 wrap: COM1 isolation of the reboot |
 | `docs/STANDUP_DAY16.md` | Day 16 wrap: official return, parent user mode |
 | `docs/STANDUP_DAY17.md` | Day 17 wrap: parent `PRE` after fork |
+| `docs/STANDUP_DAY18.md` | Day 18 wrap: IRETQ to `0x40101c`; child stamp |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |
