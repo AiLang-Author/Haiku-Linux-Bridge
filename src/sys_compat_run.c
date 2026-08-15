@@ -11,7 +11,6 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/mman.h>
-#include <sys/wait.h>
 #include <elf.h>
 #include "sys_compat_abi.h"
 
@@ -270,48 +269,58 @@ int main(int argc, char** argv)
                arena, SYS_COMPAT_ARENA_SIZE);
     } else
         printf("[+] no arena (fork probe)\n");
-    /* Haiku-side fork after the Linux ELF is mapped, still a Haiku
-     * team. Isolates vm_copy_area of the 0x400000 map from the Linux
-     * clone / child IRETQ path. */
-    if (skip_arena) {
-        pid_t hp = fork();
-        if (hp < 0)
-            printf("[+] HAIKU_FORK_NEG\n");
-        else if (hp == 0) {
-            printf("[+] HAIKU_FORK_CHILD\n");
-            fflush(stdout);
-            _exit(0);
-        } else {
-            printf("[+] HAIKU_FORK_PARENT %d\n", (int)hp);
-            fflush(stdout);
-            waitpid(hp, NULL, 0);
-            printf("[+] HAIKU_FORK_OK\n");
-        }
-        fflush(stdout);
-        /* Stop here so a reboot can be blamed on Haiku fork of the
-         * 0x400000 Linux map, not on the later Linux clone/IRETQ. */
-        return 0;
+    /* Child IRETQ trampoline (rseq-style: this layer owns the return).
+     *  49 bb <rsp>     movabs $linux_rsp, %r11
+     *  4c 89 dc        mov %r11, %rsp
+     *  49 bb <rip>     movabs $linux_rip, %r11
+     *  41 ff e3        jmp *%r11
+     * Hook patches +2 (rsp) and +15 (rip). */
+    unsigned char* tramp = (unsigned char*)mmap(NULL, 4096,
+        PROT_READ | PROT_WRITE | PROT_EXEC,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tramp == MAP_FAILED) {
+        perror("[-] mmap fork IRETQ trampoline");
+        return 1;
     }
+    {
+        static const unsigned char stub[] = {
+            0x49, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x4c, 0x89, 0xdc,
+            0x49, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x41, 0xff, 0xe3
+        };
+        unsigned i;
+        for (i = 0; i < sizeof(stub); i++)
+            tramp[i] = stub[i];
+    }
+    printf("[+] fork IRETQ trampoline %p\n", (void*)tramp);
+    /* Do not Haiku-fork here. Serial showed mark+jmp after a Haiku
+     * fork reboots before Linux clone. Keep the 0x400000 map pristine. */
     printf("[+] mark via raw syscall 0x%x then jmp 0x%lx (no libc after mark)\n",
            SYS_COMPAT_MARK_NR, (unsigned long)ehdr.e_entry);
     fflush(stdout);
 
     /*
      * Mark + jump in one asm block. r12/r13 survive the mark sysret.
-     * rdi/rsi carry the arena. Keep compat_fd open for LEAVE on death.
+     * rdi/rsi = arena, rdx = IRETQ trampoline, r8 = Haiku RSP.
      */
     {
+        uint64_t haiku_rsp;
+        __asm__ __volatile__("movq %%rsp, %0" : "=r"(haiku_rsp));
         register uint64_t rsp_val asm("r12") = (uint64_t)(uintptr_t)sp;
-        register uint64_t entry_val asm("r13") = ehdr.e_entry;
+        register uint64_t entry_val asm("r13") = (uint64_t)(uintptr_t)ehdr.e_entry;
         register uint64_t arena_val asm("rdi") = (uint64_t)(uintptr_t)arena;
         register uint64_t size_val asm("rsi") = (uint64_t)arena_sz;
+        register uint64_t tramp_val asm("rdx") = (uint64_t)(uintptr_t)tramp;
+        register uint64_t hrsp_val asm("r8") = haiku_rsp;
         __asm__ __volatile__(
             "mov $0x1337, %%rax\n\t"
             "syscall\n\t"
             "mov %%r12, %%rsp\n\t"
             "jmp *%%r13\n\t"
             :
-            : "r"(rsp_val), "r"(entry_val), "D"(arena_val), "S"(size_val)
+            : "r"(rsp_val), "r"(entry_val), "D"(arena_val), "S"(size_val),
+              "d"(tramp_val), "r"(hrsp_val)
             : "rax", "rcx", "r11", "memory"
         );
     }

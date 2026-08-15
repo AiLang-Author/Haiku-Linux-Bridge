@@ -317,6 +317,8 @@ extern "C" {
 	extern uint64 gRseqLen;
 	extern uint64 gRseqSig;
 	extern uint64 gSavedRsp;
+	extern uint64 gForkTramp;
+	extern uint64 gForkHaikuRsp;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -369,6 +371,8 @@ extern "C" {
 	int64 sys_compat_statx(int64 fd, const void* path, int64 flags,
 		uint32 mask, void* buf);
 	int64 sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags);
+	void sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags,
+		int64 retval);
 }
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -392,6 +396,45 @@ wrmsr(uint32 msr, uint64 value)
 	uint32 lo = (uint32)value;
 	uint32 hi = (uint32)(value >> 32);
 	__asm__ __volatile__("wrmsr" :: "c"(msr), "a"(lo), "d"(hi));
+}
+
+/* COM1 — QEMU -serial file:. dprintf is silent unless
+ * serial_debug_output is on; this is not. */
+static void
+kser_putc(char c)
+{
+	int i;
+	uint8 lsr;
+
+	if (c == '\n')
+		kser_putc('\r');
+	for (i = 0; i < 100000; i++) {
+		__asm__ __volatile__("inb %%dx, %%al"
+			: "=a"(lsr) : "d"((uint16)0x3fd));
+		if ((lsr & 0x20) != 0)
+			break;
+	}
+	__asm__ __volatile__("outb %%al, %%dx"
+		: : "a"((uint8)c), "d"((uint16)0x3f8));
+}
+
+static void
+kser_puts(const char* s)
+{
+	while (*s != 0)
+		kser_putc(*s++);
+}
+
+static void
+kser_hex(uint64 v)
+{
+	static const char h[] = "0123456789abcdef";
+	int i;
+
+	kser_putc('0');
+	kser_putc('x');
+	for (i = 60; i >= 0; i -= 4)
+		kser_putc(h[(int)((v >> i) & 0xf)]);
 }
 
 static inline uint64
@@ -910,6 +953,9 @@ sys_compat_mark_team(void)
 	sRobustLen = 0;
 	dprintf("[sys_compat] mark team=%" B_PRId32 " parent=%" B_PRId32 "\n",
 		info.team, info.parent);
+	kser_puts("MARK team=");
+	kser_hex((uint64)(uint32)info.team);
+	kser_putc('\n');
 	return info.team;
 }
 
@@ -1029,6 +1075,15 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	sForkGs0 = 0;
 	sForkGs8 = 0;
 	sForkKtop = 0;
+	kser_puts("F2 rip=");
+	kser_hex(userRip);
+	kser_puts(" rsp=");
+	kser_hex(userRsp);
+	kser_puts(" tramp=");
+	kser_hex(gForkTramp);
+	kser_puts(" hrsp=");
+	kser_hex(gForkHaikuRsp);
+	kser_putc('\n');
 	dprintf("[sys_compat] try_fork rip=%#" B_PRIx64 " rsp=%#" B_PRIx64
 		" fl=%#" B_PRIx64 " fn=%#" B_PRIx64 "\n",
 		userRip, userRsp, userFlags, sForkFn);
@@ -1073,13 +1128,47 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	for (j = 0; j < (int)sizeof(*f); j++)
 		q[j] = 0;
 	f->type = IFRAME_TYPE_SYSCALL;
-	f->ip = userRip;
+	/* Child IRETQ: Haiku trampoline + Haiku user stack (native
+	 * fork shape). Trampoline then loads Linux RSP/RIP.
+	 * Parent returns via hook sysretq to Linux RIP (proven). */
+	if (gForkTramp >= 0x100000ULL) {
+		/* Park the child in a user-legal spin (HLT is #GP
+		 * at CPL 3). If parent prints PRE, IRETQ is fine. */
+		uint8* t = (uint8*)(addr_t)gForkTramp;
+		t[0] = 0xeb;
+		t[1] = 0xfe;
+		f->ip = gForkTramp;
+	} else
+		f->ip = userRip;
 	f->cs = USER_CS;
-	f->flags = userFlags | 0x202;
-	f->sp = userRsp;
+	/* Official enter_userspace: RESERVED1|IF only (0x202).
+	 * userFlags|0x202 can leave VM/NT/IOPL/RF and IRETQ #GPs. */
+	f->flags = 0x202;
+	if (gForkHaikuRsp >= 0x100000ULL)
+		f->sp = gForkHaikuRsp;
+	else
+		f->sp = userRsp;
 	f->ss = USER_SS;
 	f->vector = 99;
 	f->ax = 0;
+
+	kser_puts("F4 iframe=");
+	kser_hex((uint64)(addr_t)f);
+	kser_puts(" ip=");
+	kser_hex(f->ip);
+	kser_puts(" sp=");
+	kser_hex(f->sp);
+	kser_puts(" cs=");
+	kser_hex(f->cs);
+	kser_puts(" ss=");
+	kser_hex(f->ss);
+	kser_puts(" fl=");
+	kser_hex(f->flags);
+	kser_puts(" ktop=");
+	kser_hex(ktop);
+	kser_puts(" fn=");
+	kser_hex(sForkFn);
+	kser_putc('\n');
 
 	fn = (haiku_fork_fn)(addr_t)sForkFn;
 	__asm__ __volatile__("movq %%rsp, %0" : "=r"(saved_rsp));
@@ -1102,10 +1191,32 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		);
 	}
 	sLastFork = (int64)st;
+	kser_puts("F5 st=");
+	kser_hex((uint64)(uint32)st);
+	kser_putc('\n');
 	dprintf("[sys_compat] try_fork returned %" B_PRId32 "\n", st);
 	if (st < 0)
 		return haiku_status_to_linux((int64)st);
 	return (int64)st;
+}
+
+extern "C" void
+sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags, int64 retval)
+{
+	/* Still on gKstack, kernel GS, interrupts off. Print the exact
+	 * SYSRET state before we load user RSP. */
+	kser_puts("P rip=");
+	kser_hex(rip);
+	kser_puts(" rsp=");
+	kser_hex(rsp);
+	kser_puts(" fl=");
+	kser_hex(flags);
+	kser_puts(" ax=");
+	kser_hex((uint64)retval);
+	kser_putc('\n');
+	dprintf("[sys_compat] parent sysret rip=%#" B_PRIx64 " rsp=%#" B_PRIx64
+		" fl=%#" B_PRIx64 " ax=%" B_PRId64 "\n",
+		rip, rsp, flags, retval);
 }
 
 extern "C" int64
@@ -2123,6 +2234,13 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		PUT(" ktop="); PUT(fk); PUT(" frk="); PUT(fl); PUT("\n");
 	}
 	{
+		char ht[20];
+		fmt_hex(ht, gForkTramp);
+		PUT("tramp="); PUT(ht);
+		fmt_hex(ht, gForkHaikuRsp);
+		PUT(" hrsp="); PUT(ht); PUT("\n");
+	}
+	{
 		char uid[20], gid[20], ctid[20];
 		fmt_u64(uid, sHaveUid ? (uint64)sUid : 0);
 		fmt_u64(gid, sHaveGid ? (uint64)sGid : 0);
@@ -2220,6 +2338,9 @@ init_driver(void)
 	}
 	dprintf("[sys_compat] identity passthrough armed, orig %#" B_PRIx64 "\n",
 		gOrigLstar);
+	kser_puts("sys_compat UART live orig=");
+	kser_hex(gOrigLstar);
+	kser_putc('\n');
 	discover_syscall_table();
 	return B_OK;
 }

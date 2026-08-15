@@ -4,6 +4,14 @@
 set -x
 HOST="http://10.0.2.2:8083"
 printf LEAVEABI > /dev/misc/sys_compat 2>/dev/null || true
+# Haiku dprintf/KDL on COM1 (QEMU -serial file:). Our hook also
+# pokes 0x3f8 directly so breadcrumbs work even if this is off.
+mkdir -p /boot/home/config/settings/kernel/drivers
+KSET=/boot/home/config/settings/kernel/drivers/kernel
+if [ ! -f "$KSET" ] || ! grep -q serial_debug_output "$KSET"; then
+	printf 'serial_debug_output true\nserial_debug_speed 115200\n' >> "$KSET"
+	echo "[+] enabled serial_debug_output in $KSET"
+fi
 SRC=/boot/home/src
 mkdir -p "$SRC"
 cd "$SRC"

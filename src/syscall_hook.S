@@ -32,6 +32,29 @@
 
 	.intel_syntax noprefix
 	.text
+
+	/* COM1 0x3f8 — QEMU -serial file:. Independent of Haiku
+	 * serial_debug_output (dprintf is gated on that flag). */
+	.macro KSER ch
+	push	rax
+	push	rcx
+	push	rdx
+	mov	ecx, 100000
+	mov	dx, 0x3fd
+1:
+	in	al, dx
+	test	al, 0x20
+	jnz	2f
+	dec	ecx
+	jnz	1b
+2:
+	mov	al, \ch
+	mov	dx, 0x3f8
+	out	dx, al
+	pop	rdx
+	pop	rcx
+	pop	rax
+	.endm
 	.globl	sys_compat_lstar
 	.globl	gOrigLstar
 	.globl	gLinuxCR3
@@ -55,6 +78,11 @@
 	.globl	gKstackEnd
 	.globl	gKstack
 	.globl	gForkPending
+	.globl	gForkTramp
+	.globl	gForkHaikuRsp
+	.globl	gForkUserRip
+	.globl	gForkUserRsp
+	.globl	gForkUserFlags
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gLinuxTeam
@@ -77,6 +105,11 @@
 	.hidden	gKstackEnd
 	.hidden	gKstack
 	.hidden	gForkPending
+	.hidden	gForkTramp
+	.hidden	gForkHaikuRsp
+	.hidden	gForkUserRip
+	.hidden	gForkUserRsp
+	.hidden	gForkUserFlags
 
 	.extern	sys_compat_getdents64
 	.extern	sys_compat_stat
@@ -117,6 +150,7 @@
 	.extern	sys_compat_fcntl
 	.extern	sys_compat_statx
 	.extern	sys_compat_try_fork
+	.extern	sys_compat_fork_parent_dump
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -179,8 +213,12 @@ sys_compat_lstar:
 
 .Lmark:
 	/* Still on the user stack, user GS. Do not swapgs.
-	 * rdi = optional arena base, rsi = size (0 = no arena).
+	 * rdi = optional arena base, rsi = size (0 = no arena),
+	 * rdx = optional fork IRETQ trampoline (user page).
 	 */
+	KSER	'M'
+	mov	qword ptr [rip + gForkTramp], rdx
+	mov	qword ptr [rip + gForkHaikuRsp], r8
 	xor	r8, r8
 .Lmark_clr:
 	lea	r9, [rip + gLinuxCR3]
@@ -233,6 +271,7 @@ sys_compat_lstar:
 	cli
 	mov	rsp, [rip + gSavedRsp]
 	swapgs
+	KSER	'm'
 	pop	r10
 	pop	r9
 	pop	r8
@@ -242,6 +281,7 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	xor	rax, rax
+	KSER	'Q'
 	sysretq
 
 .Llinux:
@@ -388,7 +428,10 @@ sys_compat_lstar:
 	cmp	rax, 293		/* pipe2 */
 	je	.Lpipe2
 	cmp	rax, 56			/* Linux clone */
-	je	.Lclone
+	jne	.Lnotclone
+	KSER	'C'
+	jmp	.Lclone
+.Lnotclone:
 	cmp	rax, 57			/* Linux fork */
 	je	.Lfork
 	cmp	rax, 58			/* Linux vfork */
@@ -663,16 +706,60 @@ sys_compat_lstar:
 	test	rdi, 0x10000		/* CLONE_THREAD */
 	jnz	.Lenosys
 .Ltry_fork:
-	/* Official _kern_fork entry. We are still on the user stack
-	 * with user GS (Linux dispatch popped its temps, no swapgs).
-	 * x86_64_syscall_entry requires that: first insn is swapgs,
-	 * then RSP=gs:syscall_rsp. Calling _user_fork from C on gKstack
-	 * cannot satisfy find_previous_iframe(); a fake iframe + IRETQ
-	 * after swapgs triple-faults (no KDL). rax must be Haiku 0x2f,
-	 * not Linux clone 56. rcx=user RIP, r11=rflags. */
+	/* Plant iframe + _user_fork. Parent SYSRET must match official
+	 * x86_64_syscall_entry: rcx=RIP, r11=RFLAGS, rsp=user, swapgs,
+	 * sysretq. COM1 showed the old path Double Faulted at
+	 * sys_compat_lstar+0xa63 with RSP already on the Linux user
+	 * stack and rcx=0x23 (USER_SS) — leftover from C, pops never
+	 * finished. Do not push the SYSCALL frame onto the user stack,
+	 * do not pop it back from there, and do not walk .Lret (rseq
+	 * write) after the stack switch. */
+	KSER	'1'
 	mov	qword ptr [rip + gForkPending], 1
-	mov	rax, 0x2f
-	jmp	[rip + gOrigLstar]
+	mov	qword ptr [rip + gForkUserRip], rcx
+	mov	qword ptr [rip + gForkUserRsp], rsp
+	mov	qword ptr [rip + gForkUserFlags], r11
+	mov	rdi, rcx
+	mov	rsi, rsp
+	mov	rdx, r11
+	swapgs
+	KSER	'2'
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	KSER	'3'
+	call	sys_compat_try_fork
+	KSER	'6'
+	cli
+	mov	rdi, [rip + gForkUserRip]
+	mov	rsi, [rip + gForkUserRsp]
+	mov	rdx, [rip + gForkUserFlags]
+	mov	rcx, rax
+	push	rax
+	call	sys_compat_fork_parent_dump
+	pop	rax
+	KSER	'7'
+	/* Park after 9 kept the guest up: child IRETQ is not the
+	 * reboot. Parent SYSRET (mov rsp,user; swapgs; sysretq)
+	 * Double Faulted — kernel code on the Linux stack. IRETQ
+	 * loads user RSP from the frame so we never do that. */
+	KSER	'Y'
+	/* IRETQ to user works (tramp+Haiku stack stayed up).
+	 * Now parent goes to the real Linux RIP on the Haiku
+	 * stack — isolate Linux RSP vs Linux RIP as the reboot. */
+	push	0x23
+	mov	rdx, [rip + gForkHaikuRsp]
+	test	rdx, rdx
+	jnz	.Lprsp
+	mov	rdx, [rip + gForkUserRsp]
+.Lprsp:
+	push	rdx
+	push	0x202
+	push	0x2b
+	push	qword ptr [rip + gForkUserRip]
+	KSER	'Z'
+	swapgs
+	iretq
 
 .Lwait4:
 	/* rdi=pid rsi=status rdx=options r10=rusage.
@@ -1903,6 +1990,16 @@ gRseqSig:
 gSavedRsp:
 	.quad	0
 gForkPending:
+	.quad	0
+gForkTramp:
+	.quad	0
+gForkHaikuRsp:
+	.quad	0
+gForkUserRip:
+	.quad	0
+gForkUserRsp:
+	.quad	0
+gForkUserFlags:
 	.quad	0
 	.align	16
 gKstack:
