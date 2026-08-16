@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY26.md`](STANDUP_DAY26.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY27.md`](STANDUP_DAY27.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 26)
+## What you can expect today (`main`, Day 27)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -41,8 +41,7 @@ still `PIPELINEOK` after the child trampoline change.
 
 **Do not run `sh` pipes or glibc-static `clone` LTP on a build older
 than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
-(`page fault, interrupts were disabled`). That store is removed on
-current `main` once Day 27 is pushed.
+(`page fault, interrupts were disabled`). That store is gone on `main`.
 
 ---
 

@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-16 (Day 27: more busybox; `sh` echo green; rseq CLI KDL fixed)  
+**Last updated:** 2026-08-16 (morning: Day 27 is on `main`; `sh` pipe at `SFgb`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -60,13 +60,15 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 26):** `select`, file `mmap`, and combined
-`fork`+`execve`+`poll` are guest-green. `hello_pipeline` prints
-`PIPELINEOK`. Mark no longer wipes sibling CR3 slots (that was
-Kill Thread on the parent). COM1 `F4`/`5R`/`SoxXEC`/`XGO`/`VvWeE`.
+**Where we are (Day 27):** more static busybox (`id` `pwd` `printf`
+`dirname` `basename` `od`) and `sh -c 'echo SHOK'` are guest-green.
+`hello_pipeline` is still `PIPELINEOK`. `sh -c 'echo HI | cat'`
+reaches `set_robust_list` (`COM1` `SFgb`) then Kill Thread. A
+`.Lret` rseq store under CLI KDLed — that store is gone.
 
-**What needs doing next:** finish busybox `sh` pipe (child now stamps
-`5RS` then dies). Then `CLONE_VM` / pthread. ioctl still later.
+**What needs doing next:** finish the `sh` pipe after `SFgb` (does
+`set_robust_list` return; child's `ret`/`rbp` vs parent stack).
+Then `CLONE_VM` / pthread. ioctl still later.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

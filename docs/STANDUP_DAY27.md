@@ -59,3 +59,10 @@ because `rbp` still points at the parent's stack?
 
 Landmines: do not write user pointers under CLI; `gRseqPtr` /
 `gLinuxFS` are still one-team; adopt-on-miss stays off.
+
+### Morning note (2026-08-16)
+
+Host QEMU and the :8083 fetch server hit the session 10-hour cap
+overnight. Both were restarted. Guest disk is intact. Last serial
+before the reset is `haiku_serial.log.pre_timeout`. `main` is
+`578fdb7`. Next grind is still `SFgb` → `B` / child `ret`.
