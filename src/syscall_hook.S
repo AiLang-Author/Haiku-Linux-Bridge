@@ -85,6 +85,11 @@
 	.globl	gForkUserFlags
 	.globl	gForkUserRbp
 	.globl	gForkChildTid
+	.globl	gForkRbx
+	.globl	gForkR12
+	.globl	gForkR13
+	.globl	gForkR14
+	.globl	gForkR15
 	.globl	gMarkExe
 	.globl	gForkFS
 	.hidden	gOrigLstar
@@ -116,6 +121,11 @@
 	.hidden	gForkUserFlags
 	.hidden	gForkUserRbp
 	.hidden	gForkChildTid
+	.hidden	gForkRbx
+	.hidden	gForkR12
+	.hidden	gForkR13
+	.hidden	gForkR14
+	.hidden	gForkR15
 	.hidden	gMarkExe
 	.hidden	gForkFS
 
@@ -843,6 +853,11 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gForkUserFlags], r11
 	mov	qword ptr [rip + gForkUserRbp], rbp
 	mov	qword ptr [rip + gForkChildTid], r10
+	mov	qword ptr [rip + gForkRbx], rbx
+	mov	qword ptr [rip + gForkR12], r12
+	mov	qword ptr [rip + gForkR13], r13
+	mov	qword ptr [rip + gForkR14], r14
+	mov	qword ptr [rip + gForkR15], r15
 	mov	rdi, rcx
 	mov	rsi, rax
 	mov	rdx, r11
@@ -2273,6 +2288,16 @@ gForkUserFlags:
 gForkUserRbp:
 	.quad	0
 gForkChildTid:
+	.quad	0
+gForkRbx:
+	.quad	0
+gForkR12:
+	.quad	0
+gForkR13:
+	.quad	0
+gForkR14:
+	.quad	0
+gForkR15:
 	.quad	0
 gMarkExe:
 	.quad	0

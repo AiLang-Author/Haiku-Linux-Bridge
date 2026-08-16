@@ -66,9 +66,9 @@ Host QEMU and the :8083 fetch server hit the session 10-hour cap
 overnight (not the guest). Both were restarted. Last serial before
 that reset is `haiku_serial.log.pre_timeout`.
 
-Later: `CLONE_CHILD_SETTID` write on tramp `getpid` (`T`). Child
-now does `cdcWeE` — close, dup2, close, write, exit — after
-`5SFgT` `bB` `H` `R`. Still no `execve` (`x`); still Kill Thread
-149. `execveat` (322) is aliased to execve. Next: why the child
-writes and exits instead of exec'ing `cat`, and why the parent
-then dies (likely SIGPIPE / missing `wait4` / CLEARTID).
+`cdcWeE` is the **echo** child (ash forks twice: echo, then cat).
+Host strace: clone, clone, wait, wait. We only ever saw one F2 —
+the parent dies after IRETQ before the second clone. The iframe
+zeroed rbx/r12–r15; Linux libc needs those across syscall. Hook
+now saves and restores them. Needs guest `go_fork` + reboot
+(Terminal wedged after the last pipe test).

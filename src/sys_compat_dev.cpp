@@ -351,6 +351,11 @@ extern "C" {
 	extern uint64 gForkFS;
 	extern uint64 gForkUserRbp;
 	extern uint64 gForkChildTid;
+	extern uint64 gForkRbx;
+	extern uint64 gForkR12;
+	extern uint64 gForkR13;
+	extern uint64 gForkR14;
+	extern uint64 gForkR15;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -1345,6 +1350,14 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	f->ax = 0;
 	if (gForkUserRbp >= 0x100000ULL)
 		f->bp = gForkUserRbp;
+	/* Syscall must preserve rbx/r12-r15. A zeroed iframe made
+	 * busybox's parent die after IRETQ before the second clone
+	 * (echo | cat forks twice; we only ever saw one F2). */
+	f->bx = gForkRbx;
+	f->r12 = gForkR12;
+	f->r13 = gForkR13;
+	f->r14 = gForkR14;
+	f->r15 = gForkR15;
 
 	/* Short breadcrumb only. Long F4 kser dump under CLI
 	 * repeatedly #PF'd (ip 0 / 0xfb) before _user_fork. */
@@ -1387,7 +1400,7 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 
 		__asm__ __volatile__("movq %%rsp, %0" : "=r"(oldsp));
 		__asm__ __volatile__("movq %%gs:8, %0" : "=r"(k8));
-		k8 &= ~(uint64)15;
+		k8 = (k8 - 512) & ~(uint64)15;
 		__asm__ __volatile__("movq %0, %%rsp" :: "r"(k8) : "memory");
 		__asm__ __volatile__("sti");
 		for (n = 0; n < 4000000 && sChildRobust == 0; n++)
@@ -1435,6 +1448,11 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		local.flags = 0x3202;
 		if (gForkUserRbp >= 0x100000ULL)
 			local.bp = gForkUserRbp;
+		local.bx = gForkRbx;
+		local.r12 = gForkR12;
+		local.r13 = gForkR13;
+		local.r14 = gForkR14;
+		local.r15 = gForkR15;
 		kser_puts("R\n");
 		if (sRetUserland >= 0xffffffff80000000ULL) {
 			ret = (ret_fn)(addr_t)sRetUserland;
