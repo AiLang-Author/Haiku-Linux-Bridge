@@ -28,7 +28,7 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ## Current status (honest)
 
-**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first. Update it when a syscall lands or a trap changes. Latest wrap: [`docs/STANDUP_DAY22.md`](docs/STANDUP_DAY22.md).
+**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first. Update it when a syscall lands or a trap changes. Latest wrap: [`docs/STANDUP_DAY23.md`](docs/STANDUP_DAY23.md).
 
 Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` and extra drivers are later.
 
@@ -56,6 +56,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | busybox grep / sed / wc / head / sort / cut | **Works** — single-process, no fork. All RC=0. |
 | Linux `clone` / `wait4` / `exit` | **`hello_fork` `FORKOK`, RC=0.** Child IRETQ to `0x40101c`. Stamp RIP-guarded. See Day 21. |
 | Linux `execve` | **Works** — `hello_exec` replaced itself with `hello_min` via `_user_exec` of `sys_compat_run`. `EXEC_RC=0`. See Day 22. |
+| Linux `futex` | **Works** — WAIT/WAKE on per-thread kstack. `hello_futex` / `FUTEXOK`. See Day 23. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |

@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 22: Linux `execve` → `hello_min`; `EXEC_RC=0`)  
+**Last updated:** 2026-08-15 (Day 23: Linux `futex` WAIT/WAKE; `FUTEXOK`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -16,7 +16,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 19](STANDUP_DAY19.md) (kstack Linux dispatch; `wait4` reached) →
 [Day 20](STANDUP_DAY20.md) (`hello_fork` / `FORKOK`) →
 [Day 21](STANDUP_DAY21.md) (child IRETQ to `0x40101c`; stamp only Linux RIP) →
-[Day 22](STANDUP_DAY22.md) (Linux `execve` via `_user_exec` of `sys_compat_run`).
+[Day 22](STANDUP_DAY22.md) (Linux `execve` via `_user_exec` of `sys_compat_run`) →
+[Day 23](STANDUP_DAY23.md) (Linux `futex` WAIT/WAKE; `FUTEXOK`).
 
 ---
 
@@ -55,16 +56,15 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 22):** single-process Linux CLI is guest-green.
-`hello_fork` is guest-green (child IRETQ to `0x40101c`). **Linux
-`execve` is guest-green:** `hello_exec` replaced itself with
-`hello_min` via Haiku `_user_exec` of `sys_compat_run`. COM1
-`x` / `XEC` / `XGO` / `MMARK` / `WeE`, `EXEC_RC=0`, hello line
-printed. Guest dump: `_kern_exec=0x2e`. Stamp-on-fork only if
-user RIP is in `0x400000..0x405000` or the tramp page.
+**Where we are (Day 23):** single-process Linux CLI is guest-green.
+`hello_fork` / `hello_exec` stay green. **Linux `futex` WAIT/WAKE
+is guest-green:** `hello_futex` `FUTEXOK` (`-EAGAIN`, wake 0,
+`-ETIMEDOUT`). COM1 `uUuUuU`. WAIT parks on the official
+per-thread kstack, not global `gKstack`. `rt_sigaction` remains
+the glibc install-and-ignore stub.
 
-**What needs doing next:** `futex` + `rt_sigaction` (pthread/glibc
-edges). `CLONE_VM` later. ioctl still later.
+**What needs doing next:** `poll` / `ppoll` (pipelines).
+`CLONE_VM` / PI futex later. ioctl still later.
 
 ---
 
@@ -139,6 +139,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | busybox text CLI (no spawn) | **Works** | Unmodified `grep` `wc` `sed` `head` `sort` `cut` all RC=0 on `/tmp/cli.txt`. `results/ltp/cli_out.txt`. |
 | Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK` RC=0. Child IRETQ to `0x40101c`. Stamp RIP-guarded. Day 20–21. |
 | Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
+| Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
 | Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -189,6 +190,7 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 22 / 293 | `pipe` / `pipe2` | `0x83` | `_kern_create_pipe` | O_CLOEXEC/NONBLOCK translated |
 | 110 | `getppid` | — | `get_team_info.parent` | |
 | 59 | `execve` | `0x2e` (46) | `_kern_exec` | Flatten to `sys_compat_run` + linux path; unmark; user pointers |
+| 202 | `futex` | — | driver sem wait/wake | WAIT/WAKE/BITSET/REQUEUE-as-wake. Park on official kstack. |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
@@ -236,9 +238,8 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
-   `clone`/`wait4`/`execve`/`exit` are guest-green. Adopt-on-every-miss
-   stays off.
+1. **`poll` / `ppoll`** — pipelines. `futex` WAIT/WAKE and
+   `rt_sigaction` (no-op) are guest-green. Adopt-on-every-miss stays off.
 2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
@@ -293,6 +294,8 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/haiku_native_fork.c` | Native Haiku `fork()` smoke (gcc on the guest) |
 | `tests/hello_fork.s` | clone + wait4; `FORKOK` Day 20–21 |
 | `tests/hello_exec.s` | Linux `execve("/boot/home/hello_min")`; `EXEC_RC=0` Day 22 |
+| `tests/hello_futex.s` | futex WAIT EAGAIN / WAKE 0 / WAIT timeout; `FUTEXOK` Day 23 |
+| `scripts/guest_run_futex.sh` | Guest: futex probe; POST `futex_out.txt` |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
 | `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
@@ -306,6 +309,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY20.md` | Day 20 wrap: `hello_fork` / `FORKOK` |
 | `docs/STANDUP_DAY21.md` | Day 21 wrap: child to `0x40101c`; RIP-guarded stamp |
 | `docs/STANDUP_DAY22.md` | Day 22 wrap: Linux `execve` / `hello_min` |
+| `docs/STANDUP_DAY23.md` | Day 23 wrap: Linux `futex` WAIT/WAKE |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |

@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 22: Linux `execve` guest-green)
+**Last updated:** 2026-08-15 (Day 23: Linux `futex` WAIT/WAKE guest-green)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -111,7 +111,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. |
 | 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
 | 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
-| 202 | futex | **-ENOSYS** (pthread — not the grep blocker) |
+| 202 | futex | **works** (WAIT/WAKE/BITSET; REQUEUE-as-wake). `hello_futex` `FUTEXOK`. Day 23. |
 
 ### Pipes / poll (pipelines, more applets)
 
@@ -157,9 +157,10 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** `futex`, `poll`/`ppoll`,
-`rt_sigaction` (no-op install is often enough), file `mmap`.
-Shells that `fork`+`execve` should now be in reach.
+**Highest remaining for “coreutils in the wild”:** `poll`/`ppoll`,
+file `mmap`, `CLONE_VM` (pthread). `rt_sigaction` no-op install is
+already enough for glibc. Shells that `fork`+`execve` should now be
+in reach; pipelines still need `poll`.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.

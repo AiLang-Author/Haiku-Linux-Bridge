@@ -36,6 +36,7 @@
 #define LINUX_EIO           5
 #define LINUX_EBADF         9
 #define LINUX_ECHILD       10
+#define LINUX_EAGAIN       11
 #define LINUX_ENOMEM       12
 #define LINUX_EACCES       13
 #define LINUX_EFAULT       14
@@ -46,6 +47,7 @@
 #define LINUX_ENAMETOOLONG 36
 #define LINUX_ENOSYS       38
 #define LINUX_E2BIG         7
+#define LINUX_ETIMEDOUT   110
 
 #define LINUX_O_RDONLY 0
 #define LINUX_O_WRONLY 1
@@ -358,6 +360,8 @@ extern "C" {
 		void* rusage, void* userInfo);
 	int64 sys_compat_execve(const void* path, const void* argv,
 		const void* envp, void* scratch);
+	int64 sys_compat_futex(void* uaddr, int64 op, uint32 val,
+		const void* utime, void* uaddr2, uint32 val3);
 	int64 sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
 		const void* newPath);
 	int64 sys_compat_symlink(int64 fd, const void* linkPath,
@@ -786,7 +790,9 @@ haiku_status_to_linux(int64 st)
 	case 0x80000001: return -LINUX_EIO;          /* B_IO_ERROR */
 	case 0x80000002: return -LINUX_EACCES;       /* B_PERMISSION_DENIED */
 	case 0x80000005: return -LINUX_EINVAL;       /* B_BAD_VALUE */
+	case 0x80000009: return -LINUX_ETIMEDOUT;    /* B_TIMED_OUT */
 	case 0x8000000a: return -LINUX_EINTR;        /* B_INTERRUPTED */
+	case 0x8000000b: return -LINUX_EAGAIN;       /* B_WOULD_BLOCK */
 	case 0x8000000f: return -LINUX_EPERM;        /* B_NOT_ALLOWED */
 	case 0x80007002: return -LINUX_ECHILD;       /* ECHILD */
 	case 0x80001301: return -LINUX_EFAULT;       /* B_BAD_ADDRESS */
@@ -1361,6 +1367,23 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 #define EXEC_SCRATCH 4096
 
 static const char sLoaderPath[] = "/boot/home/sys_compat_run";
+
+#define LINUX_FUTEX_WAIT         0
+#define LINUX_FUTEX_WAKE         1
+#define LINUX_FUTEX_REQUEUE      3
+#define LINUX_FUTEX_CMP_REQUEUE  4
+#define LINUX_FUTEX_WAIT_BITSET  9
+#define LINUX_FUTEX_WAKE_BITSET  10
+#define LINUX_FUTEX_CMD_MASK     127
+#define FUTEX_SLOTS              32
+
+struct futex_waiter {
+	uint64 addr;
+	sem_id sem;
+};
+
+static sem_id sFutexMu = -1;
+static struct futex_waiter sFutexW[FUTEX_SLOTS];
 /* Flatten lives in BSS — 12 KB of autos overflowed the 16 KB kstack
  * and left leftover user RBP as the frame pointer. */
 static char sExecLinuxPath[256];
@@ -1539,6 +1562,151 @@ sys_compat_execve(const void* path, const void* argv, const void* envp,
 			}
 		}
 	}
+	return haiku_status_to_linux((int64)st);
+}
+
+static int64
+futex_copy_timespec(const void* user, uint64* usec)
+{
+	uint8 ts[16];
+	uint64 sec, nsec;
+	int i;
+
+	if (user == NULL) {
+		*usec = 0;
+		return 0;
+	}
+	if (user_memcpy(ts, user, 16) != B_OK)
+		return -LINUX_EFAULT;
+	sec = 0;
+	nsec = 0;
+	for (i = 0; i < 8; i++) {
+		sec |= (uint64)ts[i] << (8 * i);
+		nsec |= (uint64)ts[8 + i] << (8 * i);
+	}
+	if ((int64)sec < 0 || nsec >= 1000000000ULL)
+		return -LINUX_EINVAL;
+	if (sec > 0xffffffffULL / 1000000ULL)
+		*usec = 0xffffffffULL;
+	else
+		*usec = sec * 1000000ULL + nsec / 1000ULL;
+	return 0;
+}
+
+/*
+ * Linux futex WAIT/WAKE. Park on a per-waiter Haiku sem.
+ * Call this on the official per-thread kstack (not gKstack) so a
+ * blocked WAIT does not sit on the global C stack.
+ */
+extern "C" int64
+sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
+	void* uaddr2, uint32 val3)
+{
+	int32 cmd;
+	int32 cur;
+	int i, slot, woken;
+	int64 err;
+	uint64 usec;
+	status_t st;
+	sem_id waitSem;
+	int timed;
+	int relative;
+
+	(void)uaddr2;
+	(void)val3;
+	if (sFutexMu < 0)
+		return -LINUX_ENOSYS;
+	if (uaddr == NULL || ((uint64)(addr_t)uaddr) < 0x100000ULL)
+		return -LINUX_EFAULT;
+	if (((uint64)(addr_t)uaddr) & 3)
+		return -LINUX_EINVAL;
+	cmd = (int32)op & LINUX_FUTEX_CMD_MASK;
+
+	if (cmd == LINUX_FUTEX_WAKE || cmd == LINUX_FUTEX_WAKE_BITSET
+		|| cmd == LINUX_FUTEX_REQUEUE || cmd == LINUX_FUTEX_CMP_REQUEUE) {
+		if (cmd == LINUX_FUTEX_WAKE_BITSET && val3 == 0)
+			return -LINUX_EINVAL;
+		acquire_sem(sFutexMu);
+		woken = 0;
+		for (i = 0; i < FUTEX_SLOTS && woken < (int)val; i++) {
+			if (sFutexW[i].addr == (uint64)(addr_t)uaddr
+				&& sFutexW[i].sem >= 0) {
+				release_sem(sFutexW[i].sem);
+				woken++;
+			}
+		}
+		release_sem(sFutexMu);
+		return (int64)woken;
+	}
+
+	if (cmd != LINUX_FUTEX_WAIT && cmd != LINUX_FUTEX_WAIT_BITSET)
+		return -LINUX_ENOSYS;
+	if (cmd == LINUX_FUTEX_WAIT_BITSET && val3 == 0)
+		return -LINUX_EINVAL;
+
+	timed = 0;
+	relative = (cmd == LINUX_FUTEX_WAIT);
+	usec = 0;
+	if (utime != NULL) {
+		err = futex_copy_timespec(utime, &usec);
+		if (err < 0)
+			return err;
+		timed = 1;
+	}
+
+	if (user_memcpy(&cur, uaddr, 4) != B_OK)
+		return -LINUX_EFAULT;
+	if (cur != (int32)val)
+		return -LINUX_EAGAIN;
+	if (timed && relative && usec == 0)
+		return -LINUX_ETIMEDOUT;
+
+	waitSem = create_sem(0, "sys_compat_fwait");
+	if (waitSem < 0)
+		return -LINUX_ENOMEM;
+
+	acquire_sem(sFutexMu);
+	if (user_memcpy(&cur, uaddr, 4) != B_OK) {
+		release_sem(sFutexMu);
+		delete_sem(waitSem);
+		return -LINUX_EFAULT;
+	}
+	if (cur != (int32)val) {
+		release_sem(sFutexMu);
+		delete_sem(waitSem);
+		return -LINUX_EAGAIN;
+	}
+	slot = -1;
+	for (i = 0; i < FUTEX_SLOTS; i++) {
+		if (sFutexW[i].sem < 0 || sFutexW[i].addr == 0) {
+			sFutexW[i].addr = (uint64)(addr_t)uaddr;
+			sFutexW[i].sem = waitSem;
+			slot = i;
+			break;
+		}
+	}
+	release_sem(sFutexMu);
+	if (slot < 0) {
+		delete_sem(waitSem);
+		return -LINUX_ENOMEM;
+	}
+
+	if (!timed)
+		st = acquire_sem(waitSem);
+	else if (relative)
+		st = acquire_sem_etc(waitSem, 1, B_RELATIVE_TIMEOUT,
+			(bigtime_t)usec);
+	else
+		st = acquire_sem_etc(waitSem, 1, B_ABSOLUTE_REAL_TIME_TIMEOUT,
+			(bigtime_t)usec);
+
+	acquire_sem(sFutexMu);
+	sFutexW[slot].addr = 0;
+	sFutexW[slot].sem = -1;
+	release_sem(sFutexMu);
+	delete_sem(waitSem);
+	if (st == B_OK)
+		return 0;
 	return haiku_status_to_linux((int64)st);
 }
 
@@ -2614,6 +2782,15 @@ init_driver(void)
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
 	discover_syscall_table();
+	if (sFutexMu < 0)
+		sFutexMu = create_sem(1, "sys_compat_futex");
+	{
+		int i;
+		for (i = 0; i < FUTEX_SLOTS; i++) {
+			sFutexW[i].addr = 0;
+			sFutexW[i].sem = -1;
+		}
+	}
 	return B_OK;
 }
 
@@ -2622,6 +2799,10 @@ uninit_driver(void)
 {
 	linux_clear_all();
 	call_all_cpus_sync(&restore_lstar, NULL);
+	if (sFutexMu >= 0) {
+		delete_sem(sFutexMu);
+		sFutexMu = -1;
+	}
 	dprintf("[sys_compat] LSTAR restored\n");
 }
 

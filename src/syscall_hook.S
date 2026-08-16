@@ -123,6 +123,7 @@
 	.extern	sys_compat_getpid
 	.extern	sys_compat_wait4
 	.extern	sys_compat_execve
+	.extern	sys_compat_futex
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
@@ -556,7 +557,7 @@ sys_compat_lstar:
 	cmp	rax, 271		/* ppoll */
 	je	.Lenosys
 	cmp	rax, 202		/* futex */
-	je	.Lenosys
+	je	.Lfutex
 	cmp	rax, 59			/* execve */
 	je	.Lexecve
 	cmp	rax, 25			/* mremap */
@@ -911,6 +912,23 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	KSER	'y'
+	jmp	.Lret
+
+.Lfutex:
+	/* rdi=uaddr rsi=op rdx=val r10=utime r8=uaddr2 r9=val3.
+	 * Stay on gs:8 (this thread's kstack). A blocked WAIT on
+	 * gKstack would be smashed by WAKE/CALL_C on another CPU. */
+	KSER	'u'
+	push	rcx
+	push	r11
+	mov	rcx, r10
+	mov	rbp, rsp
+	sti
+	call	sys_compat_futex
+	cli
+	pop	r11
+	pop	rcx
+	KSER	'U'
 	jmp	.Lret
 
 	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32
