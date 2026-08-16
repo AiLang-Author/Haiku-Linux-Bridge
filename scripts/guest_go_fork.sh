@@ -49,7 +49,7 @@ chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/run_pipeline.sh /boot/home/run_sh.sh
 rm -rf objects.* *.o objects 2>/dev/null || true
 grep -n 'kser_puts("K"' sys_compat_dev.cpp || echo 'NO_K_IN_SRC'
-grep -n 'EX5' sys_compat_dev.cpp || echo 'NO_EX5_IN_SRC'
+grep -n 'MM3' sys_compat_dev.cpp || echo 'NO_MM3_IN_SRC'
 grep -n 'SF' sys_compat_dev.cpp || echo 'NO_SF_IN_SRC'
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }

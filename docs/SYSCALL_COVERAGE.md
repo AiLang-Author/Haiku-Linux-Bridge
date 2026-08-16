@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-16 (Day 31: `echo HI | cat` green)
+**Last updated:** 2026-08-16 (Day 32: file mmap via `vm_map_file`)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -38,7 +38,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 158 | arch_prctl | works |
 | 12 | brk | works |
-| 9 | mmap | **works** (ANON arena + file via `_user_map_file` 0xd4). `hello_mmapf` `MMAPFOK`. |
+| 9 | mmap | **works** (ANON arena + file via kernel `vm_map_file` / `_vm_map_file(..., false)`). `hello_mmapf` `MMAPFOK`. Day 32. |
 | 10 | mprotect | works |
 | 11 | munmap | works |
 | 218 | set_tid_address | works |

@@ -61,7 +61,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `futex` | **Works** — WAIT/WAKE on per-thread kstack. `hello_futex` / `FUTEXOK`. See Day 23. |
 | Linux `poll` / `ppoll` | **Works** — `_user_wait_for_objects` 0x06. `hello_poll` / `POLLOK`. See Day 24. |
 | Linux `select` / `pselect6` | **Works** — fd_set → poll. `hello_select` / `SELECTOK`. See Day 25. |
-| Linux file `mmap` | **Works** — `_user_map_file` 0xd4. `hello_mmapf` / `MMAPFOK`. See Day 25. |
+| Linux file `mmap` | **Works** — kernel `vm_map_file` / `_vm_map_file(..., false)`. `hello_mmapf` / `MMAPFOK`. See Day 32. |
 | `fork`+`execve`+`poll` | **Works** — `hello_pipeline` / `PIPELINEOK`. Mark keeps sibling CR3 slots. See Day 26. |
 | busybox `sh -c` (builtin + pipe) | **Works** — `SHOK`, `echo HI \| cat` → `HI` `SH_PIPE_RC=0`, `SHDONE`. See Day 31. |
 | more busybox (`id` `pwd` `printf` `dirname` `basename` `od`) | **Works** — Day 27. |

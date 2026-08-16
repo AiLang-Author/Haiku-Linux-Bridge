@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-16 (Day 31: `echo HI | cat` green)  
+**Last updated:** 2026-08-16 (Day 32: file mmap via `vm_map_file`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -25,7 +25,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 28](STANDUP_DAY28.md) (`sh` pipe: shared Linux stack, `k!`) →
 [Day 29](STANDUP_DAY29.md) (`create_area`; COM1 `N` + `b0`) →
 [Day 30](STANDUP_DAY30.md) (no-hold IRETQ; second clone + execve) →
-[Day 31](STANDUP_DAY31.md) (`echo HI | cat` green).
+[Day 31](STANDUP_DAY31.md) (`echo HI | cat` green) →
+[Day 32](STANDUP_DAY32.md) (file `mmap` via `vm_map_file`).
 
 ---
 
@@ -64,16 +65,21 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 31):** `sh -c 'echo HI | cat'` prints `HI`,
+**Where we are (Day 32):** File `mmap` uses kernel `vm_map_file`
+(resolved at load; `_vm_map_file(..., kernel=false)` so user fds
+work). `hello_mmapf` `MMAPFOK`. Pipe still `HI` `PIPE_RC=0`.
+LTP `uname01` no longer KDLs; it dies on `chown(-1)` `EFAULT`.
+
+**Where we were (Day 31):** `sh -c 'echo HI | cat'` prints `HI`,
 `SH_PIPE_RC=0`. Two clones, `execve /proc/self/exe` as `cat`,
 `sendfile` on a pipe is `-EINVAL` (Linux), then `read`/`write`.
 User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** regular-file `sendfile` (reserved user
-page, not the stack). Interactive TTY `sh` needs ioctl — later.
-Do not hold until `set_robust`.
+**What needs doing next:** `chown(path, -1, gid)` (LTP tmpdir).
+Interactive TTY `sh` needs ioctl — later. Do not hold until
+`set_robust`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -154,7 +160,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
 | Linux `poll`/`ppoll` (7/271) | **Works** | `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
 | Linux `select`/`pselect6` (23/270) | **Works** | fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
-| Linux file `mmap` (9) | **Works** | `_user_map_file` 0xd4. ANON still arena-carve. `hello_mmapf` `MMAPFOK`. Day 25. |
+| Linux file `mmap` (9) | **Works** | kernel `vm_map_file` + `_vm_map_file(..., false)`. ANON still arena-carve. `hello_mmapf` `MMAPFOK`. Day 32. |
 | Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -256,8 +262,8 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **Regular-file `sendfile`.** Pipe path is `-EINVAL` (correct).
-   A reserved user page, not `RSP-4096`. Adopt-on-every-miss stays off.
+1. **`chown(..., -1, gid)`.** Linux means "leave uid". Still `EFAULT`
+   from wstat scratch. Blocks LTP `tst_tmpdir`.
 2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Interactive `sh` waits here. Rare/deprecated numbers wait for a filed issue.
 
@@ -341,6 +347,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY29.md` | Day 29 wrap: `create_area`; COM1 `N` + `b0` |
 | `docs/STANDUP_DAY30.md` | Day 30 wrap: no-hold IRETQ; second clone + XEC |
 | `docs/STANDUP_DAY31.md` | Day 31 wrap: `echo HI \| cat` green |
+| `docs/STANDUP_DAY32.md` | Day 32 wrap: file mmap via `vm_map_file` |
 | `docs/STATUS.md` | Public tester brief + how to file bugs |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |

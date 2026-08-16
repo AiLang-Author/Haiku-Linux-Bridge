@@ -13,6 +13,7 @@
 #include <Drivers.h>
 #include <KernelExport.h>
 #include <OS.h>
+#include <image.h>
 #include "sys_compat_abi.h"
 
 /* POSIX sys/stat.h (pulled by kernel headers) aliases st_ctime to
@@ -268,6 +269,13 @@ typedef int32 (*haiku_mapfile_fn)(const void* name, void* addrPtr,
 	uint32 spec, uint64 size, uint32 prot, uint32 mapping,
 	int32 unmapRange, int32 fd, int64 offset);
 typedef int64 (*haiku_rw_fn)(int32 fd, int64 pos, void* buf, uint64 n);
+typedef area_id (*haiku_vmmap_fn)(team_id team, const char* name,
+	void** address, uint32 spec, addr_t size, uint32 prot, uint32 mapping,
+	bool unmapRange, int fd, off_t offset);
+/* Internal: extra trailing bool kernel selects the team's io context. */
+typedef area_id (*haiku_vmmapk_fn)(team_id team, const char* name,
+	void** address, uint32 spec, addr_t size, uint32 prot, uint32 mapping,
+	bool unmapRange, int fd, off_t offset, bool kernel);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -297,6 +305,8 @@ static uint64 sFcntlFn;
 static uint64 sForkFn;
 static uint64 sWaitObjFn;
 static uint64 sMapFileFn;
+static haiku_vmmap_fn sVmMapFile;
+static haiku_vmmapk_fn sVmMapFileK;
 static uint64 sReadFn;
 static uint64 sWriteFn;
 static char sLinuxExe[256];
@@ -570,6 +580,77 @@ sys_compat_dispatch_fast(uint64* saved)
 #define IA32_FS_BASE 0xc0000100
 
 static void discover_return_to_userland(void);
+
+#ifndef B_SYMBOL_TYPE_TEXT
+#define B_SYMBOL_TYPE_TEXT 2
+#endif
+#ifndef B_SYMBOL_TYPE_ANY
+#define B_SYMBOL_TYPE_ANY 5
+#endif
+
+static void
+discover_vm_map_file(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const knames[] = {
+		"_ZL12_vm_map_fileiPKcPPvjmjjbilb",
+		NULL
+	};
+	static const char* const names[] = {
+		"vm_map_file",
+		"_Z11vm_map_fileiPKcPPvjmjjbil",
+		"_Z11vm_map_fileiPKcPPvjmmjbil",
+		NULL
+	};
+
+	sVmMapFile = 0;
+	sVmMapFileK = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; knames[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, knames[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, knames[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sVmMapFileK = (haiku_vmmapk_fn)p;
+				kser_puts("VMKfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				break;
+			}
+		}
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sVmMapFile = (haiku_vmmap_fn)p;
+				kser_puts("VMfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				break;
+			}
+		}
+		if (sVmMapFileK != 0 || sVmMapFile != 0)
+			break;
+	}
+	/* Static _vm_map_file is not in the add-on export list.
+	 * hrev57937 guest nm: vm_map_file=...c8e0 _vm_map_file=...c180. */
+	if (sVmMapFileK == 0 && sVmMapFile != 0
+		&& (uint64)(addr_t)sVmMapFile == 0xffffffff8012c8e0ULL)
+		sVmMapFileK = (haiku_vmmapk_fn)(addr_t)0xffffffff8012c180ULL;
+	if (sVmMapFileK != 0) {
+		kser_puts("VMKfn=");
+		kser_hex((uint64)(addr_t)sVmMapFileK);
+		kser_putc('\n');
+	} else if (sVmMapFile == 0)
+		kser_puts("VMno\n");
+}
 
 static void
 discover_syscall_table(void)
@@ -2269,18 +2350,12 @@ extern "C" int64
 sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	int64 fd, int64 offset)
 {
-	haiku_mapfile_fn fn;
-	uint64 ursp, mapped;
-	void* scratch;
-	void* namep;
-	void* addrp;
+	void* mapped;
 	uint32 spec, hprot, mapping;
 	int32 area;
-	int i;
-	static const char kName[] = "linux_mmap";
+	team_info info;
 
-	if (sMapFileFn == 0)
-		return -LINUX_ENOSYS;
+	kser_puts("MM\n");
 	if (len == 0)
 		return -LINUX_EINVAL;
 	if ((flags & LINUX_MAP_ANON) != 0)
@@ -2294,39 +2369,46 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 		return -LINUX_EINVAL;
 	len = (len + 4095) & ~(uint64)4095;
 
-	__asm__ __volatile__("mov %%gs:16, %0" : "=r"(ursp));
-	if (ursp < 0x100000ULL + 256)
-		return -LINUX_EFAULT;
-	scratch = (void*)(addr_t)((ursp - 256) & ~(uint64)15);
-
-	addrp = scratch;
-	namep = (uint8*)scratch + 8;
-	mapped = (uint64)(addr_t)addr;
-	if (user_memcpy(addrp, &mapped, 8) != B_OK)
-		return -LINUX_EFAULT;
-	if (user_memcpy(namep, kName, sizeof(kName)) != B_OK)
-		return -LINUX_EFAULT;
-
 	if ((flags & LINUX_MAP_FIXED) != 0)
-		spec = 1; /* B_EXACT_ADDRESS */
+		spec = B_EXACT_ADDRESS;
 	else if (addr != NULL)
-		spec = 2; /* B_BASE_ADDRESS */
+		spec = B_BASE_ADDRESS;
 	else
-		spec = 6; /* B_RANDOMIZED_ANY_ADDRESS */
+		spec = B_RANDOMIZED_ANY_ADDRESS;
 	hprot = (uint32)prot & 7;
+	if (hprot == 0)
+		hprot = B_READ_AREA;
+	/* REGION_NO_PRIVATE_MAP=0 (shared), REGION_PRIVATE_MAP=1. */
 	mapping = ((flags & LINUX_MAP_SHARED) != 0) ? 0 : 1;
+	mapped = addr;
 
-	fn = (haiku_mapfile_fn)(addr_t)sMapFileFn;
-	area = fn(namep, addrp, spec, len, hprot, mapping, 1, (int32)fd,
-		offset);
-	if (area < 0)
-		return haiku_status_to_linux((int64)area);
-	if (user_memcpy(&mapped, addrp, 8) != B_OK)
-		return -LINUX_EFAULT;
-	if (mapped < 0x100000ULL)
+	if (sVmMapFileK == 0 && sVmMapFile == 0)
+		return -LINUX_ENOSYS;
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
 		return -LINUX_ENOMEM;
-	(void)i;
-	return (int64)mapped;
+
+	/* kernel=false so get_fd uses the team's fds, not the kernel's. */
+	if (sVmMapFileK != 0)
+		area = sVmMapFileK(info.team, "linux_mmap", &mapped, spec,
+			(addr_t)len, hprot, mapping,
+			(flags & LINUX_MAP_FIXED) != 0, (int)fd, (off_t)offset,
+			false);
+	else
+		area = sVmMapFile(info.team, "linux_mmap", &mapped, spec,
+			(addr_t)len, hprot, mapping,
+			(flags & LINUX_MAP_FIXED) != 0, (int)fd, (off_t)offset);
+	if (area < 0) {
+		kser_puts("ME\n");
+		kser_hex((uint64)(uint32)area);
+		kser_putc('\n');
+		return haiku_status_to_linux((int64)area);
+	}
+	if ((uint64)(addr_t)mapped < 0x100000ULL) {
+		kser_puts("MZ\n");
+		return -LINUX_ENOMEM;
+	}
+	kser_puts("MO\n");
+	return (int64)(addr_t)mapped;
 }
 
 extern "C" int64
@@ -3419,8 +3501,9 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("EX5\n");
+	kser_puts("MM3\n");
 	discover_syscall_table();
+	discover_vm_map_file();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");
 	{

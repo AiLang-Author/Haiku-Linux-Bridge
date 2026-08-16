@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY31.md`](STANDUP_DAY31.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY32.md`](STANDUP_DAY32.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 31)
+## What you can expect today (`main`, Day 32)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -23,7 +23,7 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 | `execve` of another Linux ELF | `hello_exec` → `hello_min`, `EXEC_RC=0` |
 | `futex` WAIT/WAKE | `hello_futex` → `FUTEXOK` |
 | `poll` / `ppoll` / `select` | `POLLOK` / `SELECTOK` |
-| file `mmap` | `hello_mmapf` → `MMAPFOK` |
+| file `mmap` | `hello_mmapf` → `MMAPFOK` (kernel `vm_map_file`, not `_user_map_file`) |
 | Combined `fork` + `execve` + `poll` | `hello_pipeline` → `PIPELINEOK` |
 | busybox **`sh -c`** (builtin + pipe) | `echo SHOK`; `echo HI \| cat` → `HI`; `true; echo SHDONE`. All RC=0. |
 
