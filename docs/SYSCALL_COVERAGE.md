@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-16 (Day 26 still last guest-green wrap; tester brief in [`STATUS.md`](STATUS.md))
+**Last updated:** 2026-08-16 (Day 27: more applets; `sh` echo; rseq CLI KDL gone)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file

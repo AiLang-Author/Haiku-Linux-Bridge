@@ -176,8 +176,20 @@ int main(int argc, char** argv)
     uint64_t* sp = (uint64_t*)((uint8_t*)stack_base + stack_size);
     sp = (uint64_t*)((uintptr_t)sp & ~0xFULL);
 
-    int linux_argc = argc - 1;
-    char** linux_argv = &argv[1];
+    /*
+     * argv[1] is the ELF to map. argv[2..] is the Linux argv.
+     * A lone `sys_compat_run ./hello_min` still presents argv[1]
+     * as Linux argv[0]. busybox sh execs /proc/self/exe as ["cat"].
+     */
+    int linux_argc;
+    char** linux_argv;
+    if (argc >= 3) {
+        linux_argc = argc - 2;
+        linux_argv = &argv[2];
+    } else {
+        linux_argc = argc - 1;
+        linux_argv = &argv[1];
+    }
 
     /*
      * SysV stack, high → low: extra strings, auxv, envp, argv, argc.
@@ -343,6 +355,7 @@ int main(int argc, char** argv)
         register uint64_t size_val asm("rsi") = (uint64_t)arena_sz;
         register uint64_t tramp_val asm("rdx") = (uint64_t)(uintptr_t)tramp;
         register uint64_t hrsp_val asm("r8") = haiku_rsp;
+        register uint64_t exe_val asm("r9") = (uint64_t)(uintptr_t)elf_path;
         __asm__ __volatile__(
             "mov $0x1337, %%rax\n\t"
             "syscall\n\t"
@@ -350,7 +363,7 @@ int main(int argc, char** argv)
             "jmp *%%r13\n\t"
             :
             : "r"(rsp_val), "r"(entry_val), "D"(arena_val), "S"(size_val),
-              "d"(tramp_val), "r"(hrsp_val)
+              "d"(tramp_val), "r"(hrsp_val), "r"(exe_val)
             : "rax", "rcx", "r11", "memory"
         );
     }

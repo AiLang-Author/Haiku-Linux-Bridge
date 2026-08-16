@@ -30,7 +30,20 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 
 ### In the shop, not a tester target yet
 
-busybox **`sh`** is the next pyramid layer. Non-interactive `sh -c 'echo SHOK'` has printed `SHOK` on the guest (builtin, no fork). `sh -c 'echo HI | cat'` still crashes: ash `clone`s, then the child was IRETQ'd onto the Haiku loader stack and `ret`'d into junk. Stamp window, `/proc/self/exe`, and `sendfile` are being wired for that path. Do not file “`sh` pipeline dies” as a surprise; that report is already the current grind.
+busybox **`sh`**. Non-interactive `sh -c 'echo SHOK'` prints `SHOK`.
+`sh -c 'echo HI | cat'` now stamps the child (`COM1` `5RS`) and then
+the team dies (Kill Thread, not KDL). `/proc/self/exe` and `sendfile`
+are wired for ash `exec` of `cat` but that path is not green. Do not
+file “`sh` pipeline dies” as a surprise.
+
+Extra single-process applets that worked this round: `id`, `pwd`,
+`true`, `printf`, `dirname`, `basename`, `od`. `hello_pipeline` is
+still `PIPELINEOK` after the child trampoline change.
+
+**Do not run `sh` pipes or glibc-static `clone` LTP on a build older
+than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
+(`page fault, interrupts were disabled`). That store is removed on
+current `main` once Day 27 is pushed.
 
 ---
 

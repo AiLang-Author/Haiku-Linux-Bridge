@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-16 (tester brief: [`STATUS.md`](STATUS.md); Day 26 still the last guest-green wrap)  
+**Last updated:** 2026-08-16 (Day 27: more busybox; `sh` echo green; rseq CLI KDL fixed)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -20,7 +20,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 23](STANDUP_DAY23.md) (Linux `futex` WAIT/WAKE; `FUTEXOK`) →
 [Day 24](STANDUP_DAY24.md) (Linux `poll`/`ppoll`; `POLLOK`) →
 [Day 25](STANDUP_DAY25.md) (`select` + file `mmap`; pipeline child exec) →
-[Day 26](STANDUP_DAY26.md) (`fork`+`execve`+`poll`; `PIPELINEOK`).
+[Day 26](STANDUP_DAY26.md) (`fork`+`execve`+`poll`; `PIPELINEOK`) →
+[Day 27](STANDUP_DAY27.md) (more busybox; `sh` echo; rseq CLI KDL).
 
 ---
 
@@ -64,9 +65,11 @@ This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 `PIPELINEOK`. Mark no longer wipes sibling CR3 slots (that was
 Kill Thread on the parent). COM1 `F4`/`5R`/`SoxXEC`/`XGO`/`VvWeE`.
 
-**What needs doing next:** busybox `sh` pipelines (builtin `echo` has
-printed `SHOK`; `echo HI | cat` still crashes — child IRETQ used the
-Haiku loader stack). Then `CLONE_VM` / pthread. ioctl still later.
+**What needs doing next:** finish busybox `sh` pipe (child now stamps
+`5RS` then dies). Then `CLONE_VM` / pthread. ioctl still later.
+
+**Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
+so bug reports include the binary, the command, and Kill Thread vs KDL.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -329,6 +332,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY24.md` | Day 24 wrap: Linux `poll`/`ppoll` |
 | `docs/STANDUP_DAY25.md` | Day 25 wrap: `select` + file `mmap` |
 | `docs/STANDUP_DAY26.md` | Day 26 wrap: `fork`+`execve`+`poll` |
+| `docs/STANDUP_DAY27.md` | Day 27 wrap: more busybox; `sh` echo; rseq KDL |
 | `docs/STATUS.md` | Public tester brief + how to file bugs |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |

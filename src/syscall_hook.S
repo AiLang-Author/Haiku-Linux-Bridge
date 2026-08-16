@@ -83,6 +83,7 @@
 	.globl	gForkUserRip
 	.globl	gForkUserRsp
 	.globl	gForkUserFlags
+	.globl	gMarkExe
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gLinuxTeam
@@ -110,6 +111,7 @@
 	.hidden	gForkUserRip
 	.hidden	gForkUserRsp
 	.hidden	gForkUserFlags
+	.hidden	gMarkExe
 
 	.extern	sys_compat_getdents64
 	.extern	sys_compat_stat
@@ -129,6 +131,7 @@
 	.extern	sys_compat_select
 	.extern	sys_compat_pselect
 	.extern	sys_compat_mmap
+	.extern	sys_compat_sendfile
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
@@ -196,10 +199,11 @@ sys_compat_lstar:
 	je	.Lhaiku_slow
 	/* Only stamp if this SYSCALL came from the Linux ELF or the
 	 * fork tramp page. gForkPending is global: a Haiku thread on
-	 * another CPU must not be adopted (that was SX during F2). */
+	 * another CPU must not be adopted (that was SX during F2).
+	 * Do not KSER on the miss — Tracker/app_server flood COM1. */
 	cmp	rcx, 0x400000
 	jb	.Lstamp_trypage
-	cmp	rcx, 0x405000
+	cmp	rcx, 0x1000000		/* static Linux ELF, not 4K hello_* */
 	jb	.Lstamp_child
 .Lstamp_trypage:
 	/* rax is CR3 — do not clobber. r8/r9 already pushed. */
@@ -230,6 +234,17 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
+	/* Child IRETQ does not copy FS_BASE. busybox clone reads
+	 * fs:0x10 before any other syscall. Apply parent's TLS now. */
+	cmp	qword ptr [rip + gLinuxFS], 0
+	je	.Llinux_go
+	push	rax
+	push	rcx
+	push	r11
+	call	.Lapply_fs
+	pop	r11
+	pop	rcx
+	pop	rax
 	/* Parent already IRETQ'd. Dispatch this first child syscall
 	 * like any marked team (dup2/close/execve, not just exit). */
 	jmp	.Llinux_go
@@ -250,6 +265,7 @@ sys_compat_lstar:
 	KSER	'M'
 	mov	qword ptr [rip + gForkTramp], rdx
 	mov	qword ptr [rip + gForkHaikuRsp], r8
+	mov	qword ptr [rip + gMarkExe], r9
 	/* Add or refresh this CR3. Do not wipe other slots —
 	 * exec's loader mark was unmarking the parent (Kill Thread). */
 	mov	rax, cr3
@@ -457,6 +473,8 @@ sys_compat_lstar:
 	je	.Ldup3
 	cmp	rax, 316		/* renameat2 */
 	je	.Lrenameat2
+	cmp	rax, 40			/* sendfile */
+	je	.Lsendfile
 	cmp	rax, 9			/* Linux mmap */
 	je	.Lmmap
 	cmp	rax, 10			/* Linux mprotect */
@@ -831,10 +849,10 @@ sys_compat_lstar:
 	 * COM1 'U' after Z => user mode ran. Silence after Z =>
 	 * IRETQ itself triple-faulted (matches empty previous_syslog). */
 	push	0x23
-	mov	rdx, [rip + gForkHaikuRsp]
+	mov	rdx, [rip + gForkUserRsp]
 	test	rdx, rdx
 	jnz	.Lprsp
-	mov	rdx, [rip + gForkUserRsp]
+	mov	rdx, [rip + gForkHaikuRsp]
 .Lprsp:
 	push	rdx
 	push	0x3202
@@ -2013,6 +2031,19 @@ sys_compat_lstar:
 	KSER	'm'
 	jmp	.Lret
 
+.Lsendfile:
+	/* rdi=out rsi=in rdx=offp r10=count */
+	push	rcx
+	push	r11
+	mov	rcx, r10
+	mov	rbp, rsp
+	sti
+	call	sys_compat_sendfile
+	cli
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
 .Lapply_fs:
 	/* Already kernel GS. rcx/r11 saved by caller. */
 	cmp	qword ptr [rip + gUlsOff], 0
@@ -2131,19 +2162,9 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lret:
-	/* Keep registered cpu_id fields at 0 on every stub sysret.
-	 * Preserve rax (return) and all userspace regs except rcx/r11.
-	 * Entered on gs:8 / kernel GS.
-	 */
-	cmp	qword ptr [rip + gRseqPtr], 0
-	je	.Lsysret
-	push	rax
-	push	rdi
-	mov	rdi, [rip + gRseqPtr]
-	mov	dword ptr [rdi], 0
-	mov	dword ptr [rdi + 4], 0
-	pop	rdi
-	pop	rax
+	/* Do not store into gRseqPtr here. After fork that user page
+	 * is COW-RO; a CLI write is KDL (lstar+0x2240 on exit01).
+	 * Register/unregister already wrote cpu_id. */
 .Lsysret:
 	mov	rsp, qword ptr [gs:16]
 	swapgs
@@ -2209,6 +2230,8 @@ gForkUserRip:
 gForkUserRsp:
 	.quad	0
 gForkUserFlags:
+	.quad	0
+gMarkExe:
 	.quad	0
 	.align	16
 gKstack:

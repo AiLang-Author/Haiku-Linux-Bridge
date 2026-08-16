@@ -80,6 +80,8 @@
 #define HAIKU_WAIT_CHILD 0x2d
 /* syscalls.h: is_computer_on … get_safemode then wait_for_objects. */
 #define HAIKU_WAIT_OBJ   0x06
+#define HAIKU_READ       0x95
+#define HAIKU_WRITE      0x97
 /* Sandwich: wait_child=0x2d exec=0x2e fork=0x2f (syscalls.h order). */
 #define HAIKU_EXEC       0x2e
 #define HAIKU_WRITE_STAT 0x9d
@@ -265,6 +267,7 @@ typedef int32 (*haiku_waitobj_fn)(void* infos, int32 num, uint32 flags,
 typedef int32 (*haiku_mapfile_fn)(const void* name, void* addrPtr,
 	uint32 spec, uint64 size, uint32 prot, uint32 mapping,
 	int32 unmapRange, int32 fd, int64 offset);
+typedef int64 (*haiku_rw_fn)(int32 fd, int64 pos, void* buf, uint64 n);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -294,6 +297,9 @@ static uint64 sFcntlFn;
 static uint64 sForkFn;
 static uint64 sWaitObjFn;
 static uint64 sMapFileFn;
+static uint64 sReadFn;
+static uint64 sWriteFn;
+static char sLinuxExe[256];
 static uint64 sRetUserland;
 static uint64 sForkGs0;
 static uint64 sForkGs8;
@@ -340,6 +346,7 @@ extern "C" {
 	extern uint64 gForkTramp;
 	extern uint64 gForkHaikuRsp;
 	extern uint64 gForkPending;
+	extern uint64 gMarkExe;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -383,6 +390,8 @@ extern "C" {
 		const void* ts, void* scratch);
 	int64 sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 		int64 fd, int64 offset);
+	int64 sys_compat_sendfile(int64 outFd, int64 inFd, void* offp,
+		uint64 count);
 	int64 sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
 		const void* newPath);
 	int64 sys_compat_symlink(int64 fd, const void* linkPath,
@@ -634,6 +643,10 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_WAIT_OBJ].function;
 				sMapFileFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_MAP_FILE].function;
+				sReadFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_READ].function;
+				sWriteFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_WRITE].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -1015,6 +1028,8 @@ linux_clear_all(void)
 	gLinuxN = 0;
 }
 
+static int copy_user_cstr(char* dst, const void* user, int max);
+
 static int
 linux_slot_by_cr3(uint64 cr3)
 {
@@ -1031,10 +1046,18 @@ extern "C" int64
 sys_compat_mark_team(void)
 {
 	team_info info;
+	uint64 cr3;
+	int slot;
 
 	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
 		return -1;
-	gLinuxTeam[0] = info.team;
+	cr3 = read_cr3() & ~(uint64)0xfff;
+	slot = linux_slot_by_cr3(cr3);
+	if (slot < 0)
+		slot = 0;
+	gLinuxTeam[slot] = info.team;
+	if (gMarkExe != 0 && ((uint64)gMarkExe) >= 0x100000ULL)
+		copy_user_cstr(sLinuxExe, (const void*)(addr_t)gMarkExe, 256);
 	if (gLinuxN == 0)
 		gLinuxN = 1;
 	sHaveUid = 0;
@@ -1226,13 +1249,54 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	for (j = 0; j < (int)sizeof(*f); j++)
 		q[j] = 0;
 	f->type = IFRAME_TYPE_SYSCALL;
-	/* Child IRETQ: Haiku trampoline + Haiku user stack (native
-	 * fork shape). Trampoline then loads Linux RSP/RIP.
-	 * Parent returns via hook sysretq to Linux RIP (proven). */
-	/* Child IRETQ to the Linux clone return. ax is forced 0 by
-	 * arch_store_fork_frame. hello_fork then takes .Lchild / exit(60).
-	 * Stamp path only handles exit/write — no CALL_C on gKstack. */
-	if (userRip >= 0x100000ULL)
+	/* Child IRETQ to a trampoline on the Haiku loader stack, then
+	 * the tramp switches to Linux RSP and jumps to the clone return.
+	 * Direct IRETQ to Linux RIP+RSP still Kill-Thread'd busybox sh
+	 * (COM1 Tt flood, no S). hello_pipeline is asm and never rets. */
+	if (gForkTramp >= 0x100000ULL && userRip >= 0x100000ULL
+		&& userRsp >= 0x100000ULL) {
+		uint8 tb[35];
+		int bi;
+		/* getpid from tramp page: stamp CR3 + apply_fs.
+		 * xor eax,eax so clone return still looks like the child
+		 * (hello_pipeline tests rax). Then Linux RSP + jmp.
+		 * b8 27 00 00 00     mov $39,%eax
+		 * 0f 05              syscall
+		 * 31 c0              xor %eax,%eax
+		 * 49 bb <rsp>        movabs $userRsp,%r11
+		 * 4c 89 dc           mov %r11,%rsp
+		 * 49 bb <rip>        movabs $userRip,%r11
+		 * 41 ff e3           jmp *%r11 */
+		tb[0] = 0xb8;
+		tb[1] = 0x27;
+		tb[2] = 0x00;
+		tb[3] = 0x00;
+		tb[4] = 0x00;
+		tb[5] = 0x0f;
+		tb[6] = 0x05;
+		tb[7] = 0x31;
+		tb[8] = 0xc0;
+		tb[9] = 0x49;
+		tb[10] = 0xbb;
+		for (bi = 0; bi < 8; bi++)
+			tb[11 + bi] = (uint8)(userRsp >> (8 * bi));
+		tb[19] = 0x4c;
+		tb[20] = 0x89;
+		tb[21] = 0xdc;
+		tb[22] = 0x49;
+		tb[23] = 0xbb;
+		for (bi = 0; bi < 8; bi++)
+			tb[24 + bi] = (uint8)(userRip >> (8 * bi));
+		tb[32] = 0x41;
+		tb[33] = 0xff;
+		tb[34] = 0xe3;
+		__asm__ __volatile__("sti");
+		if (user_memcpy((void*)(addr_t)gForkTramp, tb, 35) == B_OK) {
+			f->ip = gForkTramp;
+			kser_puts("J\n");
+		} else if (userRip >= 0x100000ULL)
+			f->ip = userRip;
+	} else if (userRip >= 0x100000ULL)
 		f->ip = userRip;
 	else if (gForkTramp >= 0x100000ULL)
 		f->ip = gForkTramp;
@@ -1279,13 +1343,12 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	if (st < 0)
 		return haiku_status_to_linux((int64)st);
 
-	/* Stamp live CR3. No kser here — dumps after _user_fork
-	 * #PF under CLI (0xfb / 0x1ffffffff) before RETU. */
-	gLinuxCR3[0] = read_cr3() & ~(uint64)0xfff;
+	/* Parent is already marked. Do not smash gLinuxCR3[0] —
+	 * that unmarked a sibling when slot 0 was not this team. */
 
 	/* Parent return: copy iframe onto THIS stack (gKstack) and
 	 * call official x86_return_to_userland. Child already copied
-	 * iframe.ip=tramp+0 during fork. Do not IRETQ from the planted
+	 * iframe.ip=Linux RIP during fork. Do not IRETQ from the planted
 	 * kstack frame (C sat on that stack once and got smashed).
 	 * Do not return to the hook if we have the official path —
 	 * homemade 5-push skipped kernel-exit / FPU clear. */
@@ -1303,12 +1366,15 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		for (n = 0; n < (int)sizeof(local); n++)
 			((uint8*)&local)[n] = q[n];
 		local.ax = (uint64)(uint32)st;
-		/* PRE on tramp+64 is green. Now the real clone return. */
+		/* Same Linux RIP/RSP as the child. Haiku loader RSP
+		 * here sent busybox's clone `ret` into junk. */
 		if (userRip >= 0x100000ULL)
 			local.ip = userRip;
 		else if (gForkTramp >= 0x100000ULL)
 			local.ip = gForkTramp + 64;
-		if (gForkHaikuRsp >= 0x100000ULL)
+		if (userRsp >= 0x100000ULL)
+			local.sp = userRsp;
+		else if (gForkHaikuRsp >= 0x100000ULL)
 			local.sp = gForkHaikuRsp;
 		/* Same IRETQ flags as the live COM1 'U' run. 0x202
 		 * (no IOPL) reset after R with this tramp+64 landing. */
@@ -1485,13 +1551,33 @@ sys_compat_execve(const void* path, const void* argv, const void* envp,
 		return -LINUX_EFAULT;
 	if (copy_user_cstr(sExecLinuxPath, path, (int)sizeof(sExecLinuxPath)) < 0)
 		return -LINUX_EFAULT;
+	{
+		int i, same;
+		const char* pse = "/proc/self/exe";
+
+		same = 1;
+		for (i = 0; pse[i] != 0; i++) {
+			if (sExecLinuxPath[i] != pse[i]) {
+				same = 0;
+				break;
+			}
+		}
+		if (same && sExecLinuxPath[i] == 0 && sLinuxExe[0] != 0) {
+			for (i = 0; i < 256; i++) {
+				sExecLinuxPath[i] = sLinuxExe[i];
+				if (sLinuxExe[i] == 0)
+					break;
+			}
+		}
+	}
 	kser_puts(sExecLinuxPath);
 	kser_putc('\n');
 	narg = count_user_vec(argv, EXEC_MAX_VEC);
 	nenv = count_user_vec(envp, EXEC_MAX_VEC);
 	if (narg < 0 || nenv < 0)
 		return -LINUX_EFAULT;
-	extra = (narg > 1) ? (narg - 1) : 0;
+	/* loader + linux ELF path + full argv (argv[0] may be "cat"). */
+	extra = (narg > 0) ? narg : 0;
 	argCount = 2 + extra;
 	envCount = nenv;
 	nslot = argCount + 1 + envCount + 1;
@@ -1499,7 +1585,7 @@ sys_compat_execve(const void* path, const void* argv, const void* envp,
 		return -LINUX_E2BIG;
 
 	for (i = 0; i < extra; i++) {
-		if (user_memcpy(&up, (const uint8*)argv + (uint32)(i + 1) * 8, 8)
+		if (user_memcpy(&up, (const uint8*)argv + (uint32)i * 8, 8)
 			!= B_OK)
 			return -LINUX_EFAULT;
 		if (copy_user_cstr(sExecArgStore[i], (const void*)(addr_t)up,
@@ -2133,6 +2219,62 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 		return -LINUX_ENOMEM;
 	(void)i;
 	return (int64)mapped;
+}
+
+extern "C" int64
+sys_compat_sendfile(int64 outFd, int64 inFd, void* offp, uint64 count)
+{
+	haiku_rw_fn rdfn, wrfn;
+	uint64 ursp, pos, done, chunk, n;
+	void* scratch;
+	int64 got, put;
+	int64 off;
+
+	if (sReadFn == 0 || sWriteFn == 0)
+		return -LINUX_ENOSYS;
+	if (inFd < 0 || outFd < 0)
+		return -LINUX_EBADF;
+	if (count == 0)
+		return 0;
+	pos = (uint64)-1;
+	if (offp != NULL) {
+		if (user_memcpy(&off, offp, 8) != B_OK)
+			return -LINUX_EFAULT;
+		if (off < 0)
+			return -LINUX_EINVAL;
+		pos = (uint64)off;
+	}
+	__asm__ __volatile__("mov %%gs:16, %0" : "=r"(ursp));
+	if (ursp < 0x100000ULL + 4096)
+		return -LINUX_EFAULT;
+	scratch = (void*)(addr_t)((ursp - 4096) & ~(uint64)15);
+	rdfn = (haiku_rw_fn)(addr_t)sReadFn;
+	wrfn = (haiku_rw_fn)(addr_t)sWriteFn;
+	done = 0;
+	while (done < count) {
+		chunk = 4096;
+		if (count - done < chunk)
+			chunk = count - done;
+		if (chunk == 0)
+			break;
+		got = rdfn((int32)inFd, (int64)pos, scratch, chunk);
+		if (got < 0)
+			return (done > 0) ? (int64)done : haiku_status_to_linux(got);
+		if (got == 0)
+			break;
+		n = (uint64)got;
+		put = wrfn((int32)outFd, (int64)-1, scratch, n);
+		if (put < 0)
+			return (done > 0) ? (int64)done : haiku_status_to_linux(put);
+		if ((uint64)put != n)
+			return (int64)(done + (uint64)put);
+		done += n;
+		if (pos != (uint64)-1)
+			pos += n;
+	}
+	if (offp != NULL && user_memcpy(offp, &pos, 8) != B_OK)
+		return -LINUX_EFAULT;
+	return (int64)done;
 }
 
 extern "C" int64
@@ -3206,6 +3348,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
+	kser_puts("WIDE\n");
 	discover_syscall_table();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");

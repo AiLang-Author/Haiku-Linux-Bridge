@@ -1,16 +1,22 @@
 #!/bin/sh
-# First-wave LTP smoke: syscalls we claim, plus harness reality.
-# Skip hang-prone (futex/poll/select/epoll/socket/clone/exec/signal).
+# Next layer: more static busybox + LTP first-wave. sh pipe is still open.
 # License: Public Domain / CC0 1.0 Universal
 set -x
 HOST="http://10.0.2.2:8083"
+OUT=/tmp/wave.out
+RUN=/boot/home/sys_compat_run
+BB=/boot/home/busybox
 LTP=/boot/home/ltp/bin
-OUT=/tmp/ltp_smoke.out
-RUNNER=/boot/home/sys_compat_run
-
+hey -o debug_server quit of Window 0 2>/dev/null || true
+if [ ! -x "$BB" ]; then
+	curl -s -o "$BB" "$HOST/payload/tests/busybox"
+	chmod 755 "$BB"
+fi
+if [ ! -x /boot/home/hello_pipeline ]; then
+	curl -s -o /boot/home/hello_pipeline "$HOST/tests/hello_pipeline"
+	chmod 755 /boot/home/hello_pipeline
+fi
 mkdir -p "$LTP"
-# File/identity first. pipe is short. Skip sockets/epoll/signals/clone/exec
-# (those hang or need ioctl). futex/poll/select have their own hello_*.
 WAVE="hello_min uname01 exit01 getpid01 gettid01 write01 read01 close01 open01 openat01 lseek01 fstat02 stat01 access01 chdir01 getcwd01 mkdir02 unlink05 dup01 dup201 fcntl01 brk01 mmap01 munmap01 arch_prctl01 pipe01"
 for name in $WAVE; do
 	if [ ! -x "$LTP/$name" ]; then
@@ -18,40 +24,46 @@ for name in $WAVE; do
 		chmod 755 "$LTP/$name" 2>/dev/null || true
 	fi
 done
-# hello_min lives with the other tests too
 if [ ! -x "$LTP/hello_min" ]; then
 	curl -s -o "$LTP/hello_min" "$HOST/payload/tests/hello_min"
 	chmod 755 "$LTP/hello_min"
 fi
 
 {
-	echo "=== LTP first-wave $(date) ==="
-	echo "runner=$RUNNER"
+	echo "=== wave $(date) ==="
 	cat /dev/misc/sys_compat 2>&1
-	echo "========================================"
-} > "$OUT"
+	echo "=== hello_pipeline ==="
+	$RUN /boot/home/hello_pipeline
+	echo PIPELINE_RC=$?
+	echo "=== busybox more ==="
+	$RUN $BB id; echo ID_RC=$?
+	$RUN $BB pwd; echo PWD_RC=$?
+	$RUN $BB true; echo TRUE_RC=$?
+	$RUN $BB printf 'MOREOK\n'; echo PRINTF_RC=$?
+	$RUN $BB dirname /boot/home/busybox; echo DIRNAME_RC=$?
+	$RUN $BB basename /boot/home/busybox; echo BASENAME_RC=$?
+	echo abc | $RUN $BB cksum; echo CKSUM_RC=$?
+	echo abc | $RUN $BB od -An -tx1; echo OD_RC=$?
+	echo "=== LTP wave ==="
+} > "$OUT" 2>&1
 
 pass=0
 fail=0
 timeouts=0
-missing=0
-
 run_one() {
 	name="$1"
 	bin="$LTP/$name"
 	echo "----- $name -----" >> "$OUT"
 	if [ ! -f "$bin" ]; then
 		echo "MISSING $name" >> "$OUT"
-		missing=$((missing + 1))
 		return
 	fi
-	chmod 755 "$bin" 2>/dev/null || true
 	rm -f /tmp/one.out
-	"$RUNNER" "$bin" > /tmp/one.out 2>&1 &
+	"$RUN" "$bin" > /tmp/one.out 2>&1 &
 	pid=$!
 	n=0
 	rc=0
-	while [ $n -lt 12 ]; do
+	while [ $n -lt 10 ]; do
 		if ! kill -0 "$pid" 2>/dev/null; then
 			wait "$pid"
 			rc=$?
@@ -75,10 +87,8 @@ run_one() {
 		esac
 	fi
 	echo "EXIT:$name=$rc" >> "$OUT"
-	sed -n '1,80p' /tmp/one.out >> "$OUT" 2>/dev/null
-	echo "=== status after $name ===" >> "$OUT"
-	cat /dev/misc/sys_compat >> "$OUT" 2>&1
-	curl -s -X POST --data-binary @"$OUT" "$HOST/results/ltp_smoke.txt" >/dev/null 2>&1 || true
+	sed -n '1,40p' /tmp/one.out >> "$OUT" 2>/dev/null
+	curl -s -X POST --data-binary @"$OUT" "$HOST/results/wave_out.txt" >/dev/null 2>&1 || true
 }
 
 for name in $WAVE; do
@@ -87,12 +97,11 @@ done
 
 {
 	echo "========================================"
-	echo "SUMMARY pass=$pass fail=$fail timeout=$timeouts missing=$missing"
-	echo "=== status final ==="
+	echo "SUMMARY pass=$pass fail=$fail timeout=$timeouts"
 	cat /dev/misc/sys_compat 2>&1
 } >> "$OUT"
 
-echo "=== ltp_smoke.out ==="
+echo "=== wave.out ==="
 cat "$OUT"
-curl -s -X POST --data-binary @"$OUT" "$HOST/results/ltp_smoke.txt" || true
-echo RUN_LTP_DONE
+curl -s -X POST --data-binary @"$OUT" "$HOST/results/wave_out.txt" || true
+echo RUN_WAVE_DONE
