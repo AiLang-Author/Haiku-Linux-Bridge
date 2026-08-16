@@ -888,20 +888,22 @@ sys_compat_lstar:
 	mov	rdx, qword ptr [rip + gForkUserFlags]
 	/* Already kernel GS / gs:8. Do not swapgs. */
 	KSER	'2'
-	/* C on gKstack, iframe on the real kstack. Running try_fork
-	 * on gs:8 left its frame 64 bytes below the iframe; _user_fork
-	 * smashed the return address (syslog: parent return, then
-	 * reset, never KSER 6). Must set RBP: -O3 spills -0x38(%rbp)
-	 * and leftover user RBP=0x10 #PF'd at 0xffffffffffffffd8. */
-	lea	rsp, [rip + gKstackEnd]
+	/* C below the iframe on THIS thread's kstack. gKstack is one
+	 * global — echo close/getpid vs parent second clone smashed
+	 * it (EX1: 5R then F6P homemade IRETQ #GP). Iframe sits at
+	 * ktop-sizeof (~gs:8-200); 0xA00 leaves ~2K for C. */
+	mov	rsp, qword ptr [gs:8]
+	sub	rsp, 0xA00
 	and	rsp, -16
 	mov	rbp, rsp
-	/* No STI here. Official SYSCALL enables interrupts only after
-	 * RBP is the iframe on the real kstack. STI on gKstack jumped
-	 * to 0x19e1e78c0bc during F4. try_fork STIs around _user_fork. */
 	KSER	'3'
 	call	sys_compat_try_fork
+	/* C IRETQ did not take. Homemade 5-push #GP'd (EX1). */
 	KSER	'6'
+	cli
+.Ltry_fork_stuck:
+	hlt
+	jmp	.Ltry_fork_stuck
 	cli
 	mov	rdi, [rip + gForkUserRip]
 	mov	rsi, [rip + gForkUserRsp]
@@ -950,16 +952,22 @@ sys_compat_lstar:
 	KSER	'V'
 	push	rcx
 	push	r11
+	push	rbx
+	push	rbp
 	mov	r8, qword ptr [gs:16]
 	sub	r8, 256
 	mov	rcx, r10
-	mov	[rip + gSavedRsp], rsp
-	lea	rsp, [rip + gKstackEnd]
+	mov	rbx, rsp
+	mov	rsp, qword ptr [gs:8]
+	sub	rsp, 0xA00
 	and	rsp, -16
+	mov	rbp, rsp
 	sti
 	call	sys_compat_wait4
 	cli
-	mov	rsp, [rip + gSavedRsp]
+	mov	rsp, rbx
+	pop	rbp
+	pop	rbx
 	pop	r11
 	pop	rcx
 	KSER	'v'
@@ -975,18 +983,25 @@ sys_compat_lstar:
 	KSER	'x'
 	push	rcx
 	push	r11
+	push	rbx
+	push	rbp
+	/* Scratch on the SAME page as user RSP (…778 → 512 in-page).
+	 * RSP-8192 is COW-RO after fork; kernel user_memcpy hung. */
 	mov	r8, qword ptr [gs:16]
-	sub	r8, 8192
+	sub	r8, 512
 	and	r8, -16
 	mov	rcx, r8
-	mov	[rip + gSavedRsp], rsp
-	lea	rsp, [rip + gKstackEnd]
+	mov	rbx, rsp
+	mov	rsp, qword ptr [gs:8]
+	sub	rsp, 0xA00
 	and	rsp, -16
 	mov	rbp, rsp
 	sti
 	call	sys_compat_execve
 	cli
-	mov	rsp, [rip + gSavedRsp]
+	mov	rsp, rbx
+	pop	rbp
+	pop	rbx
 	pop	r11
 	pop	rcx
 	KSER	'y'
@@ -999,11 +1014,13 @@ sys_compat_lstar:
 	KSER	'u'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	rcx, r10
 	mov	rbp, rsp
 	sti
 	call	sys_compat_futex
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	KSER	'U'
@@ -1019,6 +1036,7 @@ sys_compat_lstar:
 	KSER	'o'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	r8, qword ptr [gs:16]
 	sub	r8, 512
 	and	r8, -16
@@ -1027,6 +1045,7 @@ sys_compat_lstar:
 	sti
 	call	sys_compat_ppoll
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	KSER	'O'
@@ -1037,6 +1056,7 @@ sys_compat_lstar:
 	KSER	'o'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	r8, qword ptr [gs:16]
 	sub	r8, 512
 	and	r8, -16
@@ -1045,6 +1065,7 @@ sys_compat_lstar:
 	sti
 	call	sys_compat_poll
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	KSER	'O'
@@ -1055,6 +1076,7 @@ sys_compat_lstar:
 	KSER	's'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	rcx, r10
 	mov	r9, qword ptr [gs:16]
 	sub	r9, 1024
@@ -1063,6 +1085,7 @@ sys_compat_lstar:
 	sti
 	call	sys_compat_select
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	KSER	'S'
@@ -1073,6 +1096,7 @@ sys_compat_lstar:
 	KSER	's'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	rcx, r10
 	/* r8 stays timespec; scratch in a stack slot via r9 overwrite */
 	mov	r9, qword ptr [gs:16]
@@ -1082,6 +1106,7 @@ sys_compat_lstar:
 	sti
 	call	sys_compat_pselect
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	KSER	'S'
@@ -2100,25 +2125,32 @@ sys_compat_lstar:
 	KSER	'M'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	rcx, r10
 	mov	rbp, rsp
 	sti
 	call	sys_compat_mmap
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	KSER	'm'
 	jmp	.Lret
 
 .Lsendfile:
-	/* rdi=out rsi=in rdx=offp r10=count */
+	/* rdi=out rsi=in rdx=offp r10=count
+	 * Linux SYSCALL must preserve rbp. EX3 returned EINVAL
+	 * (fSF) then cat_main touched [rbp] → Kill Thread. */
+	KSER	'f'
 	push	rcx
 	push	r11
+	push	rbp
 	mov	rcx, r10
 	mov	rbp, rsp
 	sti
 	call	sys_compat_sendfile
 	cli
+	pop	rbp
 	pop	r11
 	pop	rcx
 	jmp	.Lret

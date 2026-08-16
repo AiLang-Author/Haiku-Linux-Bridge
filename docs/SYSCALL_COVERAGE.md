@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-16 (Day 30: no-hold clone IRETQ; second F2 + XEC)
+**Last updated:** 2026-08-16 (Day 31: `echo HI | cat` green)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -117,7 +117,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 22/293 | pipe/pipe2 | wired |
+| 22/293 | pipe/pipe2 | **works**. `sh -c 'echo HI \| cat'` `SH_PIPE_RC=0`. Day 31. |
+| 40 | sendfile | **pipe = `-EINVAL`** (Linux: `in_fd` must be mmapable). busybox `cat` then `read`/`write`. Regular-file bounce later. |
 | 7 | poll | **works**. `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
 | 23/270 | select/pselect6 | **works**. fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | 271 | ppoll | **works** (timespec → ms; sigset ignored). |
@@ -140,7 +141,7 @@ ptrace, mount, bpf, io_uring, inotify, epoll, mmap of files.
 Approximate unique Linux numbers we **dispatch to something other than
 ENOSYS**: ~90 (including stubs).
 
-**Guest-proven useful**: ~76. Unmodified busybox CLI that works as a
+**Guest-proven useful**: ~78. Unmodified busybox CLI that works as a
 **single process** (no shell spawn): echo, uname, cat, ls, cp, mv,
 ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 
@@ -155,13 +156,13 @@ Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.
 
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
-getppid, pipe/pipe2, nanosleep.
+getppid, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** busybox `sh` /
-real pipelines, then `CLONE_VM` (pthread). `hello_pipeline` is
-guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo …'` (builtin) has
-printed on the guest; a pipe still dies after `clone`. Testers should
-start from [STATUS.md](STATUS.md), not this table.
+**Highest remaining for “coreutils in the wild”:** interactive TTY
+`sh` (ioctl), then `CLONE_VM` (pthread). `hello_pipeline` is
+guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo HI | cat'` prints
+`HI`, `SH_PIPE_RC=0` (Day 31). Testers should start from
+[STATUS.md](STATUS.md), not this table.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.

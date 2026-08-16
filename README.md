@@ -63,7 +63,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `select` / `pselect6` | **Works** — fd_set → poll. `hello_select` / `SELECTOK`. See Day 25. |
 | Linux file `mmap` | **Works** — `_user_map_file` 0xd4. `hello_mmapf` / `MMAPFOK`. See Day 25. |
 | `fork`+`execve`+`poll` | **Works** — `hello_pipeline` / `PIPELINEOK`. Mark keeps sibling CR3 slots. See Day 26. |
-| busybox `sh -c 'echo'` | **Works** — prints `SHOK`. Pipe reaches second clone + `execve` of `cat`; can hang after `XEC`. See Day 30. |
+| busybox `sh -c` (builtin + pipe) | **Works** — `SHOK`, `echo HI \| cat` → `HI` `SH_PIPE_RC=0`, `SHDONE`. See Day 31. |
 | more busybox (`id` `pwd` `printf` `dirname` `basename` `od`) | **Works** — Day 27. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |

@@ -1670,6 +1670,11 @@ sys_compat_execve(const void* path, const void* argv, const void* envp,
 	kser_putc('\n');
 	narg = count_user_vec(argv, EXEC_MAX_VEC);
 	nenv = count_user_vec(envp, EXEC_MAX_VEC);
+	kser_puts("narg=");
+	kser_hex((uint64)(uint32)narg);
+	kser_puts(" nenv=");
+	kser_hex((uint64)(uint32)nenv);
+	kser_putc('\n');
 	if (narg < 0 || nenv < 0)
 		return -LINUX_EFAULT;
 	/* loader + linux ELF path + full argv (argv[0] may be "cat"). */
@@ -1744,8 +1749,15 @@ sys_compat_execve(const void* path, const void* argv, const void* envp,
 	}
 	slots[argCount + 1 + envCount] = 0;
 	slen = (int)(strs + off - sExecBuf);
-	if (user_memcpy(scratch, sExecBuf, (size_t)slen) != B_OK)
+	kser_puts("slen=");
+	kser_hex((uint64)(uint32)slen);
+	kser_putc('\n');
+	if (slen > 512)
+		return -LINUX_E2BIG;
+	if (user_memcpy(scratch, sExecBuf, (size_t)slen) != B_OK) {
+		kser_puts("XCP\n");
 		return -LINUX_EFAULT;
+	}
 
 	cr3 = read_cr3() & ~(uint64)0xfff;
 	slot = linux_slot_by_cr3(cr3);
@@ -2320,57 +2332,18 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 extern "C" int64
 sys_compat_sendfile(int64 outFd, int64 inFd, void* offp, uint64 count)
 {
-	haiku_rw_fn rdfn, wrfn;
-	uint64 ursp, pos, done, chunk, n;
-	void* scratch;
-	int64 got, put;
-	int64 off;
-
-	if (sReadFn == 0 || sWriteFn == 0)
-		return -LINUX_ENOSYS;
-	if (inFd < 0 || outFd < 0)
-		return -LINUX_EBADF;
-	if (count == 0)
-		return 0;
-	pos = (uint64)-1;
-	if (offp != NULL) {
-		if (user_memcpy(&off, offp, 8) != B_OK)
-			return -LINUX_EFAULT;
-		if (off < 0)
-			return -LINUX_EINVAL;
-		pos = (uint64)off;
-	}
-	__asm__ __volatile__("mov %%gs:16, %0" : "=r"(ursp));
-	if (ursp < 0x100000ULL + 4096)
-		return -LINUX_EFAULT;
-	scratch = (void*)(addr_t)((ursp - 4096) & ~(uint64)15);
-	rdfn = (haiku_rw_fn)(addr_t)sReadFn;
-	wrfn = (haiku_rw_fn)(addr_t)sWriteFn;
-	done = 0;
-	while (done < count) {
-		chunk = 4096;
-		if (count - done < chunk)
-			chunk = count - done;
-		if (chunk == 0)
-			break;
-		got = rdfn((int32)inFd, (int64)pos, scratch, chunk);
-		if (got < 0)
-			return (done > 0) ? (int64)done : haiku_status_to_linux(got);
-		if (got == 0)
-			break;
-		n = (uint64)got;
-		put = wrfn((int32)outFd, (int64)-1, scratch, n);
-		if (put < 0)
-			return (done > 0) ? (int64)done : haiku_status_to_linux(put);
-		if ((uint64)put != n)
-			return (int64)(done + (uint64)put);
-		done += n;
-		if (pos != (uint64)-1)
-			pos += n;
-	}
-	if (offp != NULL && user_memcpy(offp, &pos, 8) != B_OK)
-		return -LINUX_EFAULT;
-	return (int64)done;
+	/* Linux sendfile() requires in_fd to support mmap. busybox cat
+	 * does sendfile(1, 0, NULL, 16M) on the pipe and needs EINVAL
+	 * so it falls back to read/write. The old bounce at user
+	 * RSP-4096 smashed cat's stack (EX2: XGO + mQbB then Kill
+	 * Thread, no HI). Regular-file sendfile can use a reserved
+	 * user page later — do not bounce onto the Linux stack. */
+	(void)outFd;
+	(void)inFd;
+	(void)offp;
+	(void)count;
+	kser_puts("SF\n");
+	return -LINUX_EINVAL;
 }
 
 extern "C" int64
@@ -3446,7 +3419,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("RB3\n");
+	kser_puts("EX5\n");
 	discover_syscall_table();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");
