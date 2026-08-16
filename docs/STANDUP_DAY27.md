@@ -8,7 +8,8 @@
 More static busybox applets are guest-green. `hello_pipeline`
 still prints `PIPELINEOK` after the child-return trampoline change.
 busybox `sh -c 'echo SHOK'` prints `SHOK`. `sh -c 'echo HI | cat'`
-stamps the child (`COM1` `5RS`) then dies; desktop stays up.
+now gets through stamp + FS + getpid + `set_robust_list` (`COM1`
+`SFgb`) then dies before `execve`; desktop stays up.
 
 ### Proof (guest 2026-08-16)
 
@@ -18,7 +19,7 @@ stamps the child (`COM1` `5RS`) then dies; desktop stays up.
 | `hello_min` | hello line, `HELLO_RC=0` |
 | `hello_pipeline` | `PIPELINEOK` — `J` `F4` `5R` `SoxXEC` `/boot/home/hello_min` `XGO` `Vv` |
 | `busybox sh -c 'echo SHOK'` | `SHOK` |
-| `busybox sh -c 'echo HI \| cat'` | child `F2` `J` `5RS` then team dies (no KDL) |
+| `busybox sh -c 'echo HI \| cat'` | `F2` `J` `5R` `SFgb` then Kill Thread (no `x`/`c`/`d`) |
 
 ### What broke (and what we changed)
 
@@ -36,13 +37,24 @@ stamps the child (`COM1` `5RS`) then dies; desktop stays up.
 4. **`/proc/self/exe` + `sendfile`** — wired for ash `exec` of `cat`.
    Not guest-proven on the pipe (team dies first).
 
+### Night addendum (still Day 27)
+
+Parent `FS_BASE` is snapshotted at clone (`rdmsr` → `gForkFS`) and
+applied on stamp (`F`). `.Lexit` no longer zeros `gLinuxFS` while a
+sibling CR3 is live. Child trampoline copies 0x600 of the clone
+frame onto the tramp page (parent may have already `ret`'d on the
+real stack).
+
+COM1 on the pipe is now `SFgb` — `set_robust_list` **entered**. No
+`B` (C helper return), no `c`/`d`/`x`. Next: does CALL_C return
+(`B` is now in the helper), and is the child's `ret` RIP junk
+because `rbp` still points at the parent's stack?
+
 ### Next
 
-1. After `5RS`, find the next child syscall that kills the team
-   (likely `set_robust_list` / `execve /proc/self/exe` / `sendfile`).
-2. LTP first-wave: `uname01` reached the binary then `TBROK` `chown`
-   `EFAULT`. Do not run clone/exec LTP until the rseq/FS path is
-   boring.
+1. After `SFgb`, see `B` or not. Then child's `ret` / `rbp` vs
+   `execve /proc/self/exe`.
+2. LTP first-wave: `uname01` `TBROK` `chown` `EFAULT`.
 3. ioctl still deferred.
 
 Landmines: do not write user pointers under CLI; `gRseqPtr` /

@@ -31,10 +31,9 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 ### In the shop, not a tester target yet
 
 busybox **`sh`**. Non-interactive `sh -c 'echo SHOK'` prints `SHOK`.
-`sh -c 'echo HI | cat'` now stamps the child (`COM1` `5RS`) and then
-the team dies (Kill Thread, not KDL). `/proc/self/exe` and `sendfile`
-are wired for ash `exec` of `cat` but that path is not green. Do not
-file “`sh` pipeline dies” as a surprise.
+`sh -c 'echo HI | cat'` stamps, applies FS, `getpid`, and enters
+`set_robust_list` (`COM1` `SFgb`) then Kill Thread (not KDL). Not
+a surprise report.
 
 Extra single-process applets that worked this round: `id`, `pwd`,
 `true`, `printf`, `dirname`, `basename`, `od`. `hello_pipeline` is

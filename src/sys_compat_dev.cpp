@@ -347,6 +347,7 @@ extern "C" {
 	extern uint64 gForkHaikuRsp;
 	extern uint64 gForkPending;
 	extern uint64 gMarkExe;
+	extern uint64 gForkFS;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -1204,6 +1205,13 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	kser_hex(gForkTramp);
 	kser_puts(" hrsp=");
 	kser_hex(gForkHaikuRsp);
+	{
+		uint32 lo, hi;
+		__asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
+		gForkFS = ((uint64)hi << 32) | (uint64)lo;
+	}
+	kser_puts(" fs=");
+	kser_hex(gForkFS);
 	kser_putc('\n');
 	dprintf("[sys_compat] try_fork rip=%#" B_PRIx64 " rsp=%#" B_PRIx64
 		" fl=%#" B_PRIx64 " fn=%#" B_PRIx64 "\n",
@@ -1257,6 +1265,7 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		&& userRsp >= 0x100000ULL) {
 		uint8 tb[35];
 		int bi;
+		uint64 child_sp;
 		/* getpid from tramp page: stamp CR3 + apply_fs.
 		 * xor eax,eax so clone return still looks like the child
 		 * (hello_pipeline tests rax). Then Linux RSP + jmp.
@@ -1276,10 +1285,15 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		tb[6] = 0x05;
 		tb[7] = 0x31;
 		tb[8] = 0xc0;
+		/* Child rets through this frame. The real Linux stack
+		 * is COW with the parent; parent already ret'd and
+		 * reused it (SFgb then Kill Thread, no x). Private
+		 * copy on the tramp page. */
+		child_sp = gForkTramp + 0x200;
 		tb[9] = 0x49;
 		tb[10] = 0xbb;
 		for (bi = 0; bi < 8; bi++)
-			tb[11 + bi] = (uint8)(userRsp >> (8 * bi));
+			tb[11 + bi] = (uint8)(child_sp >> (8 * bi));
 		tb[19] = 0x4c;
 		tb[20] = 0x89;
 		tb[21] = 0xdc;
@@ -1291,7 +1305,9 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		tb[33] = 0xff;
 		tb[34] = 0xe3;
 		__asm__ __volatile__("sti");
-		if (user_memcpy((void*)(addr_t)gForkTramp, tb, 35) == B_OK) {
+		if (user_memcpy((void*)(addr_t)gForkTramp, tb, 35) == B_OK
+			&& user_memcpy((void*)(addr_t)child_sp,
+				(const void*)(addr_t)userRsp, 0x600) == B_OK) {
 			f->ip = gForkTramp;
 			kser_puts("J\n");
 		} else if (userRip >= 0x100000ULL)
@@ -2439,6 +2455,7 @@ sys_compat_set_tid_address(void* ptr)
 extern "C" int64
 sys_compat_set_robust_list(void* head, uint64 len)
 {
+	kser_puts("B\n");
 	sRobustList = (uint64)(addr_t)head;
 	sRobustLen = len;
 	return 0;

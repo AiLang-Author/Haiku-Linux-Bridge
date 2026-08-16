@@ -84,6 +84,7 @@
 	.globl	gForkUserRsp
 	.globl	gForkUserFlags
 	.globl	gMarkExe
+	.globl	gForkFS
 	.hidden	gOrigLstar
 	.hidden	gLinuxCR3
 	.hidden	gLinuxTeam
@@ -112,6 +113,7 @@
 	.hidden	gForkUserRsp
 	.hidden	gForkUserFlags
 	.hidden	gMarkExe
+	.hidden	gForkFS
 
 	.extern	sys_compat_getdents64
 	.extern	sys_compat_stat
@@ -235,9 +237,19 @@ sys_compat_lstar:
 	pop	r8
 	pop	rax
 	/* Child IRETQ does not copy FS_BASE. busybox clone reads
-	 * fs:0x10 before any other syscall. Apply parent's TLS now. */
-	cmp	qword ptr [rip + gLinuxFS], 0
-	je	.Llinux_go
+	 * fs:0x10 before any other syscall. Prefer the FS_BASE
+	 * snapshotted at clone (gForkFS) — glibc may use wrfsbase
+	 * so gLinuxFS stays 0 and apply was skipped (5RS then #PF). */
+	push	rax
+	mov	rax, [rip + gLinuxFS]
+	test	rax, rax
+	jnz	.Lstamp_fs
+	mov	rax, [rip + gForkFS]
+	test	rax, rax
+	jz	.Lstamp_nofs
+	mov	[rip + gLinuxFS], rax
+.Lstamp_fs:
+	pop	rax
 	push	rax
 	push	rcx
 	push	r11
@@ -245,6 +257,11 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	pop	rax
+	KSER	'F'
+	jmp	.Llinux_go
+.Lstamp_nofs:
+	pop	rax
+	KSER	'f'
 	/* Parent already IRETQ'd. Dispatch this first child syscall
 	 * like any marked team (dup2/close/execve, not just exit). */
 	jmp	.Llinux_go
@@ -633,6 +650,7 @@ sys_compat_lstar:
 
 .Lclose:
 	/* Linux: rdi=fd  Haiku _kern_close: rdi=fd  (0x9e) */
+	KSER	'c'
 	mov	rax, 0x9e
 	jmp	.Llstar
 
@@ -741,10 +759,15 @@ sys_compat_lstar:
 2:
 	pop	r9
 	pop	r8
+	/* Keep gLinuxFS if a sibling CR3 is still marked. Zeroing it
+	 * here un-FS'd the parent when the pipe child exited. */
+	cmp	qword ptr [rip + gLinuxN], 0
+	jne	.Lexit_keepfs
 	mov	qword ptr [rip + gLinuxFS], 0
 	mov	qword ptr [rip + gRseqPtr], 0
 	mov	qword ptr [rip + gRseqLen], 0
 	mov	qword ptr [rip + gRseqSig], 0
+.Lexit_keepfs:
 	mov	rax, 0x29
 	KSER	'E'
 	jmp	.Llstar
@@ -759,6 +782,7 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lgetpid:
+	KSER	'g'
 	push	rcx
 	push	r11
 	push	rdi
@@ -1285,6 +1309,7 @@ sys_compat_lstar:
 	push	r10
 	CALL_C	sys_compat_set_tid_address
 .Lset_robust_list:
+	KSER	'b'
 	push	rcx
 	push	r11
 	push	rdi
@@ -1425,6 +1450,7 @@ sys_compat_lstar:
 	push	r10
 	CALL_C	sys_compat_dup
 .Ldup2:
+	KSER	'd'
 	push	rcx
 	push	r11
 	push	rdi
@@ -2232,6 +2258,8 @@ gForkUserRsp:
 gForkUserFlags:
 	.quad	0
 gMarkExe:
+	.quad	0
+gForkFS:
 	.quad	0
 	.align	16
 gKstack:
