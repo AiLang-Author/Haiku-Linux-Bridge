@@ -359,6 +359,7 @@ extern "C" {
 	extern uint64 gForkR13;
 	extern uint64 gForkR14;
 	extern uint64 gForkR15;
+	extern uint64 gForkRetAddr;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -1208,7 +1209,7 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	haiku_fork_fn fn;
 	int32 st;
 	uint64 gs0, gs8, ktop, saved_rsp;
-	uint64 preRet, postRet;
+	uint64 postRet;
 	struct haiku_iframe* f;
 	uint8* q;
 	int j;
@@ -1239,16 +1240,20 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	kser_puts(" fs=");
 	kser_hex(gForkFS);
 	kser_putc('\n');
-	/* busybox clone parent is `cmp rax; ret`. [userRsp] is that
-	 * return address. Snapshot it before the child can run — if
-	 * Haiku fork leaves the Linux stack shared, the child's ret
-	 * smashes the parent and we only ever see one F2. */
-	preRet = 0;
+	/* Return-slot snapshot lives in BSS. try_fork locals sit on
+	 * gKstack; the child getpid/set_robust C path reuses it and
+	 * was smashing preRet — that was the fake COM1 N. */
+	kser_puts("bx=");
+	kser_hex(gForkRbx);
+	kser_puts(" bp=");
+	kser_hex(gForkUserRbp);
+	kser_putc('\n');
+	gForkRetAddr = 0;
 	__asm__ __volatile__("sti");
 	if (userRsp >= 0x100000ULL
-		&& user_memcpy(&preRet, (void*)(addr_t)userRsp, 8) == B_OK) {
+		&& user_memcpy(&gForkRetAddr, (void*)(addr_t)userRsp, 8) == B_OK) {
 		kser_puts("K");
-		kser_hex(preRet);
+		kser_hex(gForkRetAddr);
 		kser_putc('\n');
 		if (user_memcpy(sStackSnap, (void*)(addr_t)userRsp,
 			sizeof(sStackSnap)) == B_OK)
@@ -1413,25 +1418,11 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	if (st < 0)
 		return haiku_status_to_linux((int64)st);
 
-	/* Hold parent on the official kstack (gs:8) until the child
-	 * finishes set_robust_list. Parent IRETQ+ret reuses the clone
-	 * stack and the child then rets into junk (COM1 SFgb, no x).
-	 * Do not wait on gKstack — child getpid/set_robust use it. */
-	{
-		uint64 oldsp, k8;
-		int n;
-
-		__asm__ __volatile__("movq %%rsp, %0" : "=r"(oldsp));
-		__asm__ __volatile__("movq %%gs:8, %0" : "=r"(k8));
-		k8 = (k8 - 512) & ~(uint64)15;
-		__asm__ __volatile__("movq %0, %%rsp" :: "r"(k8) : "memory");
-		__asm__ __volatile__("sti");
-		for (n = 0; n < 4000000 && sChildRobust == 0; n++)
-			__asm__ __volatile__("pause");
-		__asm__ __volatile__("cli");
-		__asm__ __volatile__("movq %0, %%rsp" :: "r"(oldsp) : "memory");
-		kser_puts(sChildRobust ? "H\n" : "h\n");
-	}
+	/* Stay CLI. Child IRETQs to the tramp and only then switches
+	 * to the Linux stack. Holding until set_robust let the child
+	 * ret+push on that stack first (COM1 N) and the parent died
+	 * on its own ret. IRETQ now, while the child is still on the
+	 * tramp / in getpid. */
 
 	/* Parent is already marked. Do not smash gLinuxCR3[0] —
 	 * that unmarked a sibling when slot 0 was not this team. */
@@ -1467,15 +1458,8 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 			local.ip = userRip;
 		else if (gForkTramp >= 0x100000ULL)
 			local.ip = gForkTramp + 64;
-		postRet = 0;
-		__asm__ __volatile__("sti");
-		if (userRsp >= 0x100000ULL
-			&& user_memcpy(&postRet, (void*)(addr_t)userRsp, 8) == B_OK)
-			kser_puts(postRet == preRet ? "Y\n" : "N\n");
-		else
-			kser_puts("?\n");
-		kser_puts(gForkRbx >= 0x100000ULL ? "b\n" : "b0\n");
-		__asm__ __volatile__("cli");
+		/* No STI. Child stamp/getpid uses gKstack; we still
+		 * sit on it. RB2 5Y then KDL ip=0x3. */
 		if (userRsp >= 0x100000ULL)
 			local.sp = userRsp;
 		else if (gForkHaikuRsp >= 0x100000ULL)
@@ -3462,7 +3446,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PV4\n");
+	kser_puts("RB3\n");
 	discover_syscall_table();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");

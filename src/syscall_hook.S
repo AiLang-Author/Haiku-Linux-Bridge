@@ -90,6 +90,7 @@
 	.globl	gForkR13
 	.globl	gForkR14
 	.globl	gForkR15
+	.globl	gForkRetAddr
 	.globl	gMarkExe
 	.globl	gForkFS
 	.hidden	gOrigLstar
@@ -126,6 +127,7 @@
 	.hidden	gForkR13
 	.hidden	gForkR14
 	.hidden	gForkR15
+	.hidden	gForkRetAddr
 	.hidden	gMarkExe
 	.hidden	gForkFS
 
@@ -381,6 +383,15 @@ sys_compat_lstar:
 	pop	rax
 	/* Stay on gs:8 / kernel GS. Post-fork user stack is COW-RO. */
 .Llinux_go:
+	/* Snapshot callee-saved before any dispatch/C. clone plants
+	 * these; do not store them in gFork* here — the child reuses
+	 * this path during the parent hold and would smash the plant. */
+	mov	qword ptr [rip + gSavedRbx], rbx
+	mov	qword ptr [rip + gSavedRbp], rbp
+	mov	qword ptr [rip + gSavedR12], r12
+	mov	qword ptr [rip + gSavedR13], r13
+	mov	qword ptr [rip + gSavedR14], r14
+	mov	qword ptr [rip + gSavedR15], r15
 	inc	qword ptr [rip + gLinuxHits]
 	mov	[rip + gLastLinuxRax], rax
 	/* After fork the user stack is COW-RO. Do not push here. */
@@ -856,14 +867,25 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gForkUserFlags], r11
 	mov	qword ptr [rip + gForkUserRbp], rbp
 	mov	qword ptr [rip + gForkChildTid], r10
-	mov	qword ptr [rip + gForkRbx], rbx
-	mov	qword ptr [rip + gForkR12], r12
-	mov	qword ptr [rip + gForkR13], r13
-	mov	qword ptr [rip + gForkR14], r14
-	mov	qword ptr [rip + gForkR15], r15
-	mov	rdi, rcx
-	mov	rsi, rax
-	mov	rdx, r11
+	/* Prefer the linux_go snapshot — rbx here should match. */
+	mov	rax, qword ptr [rip + gSavedRbx]
+	mov	qword ptr [rip + gForkRbx], rax
+	mov	rax, qword ptr [rip + gSavedR12]
+	mov	qword ptr [rip + gForkR12], rax
+	mov	rax, qword ptr [rip + gSavedR13]
+	mov	qword ptr [rip + gForkR13], rax
+	mov	rax, qword ptr [rip + gSavedR14]
+	mov	qword ptr [rip + gForkR14], rax
+	mov	rax, qword ptr [rip + gSavedR15]
+	mov	qword ptr [rip + gForkR15], rax
+	mov	rax, qword ptr [rip + gSavedRbp]
+	test	rax, rax
+	jz	.Ltry_fork_args
+	mov	qword ptr [rip + gForkUserRbp], rax
+.Ltry_fork_args:
+	mov	rdi, qword ptr [rip + gForkUserRip]
+	mov	rsi, qword ptr [rip + gForkUserRsp]
+	mov	rdx, qword ptr [rip + gForkUserFlags]
 	/* Already kernel GS / gs:8. Do not swapgs. */
 	KSER	'2'
 	/* C on gKstack, iframe on the real kstack. Running try_fork
@@ -2275,6 +2297,20 @@ gSavedRsp:
 gTmpR8:
 	.quad	0
 gTmpR9:
+	.quad	0
+gSavedRbx:
+	.quad	0
+gSavedRbp:
+	.quad	0
+gSavedR12:
+	.quad	0
+gSavedR13:
+	.quad	0
+gSavedR14:
+	.quad	0
+gSavedR15:
+	.quad	0
+gForkRetAddr:
 	.quad	0
 gForkPending:
 	.quad	0
