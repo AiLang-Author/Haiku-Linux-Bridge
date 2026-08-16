@@ -51,7 +51,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | busybox `cat` | **Works** — printed file contents via remapped `open`/`read`/`write` |
 | busybox `ls` | **Works** — `O_DIRECTORY` → `_kern_open_dir`, `getdents64` translates Haiku dirents |
 | Linux `fstat` / `newfstatat` | **Works** — `_user_read_stat` + Haiku→Linux `stat` translate. `hello_stat` / `STATOK`. busybox `ls -l` shows real types and sizes. |
-| Linux `mprotect` / `munmap` / `chmod` / `chown` / `truncate` / uid / tid / `prctl` | **Works** — `_kern_write_stat` 0x9d, `unmap` 0xd5, `mprotect` 0xd6. `hello_wstat` / `WSTATOK`. |
+| Linux `mprotect` / `munmap` / `chmod` / `chown` / `truncate` / uid / tid / `prctl` | **Works** — `_kern_write_stat` (path) + arena scratch (fd). `hello_wstat` / `WSTATOK`. Day 33. |
 | Linux `rename` / `symlink` / `readlink` / `stat` / `dup` / `fsync` / `clock_gettime` | **Works** — busybox `cp` `mv` `ln -s` `readlink` `touch` `rm` `cat` RC=0. `hello_util` / `UTILOK`. |
 | Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** — `_kern_fcntl` 0x76, `statx` from `read_stat`. `hello_fcntl` / `FCNTOK`. |

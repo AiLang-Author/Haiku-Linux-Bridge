@@ -307,6 +307,9 @@ static uint64 sWaitObjFn;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
+static uint64 sKernWriteStatFn;
+static char sWstatPath[1024];
+static uint64 sWstatScratch;
 static uint64 sReadFn;
 static uint64 sWriteFn;
 static char sLinuxExe[256];
@@ -650,6 +653,38 @@ discover_vm_map_file(void)
 		kser_putc('\n');
 	} else if (sVmMapFile == 0)
 		kser_puts("VMno\n");
+}
+
+static void
+discover_kern_write_stat(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"_kern_write_stat",
+		NULL
+	};
+
+	sKernWriteStatFn = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sKernWriteStatFn = (uint64)(addr_t)p;
+				kser_puts("WKfn=");
+				kser_hex(sKernWriteStatFn);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("WKno\n");
 }
 
 static void
@@ -1152,6 +1187,17 @@ sys_compat_mark_team(void)
 	gLinuxTeam[slot] = info.team;
 	if (gMarkExe != 0 && ((uint64)gMarkExe) >= 0x100000ULL)
 		copy_user_cstr(sLinuxExe, (const void*)(addr_t)gMarkExe, 256);
+	/* Last arena page is a real user mapping. Steal it so
+	 * _user_write_stat / utimensat never bounce through RSP. */
+	sWstatScratch = 0;
+	if (gArenaHi > gBrkBase + 8192 && gMapCur == gArenaHi) {
+		gArenaHi -= 4096;
+		gMapCur = gArenaHi;
+		sWstatScratch = gArenaHi;
+		kser_puts("WRsc=");
+		kser_hex(sWstatScratch);
+		kser_putc('\n');
+	}
 	if (gLinuxN == 0)
 		gLinuxN = 1;
 	sHaveUid = 0;
@@ -2441,7 +2487,7 @@ sys_compat_wstat(int64 fd, const void* path, int64 flags, uint32 mask,
 
 	if (mask == 0)
 		return 0;
-	if (sWriteStatFn == 0)
+	if (sWriteStatFn == 0 && sKernWriteStatFn == 0)
 		return -LINUX_ENOSYS;
 	if (path == NULL && fd < 0)
 		return -LINUX_EBADF;
@@ -2486,7 +2532,32 @@ sys_compat_wstat(int64 fd, const void* path, int64 flags, uint32 mask,
 			h[32 + i] = (uint8)(sz >> (8 * i));
 	}
 
-	/* User scratch sits just below the saved user stack (assembly). */
+	/* Prefer a real user page (last arena page, reserved at mark)
+	 * so _user_write_stat sees IS_USER_ADDRESS. Path stays the
+	 * Linux pointer (user cwd / fds). Stack bounce EFAULT'd. */
+	if (sWstatScratch >= 0x100000ULL && sWriteStatFn != 0) {
+		userSt = (void*)(addr_t)sWstatScratch;
+		if (user_memcpy(userSt, h, HAIKU_STAT_SIZE) != B_OK)
+			return -LINUX_EFAULT;
+		fn = (haiku_write_stat_fn)(addr_t)sWriteStatFn;
+		st = fn((int32)fd, path, traverse, userSt, HAIKU_STAT_SIZE,
+			(int32)mask);
+		return haiku_status_to_linux((int64)st);
+	}
+
+	/* Path-based fallback: _kern_write_stat takes kernel pointers. */
+	if (path != NULL && sKernWriteStatFn != 0) {
+		if (copy_user_cstr(sWstatPath, path,
+			(int)sizeof(sWstatPath)) < 0)
+			return -LINUX_EFAULT;
+		fn = (haiku_write_stat_fn)(addr_t)sKernWriteStatFn;
+		st = fn((int32)fd, sWstatPath, traverse, h,
+			HAIKU_STAT_SIZE, (int32)mask);
+		return haiku_status_to_linux((int64)st);
+	}
+
+	if (sWriteStatFn == 0)
+		return -LINUX_ENOSYS;
 	userSt = (void*)(gSavedRsp - 256);
 	if (user_memcpy(userSt, h, HAIKU_STAT_SIZE) != B_OK)
 		return -LINUX_EFAULT;
@@ -3115,7 +3186,7 @@ sys_compat_utimensat(int64 fd, const void* path, const void* times, int64 flags)
 	uint64 now;
 	uint64 asec, ansec, msec, mnsec;
 
-	if (sWriteStatFn == 0)
+	if (sWriteStatFn == 0 && sKernWriteStatFn == 0)
 		return -LINUX_ENOSYS;
 	if (path == NULL && fd < 0)
 		return -LINUX_EBADF;
@@ -3165,6 +3236,26 @@ sys_compat_utimensat(int64 fd, const void* path, const void* times, int64 flags)
 		traverse = 0;
 	else
 		traverse = 1;
+	if (sWstatScratch >= 0x100000ULL && sWriteStatFn != 0) {
+		userSt = (void*)(addr_t)sWstatScratch;
+		if (user_memcpy(userSt, h, HAIKU_STAT_SIZE) != B_OK)
+			return -LINUX_EFAULT;
+		fn = (haiku_write_stat_fn)(addr_t)sWriteStatFn;
+		st = fn((int32)fd, path, traverse, userSt, HAIKU_STAT_SIZE,
+			(int32)mask);
+		return haiku_status_to_linux((int64)st);
+	}
+	if (path != NULL && sKernWriteStatFn != 0) {
+		if (copy_user_cstr(sWstatPath, path,
+			(int)sizeof(sWstatPath)) < 0)
+			return -LINUX_EFAULT;
+		fn = (haiku_write_stat_fn)(addr_t)sKernWriteStatFn;
+		st = fn((int32)fd, sWstatPath, traverse, h,
+			HAIKU_STAT_SIZE, (int32)mask);
+		return haiku_status_to_linux((int64)st);
+	}
+	if (sWriteStatFn == 0)
+		return -LINUX_ENOSYS;
 	userSt = (void*)(gSavedRsp - 256);
 	if (user_memcpy(userSt, h, HAIKU_STAT_SIZE) != B_OK)
 		return -LINUX_EFAULT;
@@ -3362,7 +3453,8 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 	}
 	{
 		char hw[20], hu[20], hp[20], hr[20];
-		fmt_hex(hw, sWriteStatFn);
+		fmt_hex(hw, sKernWriteStatFn != 0 ? sKernWriteStatFn
+			: sWriteStatFn);
 		fmt_hex(hu, sUnmapFn);
 		fmt_hex(hp, sMprotectFn);
 		fmt_hex(hr, sRenameThrFn);
@@ -3501,9 +3593,10 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("MM3\n");
+	kser_puts("WS2\n");
 	discover_syscall_table();
 	discover_vm_map_file();
+	discover_kern_write_stat();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");
 	{
