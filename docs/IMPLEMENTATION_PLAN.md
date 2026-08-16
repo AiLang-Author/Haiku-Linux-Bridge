@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-16 (morning: Day 27 is on `main`; `sh` pipe at `SFgb`)  
+**Last updated:** 2026-08-16 (Day 28: pipe parent stack is shared, `k!`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -21,7 +21,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 24](STANDUP_DAY24.md) (Linux `poll`/`ppoll`; `POLLOK`) →
 [Day 25](STANDUP_DAY25.md) (`select` + file `mmap`; pipeline child exec) →
 [Day 26](STANDUP_DAY26.md) (`fork`+`execve`+`poll`; `PIPELINEOK`) →
-[Day 27](STANDUP_DAY27.md) (more busybox; `sh` echo; rseq CLI KDL).
+[Day 27](STANDUP_DAY27.md) (more busybox; `sh` echo; rseq CLI KDL) →
+[Day 28](STANDUP_DAY28.md) (`sh` pipe: shared Linux stack, `k!`).
 
 ---
 
@@ -60,15 +61,15 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 27):** more static busybox (`id` `pwd` `printf`
-`dirname` `basename` `od`) and `sh -c 'echo SHOK'` are guest-green.
-`hello_pipeline` is still `PIPELINEOK`. `sh -c 'echo HI | cat'`
-reaches `set_robust_list` (`COM1` `SFgb`) then Kill Thread. A
-`.Lret` rseq store under CLI KDLed — that store is gone.
+**Where we are (Day 28):** `sh -c 'echo SHOK'` and `sh -c 'true; echo
+SHDONE'` are guest-green. The pipe forks the echo child (`cdcWeE`)
+then Kill Thread — `[userRsp]` in the parent changes while the parent
+is still in the kernel hold (`COM1` `k!`). The Linux stack is shared.
+`hello_pipeline` still works because it never `ret`s from clone.
 
-**What needs doing next:** finish the `sh` pipe after `SFgb` (does
-`set_robust_list` return; child's `ret`/`rbp` vs parent stack).
-Then `CLONE_VM` / pthread. ioctl still later.
+**What needs doing next:** make `sys_compat_run`'s Linux stack private
+across `_user_fork`. Then retry `echo HI | cat`. Do not IRETQ the
+parent onto the tramp page (desktop went solid blue). ioctl later.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -254,8 +255,11 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **`CLONE_VM` / pthread, or busybox `sh` pipelines.** `fork`+`execve`+
-   `poll` is guest-green. Adopt-on-every-miss stays off.
+1. **busybox `sh` pipe (`echo HI | cat`).** `fork`+`execve`+`poll` is
+   guest-green. The pipe is one clone then Kill Thread because the
+   Linux `mmap` stack is shared (`COM1` `k!`). Next: make that area
+   private across `_user_fork`. Adopt-on-every-miss stays off.
+   `CLONE_VM` / pthread after the pipe.
 2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
@@ -335,6 +339,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY25.md` | Day 25 wrap: `select` + file `mmap` |
 | `docs/STANDUP_DAY26.md` | Day 26 wrap: `fork`+`execve`+`poll` |
 | `docs/STANDUP_DAY27.md` | Day 27 wrap: more busybox; `sh` echo; rseq KDL |
+| `docs/STANDUP_DAY28.md` | Day 28 wrap: pipe parent stack shared (`k!`) |
 | `docs/STATUS.md` | Public tester brief + how to file bugs |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |

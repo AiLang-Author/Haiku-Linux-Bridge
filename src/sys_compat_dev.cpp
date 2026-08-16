@@ -306,6 +306,9 @@ static uint64 sForkGs8;
 static uint64 sForkKtop;
 static int64 sLastFork;
 static volatile int sChildRobust;
+extern "C" volatile int sChildDone;
+static uint8 sStackSnap[512];
+static uint64 sStackSnapAt;
 static int32 sHaveUid;
 static int32 sHaveGid;
 static uint32 sUid;
@@ -1205,12 +1208,15 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	haiku_fork_fn fn;
 	int32 st;
 	uint64 gs0, gs8, ktop, saved_rsp;
+	uint64 preRet, postRet;
 	struct haiku_iframe* f;
 	uint8* q;
 	int j;
 
 	sLastFork = 0;
 	sChildRobust = 0;
+	sChildDone = 0;
+	sStackSnapAt = 0;
 	sForkGs0 = 0;
 	sForkGs8 = 0;
 	sForkKtop = 0;
@@ -1233,6 +1239,23 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	kser_puts(" fs=");
 	kser_hex(gForkFS);
 	kser_putc('\n');
+	/* busybox clone parent is `cmp rax; ret`. [userRsp] is that
+	 * return address. Snapshot it before the child can run — if
+	 * Haiku fork leaves the Linux stack shared, the child's ret
+	 * smashes the parent and we only ever see one F2. */
+	preRet = 0;
+	__asm__ __volatile__("sti");
+	if (userRsp >= 0x100000ULL
+		&& user_memcpy(&preRet, (void*)(addr_t)userRsp, 8) == B_OK) {
+		kser_puts("K");
+		kser_hex(preRet);
+		kser_putc('\n');
+		if (user_memcpy(sStackSnap, (void*)(addr_t)userRsp,
+			sizeof(sStackSnap)) == B_OK)
+			sStackSnapAt = userRsp;
+	} else
+		kser_puts("K?\n");
+	__asm__ __volatile__("cli");
 	dprintf("[sys_compat] try_fork rip=%#" B_PRIx64 " rsp=%#" B_PRIx64
 		" fl=%#" B_PRIx64 " fn=%#" B_PRIx64 "\n",
 		userRip, userRsp, userFlags, sForkFn);
@@ -1413,6 +1436,11 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	/* Parent is already marked. Do not smash gLinuxCR3[0] —
 	 * that unmarked a sibling when slot 0 was not this team. */
 
+	/* After the child has run (set_robust + often a ret on the
+	 * Linux stack), see whether [userRsp] still matches the
+	 * pre-fork snapshot. 'k=' same (COW held), 'k!' child wrote
+	 * through into the parent. */
+
 	/* Parent return: copy iframe onto THIS stack (gKstack) and
 	 * call official x86_return_to_userland. Child already copied
 	 * iframe.ip=Linux RIP during fork. Do not IRETQ from the planted
@@ -1439,6 +1467,16 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 			local.ip = userRip;
 		else if (gForkTramp >= 0x100000ULL)
 			local.ip = gForkTramp + 64;
+		postRet = 0;
+		__asm__ __volatile__("sti");
+		if (userRsp >= 0x100000ULL
+			&& user_memcpy(&postRet, (void*)(addr_t)userRsp, 8) == B_OK) {
+			kser_puts(postRet == preRet ? "k=" : "k!");
+			kser_hex(postRet);
+			kser_putc('\n');
+		} else
+			kser_puts("k?\n");
+		__asm__ __volatile__("cli");
 		if (userRsp >= 0x100000ULL)
 			local.sp = userRsp;
 		else if (gForkHaikuRsp >= 0x100000ULL)
@@ -1617,6 +1655,7 @@ sys_compat_execve(const void* path, const void* argv, const void* envp,
 	int slot;
 
 	kser_puts("XEC\n");
+	sChildDone = 1;
 	if (sExecFn == 0)
 		return -LINUX_ENOSYS;
 	if (path == NULL || scratch == NULL)

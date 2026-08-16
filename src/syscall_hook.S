@@ -177,6 +177,8 @@
 	.extern	sys_compat_statx
 	.extern	sys_compat_try_fork
 	.extern	sys_compat_fork_parent_dump
+	.globl	sChildDone
+	.hidden	sChildDone
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -784,6 +786,7 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gRseqLen], 0
 	mov	qword ptr [rip + gRseqSig], 0
 .Lexit_keepfs:
+	mov	dword ptr [rip + sChildDone], 1
 	mov	rax, 0x29
 	KSER	'E'
 	jmp	.Llstar
@@ -2303,6 +2306,8 @@ gMarkExe:
 	.quad	0
 gForkFS:
 	.quad	0
+sChildDone:
+	.long	0
 	.align	16
 gKstack:
 	.space	32768

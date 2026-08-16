@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY27.md`](STANDUP_DAY27.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY28.md`](STANDUP_DAY28.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 27)
+## What you can expect today (`main`, Day 28)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -31,9 +31,12 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 ### In the shop, not a tester target yet
 
 busybox **`sh`**. Non-interactive `sh -c 'echo SHOK'` prints `SHOK`.
-`sh -c 'echo HI | cat'` stamps, applies FS, `getpid`, and enters
-`set_robust_list` (`COM1` `SFgb`) then Kill Thread (not KDL). Not
-a surprise report.
+`sh -c 'true; echo SHDONE'` prints `SHDONE`.
+`sh -c 'echo HI | cat'` forks the echo child (`cdcWeE` on COM1)
+then Kill Thread 149 on the parent — no second clone, no `cat`.
+The Linux stack is shared across `_user_fork` (`COM1` `k!`: child's
+`ret` is visible in the parent). Not a surprise report. Do not IRETQ
+the parent onto the fork trampoline page (that took the desktop down).
 
 Extra single-process applets that worked this round: `id`, `pwd`,
 `true`, `printf`, `dirname`, `basename`, `od`. `hello_pipeline` is

@@ -47,6 +47,9 @@ chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/run_fork.sh /boot/home/run_exec.sh /boot/home/run_futex.sh \
 	/boot/home/run_poll.sh /boot/home/run_select.sh /boot/home/run_mmapf.sh \
 	/boot/home/run_pipeline.sh /boot/home/run_sh.sh
+rm -rf objects.* *.o objects 2>/dev/null || true
+grep -n 'kser_puts("K"' sys_compat_dev.cpp || echo 'NO_K_IN_SRC'
+grep -n 'SC2' sys_compat_dev.cpp || echo 'NO_SC2_IN_SRC'
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }
 make -f Makefile.driver driverinstall || { echo INSTALL_FAILED; exit 1; }
