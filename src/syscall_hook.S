@@ -122,6 +122,7 @@
 	.extern	sys_compat_adopt
 	.extern	sys_compat_getpid
 	.extern	sys_compat_wait4
+	.extern	sys_compat_execve
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
@@ -557,7 +558,7 @@ sys_compat_lstar:
 	cmp	rax, 202		/* futex */
 	je	.Lenosys
 	cmp	rax, 59			/* execve */
-	je	.Lenosys
+	je	.Lexecve
 	cmp	rax, 25			/* mremap */
 	je	.Lenosys
 	cmp	rax, 15			/* rt_sigreturn */
@@ -885,6 +886,31 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	KSER	'v'
+	jmp	.Lret
+
+.Lexecve:
+	/* rdi=path rsi=argv rdx=envp. Flat args + loader path live
+	 * in user scratch below RSP. rcx/r11 survive for a failed
+	 * return; success never comes back. Must set RBP: flatten
+	 * + _user_exec are large C frames; leftover user RBP #PF. */
+	KSER	'x'
+	push	rcx
+	push	r11
+	mov	r8, qword ptr [gs:16]
+	sub	r8, 8192
+	and	r8, -16
+	mov	rcx, r8
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	mov	rbp, rsp
+	sti
+	call	sys_compat_execve
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	pop	r11
+	pop	rcx
+	KSER	'y'
 	jmp	.Lret
 
 	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32

@@ -29,6 +29,7 @@ tests/sys_compat_run
 tests/hello_fds
 tests/hello_fork
 tests/hello_fork_probe
+tests/hello_exec
 tests/hello_fs
 tests/hello_mmap
 tests/hello_rseq

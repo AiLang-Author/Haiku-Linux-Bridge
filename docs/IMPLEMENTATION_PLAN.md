@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 21: child IRETQ to Linux `0x40101c`; `FORKOK`)  
+**Last updated:** 2026-08-15 (Day 22: Linux `execve` → `hello_min`; `EXEC_RC=0`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -15,7 +15,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 18](STANDUP_DAY18.md) (IRETQ to `0x40101c`; child CR3 stamps) →
 [Day 19](STANDUP_DAY19.md) (kstack Linux dispatch; `wait4` reached) →
 [Day 20](STANDUP_DAY20.md) (`hello_fork` / `FORKOK`) →
-[Day 21](STANDUP_DAY21.md) (child IRETQ to `0x40101c`; stamp only Linux RIP).
+[Day 21](STANDUP_DAY21.md) (child IRETQ to `0x40101c`; stamp only Linux RIP) →
+[Day 22](STANDUP_DAY22.md) (Linux `execve` via `_user_exec` of `sys_compat_run`).
 
 ---
 
@@ -54,16 +55,16 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 21):** single-process Linux CLI is still guest-green.
-`hello_fork` is guest-green with the **child IRETQ to Linux `0x40101c`**
-(`ax=0` → ELF `exit(60)`), not just the tramp stub. COM1
-`F4` / `S5eRE` / `VvWeE`, `FORKOK`, `FORK_RC=0`. Stamp-on-fork only
-if user RIP is in `0x400000..0x405000` or the tramp page —
-`gForkPending` is global and was adopting Haiku threads on other
-CPUs (`SX` mid-F2, Debugger on `message deliverer`).
+**Where we are (Day 22):** single-process Linux CLI is guest-green.
+`hello_fork` is guest-green (child IRETQ to `0x40101c`). **Linux
+`execve` is guest-green:** `hello_exec` replaced itself with
+`hello_min` via Haiku `_user_exec` of `sys_compat_run`. COM1
+`x` / `XEC` / `XGO` / `MMARK` / `WeE`, `EXEC_RC=0`, hello line
+printed. Guest dump: `_kern_exec=0x2e`. Stamp-on-fork only if
+user RIP is in `0x400000..0x405000` or the tramp page.
 
-**What needs doing next:** `execve`. `CLONE_VM` / futex is pthread
-— later. ioctl still later.
+**What needs doing next:** `futex` + `rt_sigaction` (pthread/glibc
+edges). `CLONE_VM` later. ioctl still later.
 
 ---
 
@@ -136,8 +137,9 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `time`/`gettimeofday`/`clock_gettime` (real RTC) | **Works** | `_kern_get_clock` **0xc0** (not libroot `real_time_clock_usecs` — that KDLs). `hello_date` **DATEOK 1786731467**. busybox `date` / `date -u` printed **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** | `_kern_fcntl` **0x76** (guest dump). Linux F_* / O_APPEND / O_NONBLOCK translated. `statx` from `_kern_read_stat` (256 B, size@40 mode@28). `hello_fcntl` **FCNTOK**. `hello_min` + `hello_date` still green. |
 | busybox text CLI (no spawn) | **Works** | Unmodified `grep` `wc` `sed` `head` `sort` `cut` all RC=0 on `/tmp/cli.txt`. `results/ltp/cli_out.txt`. |
-| Linux `clone` / `_kern_fork` | **`_user_fork` OK; reboot at Linux RIP** | COM1: plant iframe at real kstack top, `_user_fork` returns child id. Parent IRETQ to trampoline `eb fe` + Haiku stack stays up. Parent SYSRET or IRETQ to Linux `0x40101c` silent-reboots (no KDL). Child IRETQ is not the killer. Landmine: Linux `exit` is 60 = Haiku `_kern_cancel_thread`. |
-| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: working `fork`/`wait`/`execve`, `futex`, `poll`, signals. ioctl after that. |
+| Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK` RC=0. Child IRETQ to `0x40101c`. Stamp RIP-guarded. Day 20–21. |
+| Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
+| Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
 A **double fault / KDL** on 2026-08-13 was **our** trampoline (`swapgs` on the Haiku path). Ring-0 `wrmsr(LSTAR)` can panic any OS; Haiku is not required to sandbox that. Current trampoline does **not** `swapgs` on the Haiku path. Failure mode for a bad Linux binary must stay **Kill Thread**, never KDL.
@@ -186,6 +188,7 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 19 / 20 | `writev` / `readv` | `0x98` / `0x96` | `_kern_writev`/`_kern_readv` pos=-1 | remap only |
 | 22 / 293 | `pipe` / `pipe2` | `0x83` | `_kern_create_pipe` | O_CLOEXEC/NONBLOCK translated |
 | 110 | `getppid` | — | `get_team_info.parent` | |
+| 59 | `execve` | `0x2e` (46) | `_kern_exec` | Flatten to `sys_compat_run` + linux path; unmark; user pointers |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
@@ -233,10 +236,10 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **`execve`.** `clone`/`wait4`/`exit` are guest-green including
-   child IRETQ to Linux RIP. Adopt-on-every-miss stays off.
-2. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
-3. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
+1. **`futex` + `rt_sigaction` (no-op install)** — pthread/glibc edges.
+   `clone`/`wait4`/`execve`/`exit` are guest-green. Adopt-on-every-miss
+   stays off.
+2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
 ---
@@ -288,9 +291,11 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `scripts/guest_run_cli.sh` | busybox grep/sed/wc/head/sort/cut |
 | `tests/hello_fork_probe.s` | Linux clone then parent `PRE` + both spin (no child syscall) |
 | `tests/haiku_native_fork.c` | Native Haiku `fork()` smoke (gcc on the guest) |
-| `tests/hello_fork.s` | clone + wait4; blocked until `PRE` is green |
+| `tests/hello_fork.s` | clone + wait4; `FORKOK` Day 20–21 |
+| `tests/hello_exec.s` | Linux `execve("/boot/home/hello_min")`; `EXEC_RC=0` Day 22 |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
+| `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
 | `scripts/guest_term.py` | Host: open Haiku Terminal via Tracker + type |
 | `docs/STANDUP_DAY14.md` | Day 14 wrap: `_kern_fork` itself is fine |
 | `docs/STANDUP_DAY15.md` | Day 15 wrap: COM1 isolation of the reboot |
@@ -300,6 +305,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY19.md` | Day 19 wrap: kstack dispatch; `wait4` entered |
 | `docs/STANDUP_DAY20.md` | Day 20 wrap: `hello_fork` / `FORKOK` |
 | `docs/STANDUP_DAY21.md` | Day 21 wrap: child to `0x40101c`; RIP-guarded stamp |
+| `docs/STANDUP_DAY22.md` | Day 22 wrap: Linux `execve` / `hello_min` |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |

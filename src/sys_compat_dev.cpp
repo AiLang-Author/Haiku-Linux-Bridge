@@ -45,6 +45,7 @@
 #define LINUX_EINVAL       22
 #define LINUX_ENAMETOOLONG 36
 #define LINUX_ENOSYS       38
+#define LINUX_E2BIG         7
 
 #define LINUX_O_RDONLY 0
 #define LINUX_O_WRONLY 1
@@ -75,6 +76,8 @@
 #define HAIKU_SETCWD     0x93
 #define HAIKU_FORK       0x2f
 #define HAIKU_WAIT_CHILD 0x2d
+/* Sandwich: wait_child=0x2d exec=0x2e fork=0x2f (syscalls.h order). */
+#define HAIKU_EXEC       0x2e
 #define HAIKU_WRITE_STAT 0x9d
 /* Guest libroot dump (hrev57937): unmap=0xd5 mprotect=0xd6.
  * Later Haiku sources insert two syscalls before these. */
@@ -249,6 +252,8 @@ typedef int32 (*haiku_getclock_fn)(int32 clockid, void* timePtr);
 typedef int32 (*haiku_pipe_fn)(void* fds, int32 flags);
 typedef int32 (*haiku_fcntl_fn)(int32 fd, int32 op, uint64 argument);
 typedef int32 (*haiku_fork_fn)(void);
+typedef int32 (*haiku_exec_fn)(const void* path, const void* flatArgs,
+	uint64 flatSize, int32 argCount, int32 envCount, int32 umask);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -260,6 +265,7 @@ static uint64 sAccessFn;
 static uint64 sGetcwdFn;
 static uint64 sSetcwdFn;
 static uint64 sWaitFn;
+static uint64 sExecFn;
 static uint64 sWriteStatFn;
 static uint64 sUnmapFn;
 static uint64 sMprotectFn;
@@ -320,6 +326,7 @@ extern "C" {
 	extern uint64 gSavedRsp;
 	extern uint64 gForkTramp;
 	extern uint64 gForkHaikuRsp;
+	extern uint64 gForkPending;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -349,6 +356,8 @@ extern "C" {
 	int64 sys_compat_getpid(void);
 	int64 sys_compat_wait4(int64 pid, int32* status, int64 options,
 		void* rusage, void* userInfo);
+	int64 sys_compat_execve(const void* path, const void* argv,
+		const void* envp, void* scratch);
 	int64 sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
 		const void* newPath);
 	int64 sys_compat_symlink(int64 fd, const void* linkPath,
@@ -594,13 +603,18 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_FCNTL].function;
 				sForkFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_FORK].function;
+				sExecFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_EXEC].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
 				" unmap=%#" B_PRIx64 " mprotect=%#" B_PRIx64
-				" rename_thr=%#" B_PRIx64 "\n",
+				" rename_thr=%#" B_PRIx64 " exec=%#" B_PRIx64 "\n",
 				sSyscallInfos, sReadDirFn, sReadStatFn, sWriteStatFn,
-				sUnmapFn, sMprotectFn, sRenameThrFn);
+				sUnmapFn, sMprotectFn, sRenameThrFn, sExecFn);
+			kser_puts("EXECfn=");
+			kser_hex(sExecFn);
+			kser_putc('\n');
 			discover_return_to_userland();
 			return;
 		}
@@ -1340,6 +1354,192 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 			return -LINUX_EFAULT;
 	}
 	return st;
+}
+
+#define EXEC_MAX_VEC 16
+#define EXEC_MAX_STR 255
+#define EXEC_SCRATCH 4096
+
+static const char sLoaderPath[] = "/boot/home/sys_compat_run";
+/* Flatten lives in BSS — 12 KB of autos overflowed the 16 KB kstack
+ * and left leftover user RBP as the frame pointer. */
+static char sExecLinuxPath[256];
+static char sExecBuf[EXEC_SCRATCH];
+static char sExecArgStore[EXEC_MAX_VEC][EXEC_MAX_STR];
+static char sExecEnvStore[EXEC_MAX_VEC][EXEC_MAX_STR];
+
+static int
+copy_user_cstr(char* dst, const void* user, int max)
+{
+	int i;
+
+	if (user == NULL || max < 2)
+		return -1;
+	for (i = 0; i < max - 1; i++) {
+		if (user_memcpy(dst + i, (const uint8*)user + (uint32)i, 1) != B_OK)
+			return -1;
+		if (dst[i] == 0)
+			return i;
+	}
+	dst[max - 1] = 0;
+	return -2;
+}
+
+static int
+count_user_vec(const void* vec, int maxn)
+{
+	int n;
+	uint64 p;
+
+	if (vec == NULL)
+		return 0;
+	for (n = 0; n < maxn; n++) {
+		if (user_memcpy(&p, (const uint8*)vec + (uint32)n * 8, 8) != B_OK)
+			return -1;
+		if (p == 0)
+			return n;
+	}
+	return -2;
+}
+
+/*
+ * Linux execve(path, argv, envp) → Haiku _user_exec of the loader:
+ *   sys_compat_run <path> [argv[1]...]
+ * Path and flatArgs must be user addresses. On success this does not
+ * return. Unmark this CR3 first so the loader is not treated as Linux.
+ */
+extern "C" int64
+sys_compat_execve(const void* path, const void* argv, const void* envp,
+	void* scratch)
+{
+	haiku_exec_fn fn;
+	uint64 up;
+	int narg, nenv, extra, i, argCount, envCount, nslot;
+	int slen, off;
+	uint64* slots;
+	char* strs;
+	int32 st;
+	uint64 cr3;
+	int slot;
+
+	kser_puts("XEC\n");
+	if (sExecFn == 0)
+		return -LINUX_ENOSYS;
+	if (path == NULL || scratch == NULL)
+		return -LINUX_EFAULT;
+	if (((uint64)(addr_t)scratch) < 0x100000ULL)
+		return -LINUX_EFAULT;
+	if (copy_user_cstr(sExecLinuxPath, path, (int)sizeof(sExecLinuxPath)) < 0)
+		return -LINUX_EFAULT;
+	kser_puts(sExecLinuxPath);
+	kser_putc('\n');
+	narg = count_user_vec(argv, EXEC_MAX_VEC);
+	nenv = count_user_vec(envp, EXEC_MAX_VEC);
+	if (narg < 0 || nenv < 0)
+		return -LINUX_EFAULT;
+	extra = (narg > 1) ? (narg - 1) : 0;
+	argCount = 2 + extra;
+	envCount = nenv;
+	nslot = argCount + 1 + envCount + 1;
+	if ((int)sizeof(uint64) * nslot + 512 > EXEC_SCRATCH)
+		return -LINUX_E2BIG;
+
+	for (i = 0; i < extra; i++) {
+		if (user_memcpy(&up, (const uint8*)argv + (uint32)(i + 1) * 8, 8)
+			!= B_OK)
+			return -LINUX_EFAULT;
+		if (copy_user_cstr(sExecArgStore[i], (const void*)(addr_t)up,
+			EXEC_MAX_STR) < 0)
+			return -LINUX_EFAULT;
+	}
+	for (i = 0; i < envCount; i++) {
+		if (user_memcpy(&up, (const uint8*)envp + (uint32)i * 8, 8) != B_OK)
+			return -LINUX_EFAULT;
+		if (copy_user_cstr(sExecEnvStore[i], (const void*)(addr_t)up,
+			EXEC_MAX_STR) < 0)
+			return -LINUX_EFAULT;
+	}
+
+	for (i = 0; i < EXEC_SCRATCH; i++)
+		sExecBuf[i] = 0;
+	slots = (uint64*)(void*)sExecBuf;
+	strs = sExecBuf + sizeof(uint64) * (uint32)nslot;
+	off = 0;
+	/* slot 0: loader */
+	slen = 0;
+	while (sLoaderPath[slen] != 0)
+		slen++;
+	slen++;
+	for (i = 0; i < slen; i++)
+		strs[off + i] = sLoaderPath[i];
+	slots[0] = (uint64)(addr_t)scratch + (uint64)(strs + off - sExecBuf);
+	off += slen;
+	/* slot 1: linux path */
+	slen = 0;
+	while (sExecLinuxPath[slen] != 0)
+		slen++;
+	slen++;
+	for (i = 0; i < slen; i++)
+		strs[off + i] = sExecLinuxPath[i];
+	slots[1] = (uint64)(addr_t)scratch + (uint64)(strs + off - sExecBuf);
+	off += slen;
+	for (i = 0; i < extra; i++) {
+		slen = 0;
+		while (sExecArgStore[i][slen] != 0)
+			slen++;
+		slen++;
+		for (int k = 0; k < slen; k++)
+			strs[off + k] = sExecArgStore[i][k];
+		slots[2 + i] = (uint64)(addr_t)scratch
+			+ (uint64)(strs + off - sExecBuf);
+		off += slen;
+	}
+	slots[argCount] = 0;
+	for (i = 0; i < envCount; i++) {
+		slen = 0;
+		while (sExecEnvStore[i][slen] != 0)
+			slen++;
+		slen++;
+		for (int k = 0; k < slen; k++)
+			strs[off + k] = sExecEnvStore[i][k];
+		slots[argCount + 1 + i] = (uint64)(addr_t)scratch
+			+ (uint64)(strs + off - sExecBuf);
+		off += slen;
+	}
+	slots[argCount + 1 + envCount] = 0;
+	slen = (int)(strs + off - sExecBuf);
+	if (user_memcpy(scratch, sExecBuf, (size_t)slen) != B_OK)
+		return -LINUX_EFAULT;
+
+	cr3 = read_cr3() & ~(uint64)0xfff;
+	slot = linux_slot_by_cr3(cr3);
+	if (slot >= 0) {
+		gLinuxCR3[slot] = 0;
+		gLinuxTeam[slot] = 0;
+		if (gLinuxN > 0)
+			gLinuxN--;
+	}
+	gForkPending = 0;
+
+	fn = (haiku_exec_fn)(addr_t)sExecFn;
+	kser_puts("XGO\n");
+	/* path must be a user address — slot 0 is the loader string. */
+	st = fn((const void*)(addr_t)slots[0], scratch, (uint64)slen,
+		argCount, envCount, 022);
+	/* returned = failure. Restore the mark. */
+	kser_puts("XNO st=");
+	kser_hex((uint64)(uint32)st);
+	kser_putc('\n');
+	if (linux_slot_by_cr3(cr3) < 0) {
+		for (i = 0; i < LINUX_MARK_SLOTS; i++) {
+			if (gLinuxCR3[i] == 0) {
+				gLinuxCR3[i] = cr3;
+				gLinuxN++;
+				break;
+			}
+		}
+	}
+	return haiku_status_to_linux((int64)st);
 }
 
 extern "C" int64

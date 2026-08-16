@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 16: official return; parent user mode lives)
+**Last updated:** 2026-08-15 (Day 22: Linux `execve` guest-green)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -108,9 +108,9 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **`_user_fork` returns a child id.** Official `x86_return_to_userland` to tramp + Haiku stack runs user code (COM1 `U`, guest lives). Return to Linux `0x40101c` still reboots. See Day 16. |
-| 61 | wait4 | wired, unproven (blocked on fork) |
-| 59 | execve | **-ENOSYS** (not identity) |
+| 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. |
+| 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
+| 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
 | 202 | futex | **-ENOSYS** (pthread — not the grep blocker) |
 
 ### Pipes / poll (pipelines, more applets)
@@ -147,7 +147,9 @@ ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
 `clone`/`fork`/`wait4`/`exit` from a **marked** Linux team: `hello_fork`
 prints `FORKOK`, `FORK_RC=0` (Day 20–21). Both parent and child IRETQ
 to Linux `0x40101c`. Stamp-on-fork is RIP-guarded (ELF/tramp only).
-Next: `execve`.
+`execve` from a marked team: `hello_exec` replaced itself with
+`hello_min` (`EXEC_RC=0`, Day 22). Flatten + `_user_exec` of
+`sys_compat_run`; unmark first so the loader is Haiku.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
 Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.
@@ -155,9 +157,9 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** `execve`+fork/wait
-(already in tree, unproven), `futex`, `poll`/`ppoll`,
+**Highest remaining for “coreutils in the wild”:** `futex`, `poll`/`ppoll`,
 `rt_sigaction` (no-op install is often enough), file `mmap`.
+Shells that `fork`+`execve` should now be in reach.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.
