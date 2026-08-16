@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 26: `fork`+`execve`+`poll` guest-green)
+**Last updated:** 2026-08-16 (Day 26 still last guest-green wrap; tester brief in [`STATUS.md`](STATUS.md))
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -159,7 +159,9 @@ getppid, pipe/pipe2, nanosleep.
 
 **Highest remaining for “coreutils in the wild”:** busybox `sh` /
 real pipelines, then `CLONE_VM` (pthread). `hello_pipeline` is
-guest-green (`PIPELINEOK`, Day 26).
+guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo …'` (builtin) has
+printed on the guest; a pipe still dies after `clone`. Testers should
+start from [STATUS.md](STATUS.md), not this table.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.

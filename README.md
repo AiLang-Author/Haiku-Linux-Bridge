@@ -28,7 +28,9 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ## Current status (honest)
 
-**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first. Update it when a syscall lands or a trap changes. Latest wrap: [`docs/STANDUP_DAY26.md`](docs/STANDUP_DAY26.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY26.md`](docs/STANDUP_DAY26.md).
+
+**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 
 Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` and extra drivers are later.
 
