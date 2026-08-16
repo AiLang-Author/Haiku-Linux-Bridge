@@ -126,6 +126,9 @@
 	.extern	sys_compat_futex
 	.extern	sys_compat_poll
 	.extern	sys_compat_ppoll
+	.extern	sys_compat_select
+	.extern	sys_compat_pselect
+	.extern	sys_compat_mmap
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
@@ -227,39 +230,9 @@ sys_compat_lstar:
 	pop	r9
 	pop	r8
 	pop	rax
-	/* Child first syscall during _user_fork. Parent is still on
-	 * gKstack in try_fork — do not CALL_C. Only exit/write.
-	 * Never use 1f/2f next to KSER (macro owns those labels). */
-	cmp	rax, 60
-	je	.Lexit
-	cmp	rax, 231
-	je	.Lexit
-	cmp	rax, 1
-	je	.Lwrite
-	mov	[rip + gLastLinuxRax], rax
-	KSER	'X'
-	mov	[rip + gTmpR8], rdx
-	mov	dx, 0x3f8
-	mov	rax, [rip + gLastLinuxRax]
-	shr	al, 4
-	and	al, 0xf
-	add	al, '0'
-	cmp	al, '9'
-	jbe	.Lsthex1
-	add	al, 7
-.Lsthex1:
-	out	dx, al
-	mov	rax, [rip + gLastLinuxRax]
-	and	al, 0xf
-	add	al, '0'
-	cmp	al, '9'
-	jbe	.Lsthex2
-	add	al, 7
-.Lsthex2:
-	out	dx, al
-	mov	rdx, [rip + gTmpR8]
-	mov	rax, -38
-	jmp	.Lret
+	/* Parent already IRETQ'd. Dispatch this first child syscall
+	 * like any marked team (dup2/close/execve, not just exit). */
+	jmp	.Llinux_go
 .Lhaiku_slow:
 	pop	r9
 	pop	r8
@@ -553,9 +526,9 @@ sys_compat_lstar:
 	cmp	rax, 7			/* poll */
 	je	.Lpoll
 	cmp	rax, 23			/* select */
-	je	.Lenosys
+	je	.Lselect
 	cmp	rax, 270		/* pselect6 */
-	je	.Lenosys
+	je	.Lpselect
 	cmp	rax, 271		/* ppoll */
 	je	.Lppoll
 	cmp	rax, 202		/* futex */
@@ -971,6 +944,43 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	KSER	'O'
+	jmp	.Lret
+
+.Lselect:
+	/* rdi=nfds rsi=rfds rdx=wfds r10=efds r8=timeval */
+	KSER	's'
+	push	rcx
+	push	r11
+	mov	rcx, r10
+	mov	r9, qword ptr [gs:16]
+	sub	r9, 1024
+	and	r9, -16
+	mov	rbp, rsp
+	sti
+	call	sys_compat_select
+	cli
+	pop	r11
+	pop	rcx
+	KSER	'S'
+	jmp	.Lret
+
+.Lpselect:
+	/* rdi=nfds rsi=rfds rdx=wfds r10=efds r8=timespec r9=sigset */
+	KSER	's'
+	push	rcx
+	push	r11
+	mov	rcx, r10
+	/* r8 stays timespec; scratch in a stack slot via r9 overwrite */
+	mov	r9, qword ptr [gs:16]
+	sub	r9, 1024
+	and	r9, -16
+	mov	rbp, rsp
+	sti
+	call	sys_compat_pselect
+	cli
+	pop	r11
+	pop	rcx
+	KSER	'S'
 	jmp	.Lret
 
 	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32
@@ -1950,12 +1960,12 @@ sys_compat_lstar:
 
 .Lmmap:
 	/* Linux: rdi=addr rsi=len rdx=prot r10=flags r8=fd r9=off
-	 * ANON only, carved from the loader arena. File mmap is later.
+	 * ANON: carve the loader arena. File: _user_map_file.
 	 */
+	test	r10, 0x20		/* MAP_ANONYMOUS */
+	jz	.Lmmap_file
 	cmp	qword ptr [rip + gBrkBase], 0
 	je	.Lnomem
-	test	r10, 0x20		/* MAP_ANONYMOUS */
-	jz	.Lnomem
 	mov	rax, rsi
 	add	rax, 4095
 	and	rax, 0xfffffffffffff000
@@ -1978,6 +1988,20 @@ sys_compat_lstar:
 	and	rsi, 0xfffffffffffff000
 	mov	[rip + gMapCur], rsi
 	mov	rax, rsi
+	jmp	.Lret
+
+.Lmmap_file:
+	KSER	'M'
+	push	rcx
+	push	r11
+	mov	rcx, r10
+	mov	rbp, rsp
+	sti
+	call	sys_compat_mmap
+	cli
+	pop	r11
+	pop	rcx
+	KSER	'm'
 	jmp	.Lret
 
 .Lapply_fs:

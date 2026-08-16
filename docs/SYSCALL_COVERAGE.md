@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 24: Linux `poll`/`ppoll` guest-green)
+**Last updated:** 2026-08-15 (Day 25: `select` + file `mmap` guest-green)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -38,7 +38,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 158 | arch_prctl | works |
 | 12 | brk | works |
-| 9 | mmap | works (ANON arena) |
+| 9 | mmap | **works** (ANON arena + file via `_user_map_file` 0xd4). `hello_mmapf` `MMAPFOK`. |
 | 10 | mprotect | works |
 | 11 | munmap | works |
 | 218 | set_tid_address | works |
@@ -119,7 +119,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 22/293 | pipe/pipe2 | wired |
 | 7 | poll | **works**. `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
-| 23/270 | select/pselect6 | **-ENOSYS** (same helper later) |
+| 23/270 | select/pselect6 | **works**. fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | 271 | ppoll | **works** (timespec → ms; sigset ignored). |
 
 ### Signals (many binaries install handlers and ignore them)
@@ -157,10 +157,9 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** file `mmap`,
-`select` if something still uses it, `CLONE_VM` (pthread).
-`rt_sigaction` no-op install is already enough for glibc. Shells
-that `fork`+`execve` and pipelines (`poll`) should now be in reach.
+**Highest remaining for “coreutils in the wild”:** join `fork`+`execve`+
+`poll` in one process (`hello_pipeline` child exec is green; parent
+crash after poll is open), then `CLONE_VM` (pthread).
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.

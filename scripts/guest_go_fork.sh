@@ -28,15 +28,23 @@ curl -s -o /boot/home/hello_fork "$HOST/tests/hello_fork"
 curl -s -o /boot/home/hello_exec "$HOST/tests/hello_exec"
 curl -s -o /boot/home/hello_futex "$HOST/tests/hello_futex"
 curl -s -o /boot/home/hello_poll "$HOST/tests/hello_poll"
+curl -s -o /boot/home/hello_select "$HOST/tests/hello_select"
+curl -s -o /boot/home/hello_mmapf "$HOST/tests/hello_mmapf"
+curl -s -o /boot/home/hello_pipeline "$HOST/tests/hello_pipeline"
 curl -s -o /boot/home/run_fork.sh "$HOST/scripts/guest_run_fork.sh"
 curl -s -o /boot/home/run_exec.sh "$HOST/scripts/guest_run_exec.sh"
 curl -s -o /boot/home/run_futex.sh "$HOST/scripts/guest_run_futex.sh"
 curl -s -o /boot/home/run_poll.sh "$HOST/scripts/guest_run_poll.sh"
+curl -s -o /boot/home/run_select.sh "$HOST/scripts/guest_run_select.sh"
+curl -s -o /boot/home/run_mmapf.sh "$HOST/scripts/guest_run_mmapf.sh"
+curl -s -o /boot/home/run_pipeline.sh "$HOST/scripts/guest_run_pipeline.sh"
 chmod 755 /boot/home/hello_min /boot/home/hello_fork_probe \
 	/boot/home/hello_fork /boot/home/hello_exec /boot/home/hello_futex \
-	/boot/home/hello_poll \
+	/boot/home/hello_poll /boot/home/hello_select /boot/home/hello_mmapf \
+	/boot/home/hello_pipeline \
 	/boot/home/run_fork.sh /boot/home/run_exec.sh /boot/home/run_futex.sh \
-	/boot/home/run_poll.sh
+	/boot/home/run_poll.sh /boot/home/run_select.sh /boot/home/run_mmapf.sh \
+	/boot/home/run_pipeline.sh
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }
 make -f Makefile.driver driverinstall || { echo INSTALL_FAILED; exit 1; }

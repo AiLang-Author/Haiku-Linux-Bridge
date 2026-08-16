@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 24: Linux `poll`/`ppoll`; `POLLOK`)  
+**Last updated:** 2026-08-15 (Day 25: `select` + file `mmap`; `SELECTOK`/`MMAPFOK`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -18,7 +18,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 21](STANDUP_DAY21.md) (child IRETQ to `0x40101c`; stamp only Linux RIP) →
 [Day 22](STANDUP_DAY22.md) (Linux `execve` via `_user_exec` of `sys_compat_run`) →
 [Day 23](STANDUP_DAY23.md) (Linux `futex` WAIT/WAKE; `FUTEXOK`) →
-[Day 24](STANDUP_DAY24.md) (Linux `poll`/`ppoll`; `POLLOK`).
+[Day 24](STANDUP_DAY24.md) (Linux `poll`/`ppoll`; `POLLOK`) →
+[Day 25](STANDUP_DAY25.md) (`select` + file `mmap`; pipeline child exec).
 
 ---
 
@@ -57,14 +58,14 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 24):** single-process Linux CLI is guest-green.
-`hello_fork` / `hello_exec` / `hello_futex` stay green. **Linux
-`poll`/`ppoll` are guest-green:** `hello_poll` `POLLOK` (`pipe2` +
-empty poll 0 + write + `POLLIN`). COM1 `oOWoOWeE`. Guest dump:
-`_kern_wait_for_objects=0x06`. Block on the official kstack.
+**Where we are (Day 25):** `select` and file `mmap` are guest-green
+(`SELECTOK` / `MMAPFOK`). Stamp-after-fork now dispatches the
+child's first syscall (`dup2`/`execve`, not only `exit`). Combined
+`hello_pipeline` child's `execve` reached `hello_min`; parent
+crashed after `poll` woke. Guest dump: `map_file=0xd4`.
 
-**What needs doing next:** `select` if a CLI path needs it; else
-file `mmap`. `CLONE_VM` later. ioctl still later.
+**What needs doing next:** parent join after `fork`+`execve`+`poll`.
+`CLONE_VM` later. ioctl still later.
 
 ---
 
@@ -141,6 +142,8 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
 | Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
 | Linux `poll`/`ppoll` (7/271) | **Works** | `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
+| Linux `select`/`pselect6` (23/270) | **Works** | fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
+| Linux file `mmap` (9) | **Works** | `_user_map_file` 0xd4. ANON still arena-carve. `hello_mmapf` `MMAPFOK`. Day 25. |
 | Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -193,6 +196,8 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 59 | `execve` | `0x2e` (46) | `_kern_exec` | Flatten to `sys_compat_run` + linux path; unmark; user pointers |
 | 202 | `futex` | — | driver sem wait/wake | WAIT/WAKE/BITSET/REQUEUE-as-wake. Park on official kstack. |
 | 7 / 271 | `poll` / `ppoll` | `0x06` | `_kern_wait_for_objects` | Linux pollfd ↔ `object_wait_info`. User scratch. |
+| 23 / 270 | `select` / `pselect6` | `0x06` | same helper via fd_set | timeval / timespec → ms |
+| 9 | `mmap` (file) | `0xd4` | `_kern_map_file` | ANON stays arena-carve. User name + `void**`. |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
@@ -240,8 +245,9 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **`select` if a CLI path needs it; else file `mmap`.** `poll`/`ppoll`
-   and `futex` WAIT/WAKE are guest-green. Adopt-on-every-miss stays off.
+1. **Parent join after `fork`+`execve`+`poll`.** `select` and file
+   `mmap` are guest-green. Stamp-after-fork dispatches. Adopt-on-every-miss
+   stays off.
 2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
@@ -300,6 +306,9 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `scripts/guest_run_futex.sh` | Guest: futex probe; POST `futex_out.txt` |
 | `tests/hello_poll.s` | pipe2 + poll empty/ready; `POLLOK` Day 24 |
 | `scripts/guest_run_poll.sh` | Guest: poll probe; POST `poll_out.txt` |
+| `tests/hello_select.s` | pipe2 + select empty/ready; `SELECTOK` Day 25 |
+| `tests/hello_mmapf.s` | file mmap ELF magic; `MMAPFOK` Day 25 |
+| `tests/hello_pipeline.s` | clone+poll+execve; child reached hello_min, parent crash open |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
 | `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
@@ -315,6 +324,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY22.md` | Day 22 wrap: Linux `execve` / `hello_min` |
 | `docs/STANDUP_DAY23.md` | Day 23 wrap: Linux `futex` WAIT/WAKE |
 | `docs/STANDUP_DAY24.md` | Day 24 wrap: Linux `poll`/`ppoll` |
+| `docs/STANDUP_DAY25.md` | Day 25 wrap: `select` + file `mmap` |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |

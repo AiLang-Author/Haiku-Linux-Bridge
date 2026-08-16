@@ -87,6 +87,8 @@
  * Later Haiku sources insert two syscalls before these. */
 #define HAIKU_UNMAP      0xd5
 #define HAIKU_MPROTECT   0xd6
+/* Guest sandwich: map_file immediately before unmap=0xd5. */
+#define HAIKU_MAP_FILE   0xd4
 #define HAIKU_RENAME_THR 0x38
 #define HAIKU_FSYNC      0x77
 #define HAIKU_READ_LINK  0x7d
@@ -260,6 +262,9 @@ typedef int32 (*haiku_exec_fn)(const void* path, const void* flatArgs,
 	uint64 flatSize, int32 argCount, int32 envCount, int32 umask);
 typedef int32 (*haiku_waitobj_fn)(void* infos, int32 num, uint32 flags,
 	int64 timeout);
+typedef int32 (*haiku_mapfile_fn)(const void* name, void* addrPtr,
+	uint32 spec, uint64 size, uint32 prot, uint32 mapping,
+	int32 unmapRange, int32 fd, int64 offset);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -288,6 +293,7 @@ static uint64 sPipeFn;
 static uint64 sFcntlFn;
 static uint64 sForkFn;
 static uint64 sWaitObjFn;
+static uint64 sMapFileFn;
 static uint64 sRetUserland;
 static uint64 sForkGs0;
 static uint64 sForkGs8;
@@ -371,6 +377,12 @@ extern "C" {
 		void* scratch);
 	int64 sys_compat_ppoll(void* fds, int64 nfds, const void* ts,
 		void* scratch);
+	int64 sys_compat_select(int64 nfds, void* rfds, void* wfds, void* efds,
+		void* tv, void* scratch);
+	int64 sys_compat_pselect(int64 nfds, void* rfds, void* wfds, void* efds,
+		const void* ts, void* scratch);
+	int64 sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
+		int64 fd, int64 offset);
 	int64 sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
 		const void* newPath);
 	int64 sys_compat_symlink(int64 fd, const void* linkPath,
@@ -620,6 +632,8 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_EXEC].function;
 				sWaitObjFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_WAIT_OBJ].function;
+				sMapFileFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_MAP_FILE].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -632,6 +646,9 @@ discover_syscall_table(void)
 			kser_putc('\n');
 			kser_puts("WOBJfn=");
 			kser_hex(sWaitObjFn);
+			kser_putc('\n');
+			kser_puts("MAPFfn=");
+			kser_hex(sMapFileFn);
 			kser_putc('\n');
 			discover_return_to_userland();
 			return;
@@ -1736,7 +1753,7 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 #define HAIKU_EV_PRI    0x0008
 #define HAIKU_EV_HUP    0x0080
 #define HAIKU_EV_INVAL  0x1000
-#define POLL_MAX_FDS    32
+#define POLL_MAX_FDS    64
 
 static uint16
 linux_to_haiku_pevents(uint16 e)
@@ -1895,6 +1912,227 @@ sys_compat_ppoll(void* fds, int64 nfds, const void* ts, void* scratch)
 		return err;
 	ms = (int64)((usec + 999) / 1000);
 	return sys_compat_poll(fds, nfds, ms, scratch);
+}
+
+#define SELECT_SET_BYTES 128
+
+static int
+fdset_bit(const uint8* set, int fd)
+{
+	return (set[fd / 8] >> (fd % 8)) & 1;
+}
+
+static void
+fdset_set(uint8* set, int fd)
+{
+	set[fd / 8] |= (uint8)(1u << (fd % 8));
+}
+
+extern "C" int64
+sys_compat_select(int64 nfds, void* rfds, void* wfds, void* efds,
+	void* tv, void* scratch)
+{
+	uint8 r[SELECT_SET_BYTES], w[SELECT_SET_BYTES], e[SELECT_SET_BYTES];
+	uint8 pfds[POLL_MAX_FDS * 8];
+	int32 i, n, fd, setbytes;
+	int64 ms, err;
+	uint16 ev, rev;
+
+	if (nfds < 0)
+		return -LINUX_EINVAL;
+	if (nfds == 0)
+		return 0;
+	if (nfds > POLL_MAX_FDS)
+		nfds = POLL_MAX_FDS;
+	if (scratch == NULL || ((uint64)(addr_t)scratch) < 0x100000ULL)
+		return -LINUX_EFAULT;
+	setbytes = ((int32)nfds + 7) / 8;
+	if (setbytes > SELECT_SET_BYTES)
+		setbytes = SELECT_SET_BYTES;
+	for (i = 0; i < SELECT_SET_BYTES; i++)
+		r[i] = w[i] = e[i] = 0;
+	if (rfds != NULL && user_memcpy(r, rfds, (size_t)setbytes) != B_OK)
+		return -LINUX_EFAULT;
+	if (wfds != NULL && user_memcpy(w, wfds, (size_t)setbytes) != B_OK)
+		return -LINUX_EFAULT;
+	if (efds != NULL && user_memcpy(e, efds, (size_t)setbytes) != B_OK)
+		return -LINUX_EFAULT;
+
+	n = 0;
+	for (fd = 0; fd < (int32)nfds && n < POLL_MAX_FDS; fd++) {
+		ev = 0;
+		if (rfds != NULL && fdset_bit(r, fd))
+			ev |= LINUX_POLLIN;
+		if (wfds != NULL && fdset_bit(w, fd))
+			ev |= LINUX_POLLOUT;
+		if (efds != NULL && fdset_bit(e, fd))
+			ev |= LINUX_POLLPRI;
+		if (ev == 0)
+			continue;
+		pfds[n * 8 + 0] = (uint8)fd;
+		pfds[n * 8 + 1] = (uint8)(fd >> 8);
+		pfds[n * 8 + 2] = (uint8)(fd >> 16);
+		pfds[n * 8 + 3] = (uint8)(fd >> 24);
+		pfds[n * 8 + 4] = (uint8)ev;
+		pfds[n * 8 + 5] = (uint8)(ev >> 8);
+		pfds[n * 8 + 6] = 0;
+		pfds[n * 8 + 7] = 0;
+		n++;
+	}
+	if (n == 0)
+		return 0;
+	if (user_memcpy(scratch, pfds, (size_t)n * 8) != B_OK)
+		return -LINUX_EFAULT;
+
+	ms = -1;
+	if (tv != NULL) {
+		uint8 raw[16];
+		uint64 sec, us;
+		int k;
+		if (user_memcpy(raw, tv, 16) != B_OK)
+			return -LINUX_EFAULT;
+		sec = us = 0;
+		for (k = 0; k < 8; k++) {
+			sec |= (uint64)raw[k] << (8 * k);
+			us |= (uint64)raw[8 + k] << (8 * k);
+		}
+		if ((int64)sec < 0 || us >= 1000000ULL)
+			return -LINUX_EINVAL;
+		ms = (int64)(sec * 1000ULL + us / 1000ULL);
+	}
+
+	err = sys_compat_poll(scratch, n, ms, scratch);
+	if (err < 0)
+		return err;
+	if (user_memcpy(pfds, scratch, (size_t)n * 8) != B_OK)
+		return -LINUX_EFAULT;
+
+	for (i = 0; i < SELECT_SET_BYTES; i++)
+		r[i] = w[i] = e[i] = 0;
+	for (i = 0; i < n; i++) {
+		fd = (int32)(pfds[i * 8] | (pfds[i * 8 + 1] << 8)
+			| (pfds[i * 8 + 2] << 16) | (pfds[i * 8 + 3] << 24));
+		rev = (uint16)(pfds[i * 8 + 6] | (pfds[i * 8 + 7] << 8));
+		if (fd < 0 || fd >= (int32)nfds)
+			continue;
+		if (rev & (LINUX_POLLIN | LINUX_POLLHUP | LINUX_POLLERR))
+			fdset_set(r, fd);
+		if (rev & (LINUX_POLLOUT | LINUX_POLLERR))
+			fdset_set(w, fd);
+		if (rev & LINUX_POLLPRI)
+			fdset_set(e, fd);
+	}
+	if (rfds != NULL && user_memcpy(rfds, r, (size_t)setbytes) != B_OK)
+		return -LINUX_EFAULT;
+	if (wfds != NULL && user_memcpy(wfds, w, (size_t)setbytes) != B_OK)
+		return -LINUX_EFAULT;
+	if (efds != NULL && user_memcpy(efds, e, (size_t)setbytes) != B_OK)
+		return -LINUX_EFAULT;
+	return err;
+}
+
+extern "C" int64
+sys_compat_pselect(int64 nfds, void* rfds, void* wfds, void* efds,
+	const void* ts, void* scratch)
+{
+	uint8 tv[16];
+	uint64 usec;
+	int64 err;
+	int i;
+
+	if (ts == NULL)
+		return sys_compat_select(nfds, rfds, wfds, efds, NULL, scratch);
+	err = futex_copy_timespec(ts, &usec);
+	if (err < 0)
+		return err;
+	/* Pack as timeval (sec + usec) for select(). */
+	for (i = 0; i < 16; i++)
+		tv[i] = 0;
+	{
+		uint64 sec = usec / 1000000ULL;
+		uint64 us = usec % 1000000ULL;
+		for (i = 0; i < 8; i++) {
+			tv[i] = (uint8)(sec >> (8 * i));
+			tv[8 + i] = (uint8)(us >> (8 * i));
+		}
+	}
+	/* tv is kernel. select() user_memcpy's it — must be user.
+	 * Convert to ms and call poll path via a fake timeval in scratch+512. */
+	{
+		void* utv = (uint8*)scratch + 512;
+		if (user_memcpy(utv, tv, 16) != B_OK)
+			return -LINUX_EFAULT;
+		return sys_compat_select(nfds, rfds, wfds, efds, utv, scratch);
+	}
+}
+
+#define LINUX_MAP_SHARED  0x01
+#define LINUX_MAP_PRIVATE 0x02
+#define LINUX_MAP_FIXED   0x10
+#define LINUX_MAP_ANON    0x20
+
+extern "C" int64
+sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
+	int64 fd, int64 offset)
+{
+	haiku_mapfile_fn fn;
+	uint64 ursp, mapped;
+	void* scratch;
+	void* namep;
+	void* addrp;
+	uint32 spec, hprot, mapping;
+	int32 area;
+	int i;
+	static const char kName[] = "linux_mmap";
+
+	if (sMapFileFn == 0)
+		return -LINUX_ENOSYS;
+	if (len == 0)
+		return -LINUX_EINVAL;
+	if ((flags & LINUX_MAP_ANON) != 0)
+		return -LINUX_ENOMEM;
+	if (fd < 0)
+		return -LINUX_EBADF;
+	if ((offset & 4095) != 0)
+		return -LINUX_EINVAL;
+	if (((flags & LINUX_MAP_SHARED) != 0)
+		== ((flags & LINUX_MAP_PRIVATE) != 0))
+		return -LINUX_EINVAL;
+	len = (len + 4095) & ~(uint64)4095;
+
+	__asm__ __volatile__("mov %%gs:16, %0" : "=r"(ursp));
+	if (ursp < 0x100000ULL + 256)
+		return -LINUX_EFAULT;
+	scratch = (void*)(addr_t)((ursp - 256) & ~(uint64)15);
+
+	addrp = scratch;
+	namep = (uint8*)scratch + 8;
+	mapped = (uint64)(addr_t)addr;
+	if (user_memcpy(addrp, &mapped, 8) != B_OK)
+		return -LINUX_EFAULT;
+	if (user_memcpy(namep, kName, sizeof(kName)) != B_OK)
+		return -LINUX_EFAULT;
+
+	if ((flags & LINUX_MAP_FIXED) != 0)
+		spec = 1; /* B_EXACT_ADDRESS */
+	else if (addr != NULL)
+		spec = 2; /* B_BASE_ADDRESS */
+	else
+		spec = 6; /* B_RANDOMIZED_ANY_ADDRESS */
+	hprot = (uint32)prot & 7;
+	mapping = ((flags & LINUX_MAP_SHARED) != 0) ? 0 : 1;
+
+	fn = (haiku_mapfile_fn)(addr_t)sMapFileFn;
+	area = fn(namep, addrp, spec, len, hprot, mapping, 1, (int32)fd,
+		offset);
+	if (area < 0)
+		return haiku_status_to_linux((int64)area);
+	if (user_memcpy(&mapped, addrp, 8) != B_OK)
+		return -LINUX_EFAULT;
+	if (mapped < 0x100000ULL)
+		return -LINUX_ENOMEM;
+	(void)i;
+	return (int64)mapped;
 }
 
 extern "C" int64
