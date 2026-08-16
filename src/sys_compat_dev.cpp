@@ -1470,12 +1470,11 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		postRet = 0;
 		__asm__ __volatile__("sti");
 		if (userRsp >= 0x100000ULL
-			&& user_memcpy(&postRet, (void*)(addr_t)userRsp, 8) == B_OK) {
-			kser_puts(postRet == preRet ? "k=" : "k!");
-			kser_hex(postRet);
-			kser_putc('\n');
-		} else
-			kser_puts("k?\n");
+			&& user_memcpy(&postRet, (void*)(addr_t)userRsp, 8) == B_OK)
+			kser_puts(postRet == preRet ? "Y\n" : "N\n");
+		else
+			kser_puts("?\n");
+		kser_puts(gForkRbx >= 0x100000ULL ? "b\n" : "b0\n");
 		__asm__ __volatile__("cli");
 		if (userRsp >= 0x100000ULL)
 			local.sp = userRsp;
@@ -3463,7 +3462,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("WIDE\n");
+	kser_puts("PV4\n");
 	discover_syscall_table();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");

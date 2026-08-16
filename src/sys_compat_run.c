@@ -11,8 +11,47 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <OS.h>
 #include <elf.h>
 #include "sys_compat_abi.h"
+
+/*
+ * mmap(MAP_PRIVATE) still left the Linux stack/TLS on a cache that
+ * fork_team did not split (COM1 k!: child's ret visible in the parent).
+ * create_area without B_SHARED_AREA + a commit-touch + RO/RW bounce
+ * gives fork a normal anonymous cache to COW.
+ */
+static void*
+haiku_private_anon(const char* name, size_t size, uint32 prot)
+{
+    void* addr = NULL;
+    area_id id;
+    area_info info;
+    volatile char* p;
+    size_t i;
+
+    size = (size + B_PAGE_SIZE - 1) & ~(size_t)(B_PAGE_SIZE - 1);
+    id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
+        size, B_NO_LOCK, prot);
+    if (id < 0) {
+        printf("[-] create_area %s: %d\n", name, (int)id);
+        return MAP_FAILED;
+    }
+    p = (volatile char*)addr;
+    for (i = 0; i < size; i += B_PAGE_SIZE)
+        p[i] = 0;
+    /* Drop and restore write so the cache has no leftover mmap
+     * page_protections and fork's vm_copy_on_write_area can fire. */
+    if ((prot & B_WRITE_AREA) != 0) {
+        set_area_protection(id, prot & ~B_WRITE_AREA);
+        set_area_protection(id, prot);
+    }
+    if (get_area_info(id, &info) == B_OK)
+        printf("[+] area %s id=%d base=%p size=%lu prot=0x%x ram=%u\n",
+            name, (int)id, info.address, (unsigned long)info.size,
+            info.protection, info.ram_size);
+    return addr;
+}
 
 #define SYS_ARCH_PRCTL 158
 #define ARCH_SET_FS    0x1002
@@ -156,8 +195,8 @@ int main(int argc, char** argv)
     close(fd);
 
     // Allocate 4KB TLS Thread Local Storage area for Linux process
-    void* tls_area = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* tls_area = haiku_private_anon("linux_tls", 4096,
+        B_READ_AREA | B_WRITE_AREA);
     if (tls_area != MAP_FAILED) {
         *(void**)tls_area = tls_area; // Set self-pointer
         linux_raw_syscall2(SYS_ARCH_PRCTL, ARCH_SET_FS, (long)(uintptr_t)tls_area);
@@ -166,10 +205,10 @@ int main(int argc, char** argv)
 
     // Allocate 1MB User Stack for Linux process
     size_t stack_size = 1024 * 1024;
-    void* stack_base = mmap(NULL, stack_size, PROT_READ | PROT_WRITE,
-                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* stack_base = haiku_private_anon("linux_stack", stack_size,
+        B_READ_AREA | B_WRITE_AREA);
     if (stack_base == MAP_FAILED) {
-        perror("[-] Failed to allocate Linux stack");
+        printf("[-] Failed to allocate Linux stack\n");
         return 1;
     }
 
@@ -298,11 +337,10 @@ int main(int argc, char** argv)
     uint32_t arena_sz = skip_arena ? 0 : SYS_COMPAT_ARENA_SIZE;
     void* arena = NULL;
     if (arena_sz != 0) {
-        arena = mmap(NULL, SYS_COMPAT_ARENA_SIZE,
-                           PROT_READ | PROT_WRITE,
-                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        arena = haiku_private_anon("linux_arena", SYS_COMPAT_ARENA_SIZE,
+            B_READ_AREA | B_WRITE_AREA);
         if (arena == MAP_FAILED) {
-            perror("[-] mmap brk/mmap arena");
+            printf("[-] create_area brk/mmap arena\n");
             return 1;
         }
         printf("[+] arena %p +%u for Linux brk/mmap\n",
@@ -315,11 +353,10 @@ int main(int argc, char** argv)
      *  49 bb <rip>     movabs $linux_rip, %r11
      *  41 ff e3        jmp *%r11
      * Hook patches +2 (rsp) and +15 (rip). */
-    unsigned char* tramp = (unsigned char*)mmap(NULL, 4096,
-        PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    unsigned char* tramp = (unsigned char*)haiku_private_anon("linux_tramp",
+        4096, B_READ_AREA | B_WRITE_AREA | B_EXECUTE_AREA);
     if (tramp == MAP_FAILED) {
-        perror("[-] mmap fork IRETQ trampoline");
+        printf("[-] create_area fork IRETQ trampoline\n");
         return 1;
     }
     {
