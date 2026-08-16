@@ -27,12 +27,16 @@ curl -s -o /boot/home/hello_fork_probe "$HOST/tests/hello_fork_probe"
 curl -s -o /boot/home/hello_fork "$HOST/tests/hello_fork"
 curl -s -o /boot/home/hello_exec "$HOST/tests/hello_exec"
 curl -s -o /boot/home/hello_futex "$HOST/tests/hello_futex"
+curl -s -o /boot/home/hello_poll "$HOST/tests/hello_poll"
 curl -s -o /boot/home/run_fork.sh "$HOST/scripts/guest_run_fork.sh"
 curl -s -o /boot/home/run_exec.sh "$HOST/scripts/guest_run_exec.sh"
 curl -s -o /boot/home/run_futex.sh "$HOST/scripts/guest_run_futex.sh"
+curl -s -o /boot/home/run_poll.sh "$HOST/scripts/guest_run_poll.sh"
 chmod 755 /boot/home/hello_min /boot/home/hello_fork_probe \
 	/boot/home/hello_fork /boot/home/hello_exec /boot/home/hello_futex \
-	/boot/home/run_fork.sh /boot/home/run_exec.sh /boot/home/run_futex.sh
+	/boot/home/hello_poll \
+	/boot/home/run_fork.sh /boot/home/run_exec.sh /boot/home/run_futex.sh \
+	/boot/home/run_poll.sh
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }
 make -f Makefile.driver driverinstall || { echo INSTALL_FAILED; exit 1; }

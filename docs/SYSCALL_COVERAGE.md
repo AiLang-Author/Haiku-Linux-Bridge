@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 23: Linux `futex` WAIT/WAKE guest-green)
+**Last updated:** 2026-08-15 (Day 24: Linux `poll`/`ppoll` guest-green)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -118,9 +118,9 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | # | name | status |
 |---|---|---|
 | 22/293 | pipe/pipe2 | wired |
-| 7 | poll | **-ENOSYS** (never Haiku identity) |
-| 23/270 | select/pselect6 | **-ENOSYS** |
-| 271 | ppoll | **-ENOSYS** |
+| 7 | poll | **works**. `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
+| 23/270 | select/pselect6 | **-ENOSYS** (same helper later) |
+| 271 | ppoll | **works** (timespec → ms; sigset ignored). |
 
 ### Signals (many binaries install handlers and ignore them)
 
@@ -157,10 +157,10 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** `poll`/`ppoll`,
-file `mmap`, `CLONE_VM` (pthread). `rt_sigaction` no-op install is
-already enough for glibc. Shells that `fork`+`execve` should now be
-in reach; pipelines still need `poll`.
+**Highest remaining for “coreutils in the wild”:** file `mmap`,
+`select` if something still uses it, `CLONE_VM` (pthread).
+`rt_sigaction` no-op install is already enough for glibc. Shells
+that `fork`+`execve` and pipelines (`poll`) should now be in reach.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.

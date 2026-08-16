@@ -31,6 +31,8 @@ tests/hello_fork
 tests/hello_fork_probe
 tests/hello_exec
 tests/hello_futex
+tests/hello_poll
+tests/hello_futex.o
 tests/hello_fs
 tests/hello_mmap
 tests/hello_rseq

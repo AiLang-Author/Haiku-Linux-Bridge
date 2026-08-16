@@ -124,6 +124,8 @@
 	.extern	sys_compat_wait4
 	.extern	sys_compat_execve
 	.extern	sys_compat_futex
+	.extern	sys_compat_poll
+	.extern	sys_compat_ppoll
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
@@ -549,13 +551,13 @@ sys_compat_lstar:
 	cmp	rax, 169		/* Linux reboot — never identity-pass */
 	je	.Lenosys
 	cmp	rax, 7			/* poll */
-	je	.Lenosys
+	je	.Lpoll
 	cmp	rax, 23			/* select */
 	je	.Lenosys
 	cmp	rax, 270		/* pselect6 */
 	je	.Lenosys
 	cmp	rax, 271		/* ppoll */
-	je	.Lenosys
+	je	.Lppoll
 	cmp	rax, 202		/* futex */
 	je	.Lfutex
 	cmp	rax, 59			/* execve */
@@ -929,6 +931,46 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	KSER	'U'
+	jmp	.Lret
+
+.Lppoll:
+	/* rdi=fds rsi=nfds rdx=timespec* r10=sigset. Ignore sigset. */
+	test	rdx, rdx
+	jnz	.Lppoll_ts
+	mov	rdx, -1
+	jmp	.Lpoll
+.Lppoll_ts:
+	KSER	'o'
+	push	rcx
+	push	r11
+	mov	r8, qword ptr [gs:16]
+	sub	r8, 512
+	and	r8, -16
+	mov	rcx, r8
+	mov	rbp, rsp
+	sti
+	call	sys_compat_ppoll
+	cli
+	pop	r11
+	pop	rcx
+	KSER	'O'
+	jmp	.Lret
+.Lpoll:
+	/* rdi=fds rsi=nfds rdx=timeout_ms */
+	KSER	'o'
+	push	rcx
+	push	r11
+	mov	r8, qword ptr [gs:16]
+	sub	r8, 512
+	and	r8, -16
+	mov	rcx, r8
+	mov	rbp, rsp
+	sti
+	call	sys_compat_poll
+	cli
+	pop	r11
+	pop	rcx
+	KSER	'O'
 	jmp	.Lret
 
 	/* Direct `call` is PLT-safe. `lea r11, [rip+fn]` is R_X86_64_PC32

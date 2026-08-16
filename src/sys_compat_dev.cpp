@@ -78,6 +78,8 @@
 #define HAIKU_SETCWD     0x93
 #define HAIKU_FORK       0x2f
 #define HAIKU_WAIT_CHILD 0x2d
+/* syscalls.h: is_computer_on … get_safemode then wait_for_objects. */
+#define HAIKU_WAIT_OBJ   0x06
 /* Sandwich: wait_child=0x2d exec=0x2e fork=0x2f (syscalls.h order). */
 #define HAIKU_EXEC       0x2e
 #define HAIKU_WRITE_STAT 0x9d
@@ -256,6 +258,8 @@ typedef int32 (*haiku_fcntl_fn)(int32 fd, int32 op, uint64 argument);
 typedef int32 (*haiku_fork_fn)(void);
 typedef int32 (*haiku_exec_fn)(const void* path, const void* flatArgs,
 	uint64 flatSize, int32 argCount, int32 envCount, int32 umask);
+typedef int32 (*haiku_waitobj_fn)(void* infos, int32 num, uint32 flags,
+	int64 timeout);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -283,6 +287,7 @@ static uint64 sGetClockFn;
 static uint64 sPipeFn;
 static uint64 sFcntlFn;
 static uint64 sForkFn;
+static uint64 sWaitObjFn;
 static uint64 sRetUserland;
 static uint64 sForkGs0;
 static uint64 sForkGs8;
@@ -362,6 +367,10 @@ extern "C" {
 		const void* envp, void* scratch);
 	int64 sys_compat_futex(void* uaddr, int64 op, uint32 val,
 		const void* utime, void* uaddr2, uint32 val3);
+	int64 sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs,
+		void* scratch);
+	int64 sys_compat_ppoll(void* fds, int64 nfds, const void* ts,
+		void* scratch);
 	int64 sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
 		const void* newPath);
 	int64 sys_compat_symlink(int64 fd, const void* linkPath,
@@ -609,6 +618,8 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_FORK].function;
 				sExecFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_EXEC].function;
+				sWaitObjFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_WAIT_OBJ].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -618,6 +629,9 @@ discover_syscall_table(void)
 				sUnmapFn, sMprotectFn, sRenameThrFn, sExecFn);
 			kser_puts("EXECfn=");
 			kser_hex(sExecFn);
+			kser_putc('\n');
+			kser_puts("WOBJfn=");
+			kser_hex(sWaitObjFn);
 			kser_putc('\n');
 			discover_return_to_userland();
 			return;
@@ -1708,6 +1722,179 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 	if (st == B_OK)
 		return 0;
 	return haiku_status_to_linux((int64)st);
+}
+
+#define LINUX_POLLIN   0x0001
+#define LINUX_POLLPRI  0x0002
+#define LINUX_POLLOUT  0x0004
+#define LINUX_POLLERR  0x0008
+#define LINUX_POLLHUP  0x0010
+#define LINUX_POLLNVAL 0x0020
+#define HAIKU_EV_READ   0x0001
+#define HAIKU_EV_WRITE  0x0002
+#define HAIKU_EV_ERROR  0x0004
+#define HAIKU_EV_PRI    0x0008
+#define HAIKU_EV_HUP    0x0080
+#define HAIKU_EV_INVAL  0x1000
+#define POLL_MAX_FDS    32
+
+static uint16
+linux_to_haiku_pevents(uint16 e)
+{
+	uint16 h;
+
+	h = 0;
+	if (e & LINUX_POLLIN)
+		h |= HAIKU_EV_READ;
+	if (e & LINUX_POLLOUT)
+		h |= HAIKU_EV_WRITE;
+	if (e & LINUX_POLLPRI)
+		h |= HAIKU_EV_PRI;
+	if (e & LINUX_POLLERR)
+		h |= HAIKU_EV_ERROR;
+	if (e & LINUX_POLLHUP)
+		h |= HAIKU_EV_HUP;
+	if (e & LINUX_POLLNVAL)
+		h |= HAIKU_EV_INVAL;
+	return h;
+}
+
+static uint16
+haiku_to_linux_pevents(uint16 e)
+{
+	uint16 l;
+
+	l = 0;
+	if (e & HAIKU_EV_READ)
+		l |= LINUX_POLLIN;
+	if (e & HAIKU_EV_WRITE)
+		l |= LINUX_POLLOUT;
+	if (e & HAIKU_EV_PRI)
+		l |= LINUX_POLLPRI;
+	if (e & HAIKU_EV_ERROR)
+		l |= LINUX_POLLERR;
+	if (e & HAIKU_EV_HUP)
+		l |= LINUX_POLLHUP;
+	if (e & HAIKU_EV_INVAL)
+		l |= LINUX_POLLNVAL;
+	return l;
+}
+
+/*
+ * Linux poll/ppoll → _user_wait_for_objects. infos must be a user
+ * address (scratch). Block on the official kstack, not gKstack.
+ */
+extern "C" int64
+sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
+{
+	haiku_waitobj_fn fn;
+	uint8 kfds[POLL_MAX_FDS * 8];
+	uint8 hinfos[POLL_MAX_FDS * 8];
+	int32 i, n, ready;
+	int32 fd;
+	uint16 ev, rev;
+	uint32 flags;
+	int64 tout;
+	int32 st;
+
+	if (nfds < 0)
+		return -LINUX_EINVAL;
+	if (nfds == 0)
+		return 0;
+	if (nfds > POLL_MAX_FDS)
+		return -LINUX_EINVAL;
+	if (fds == NULL || scratch == NULL)
+		return -LINUX_EFAULT;
+	if (((uint64)(addr_t)scratch) < 0x100000ULL)
+		return -LINUX_EFAULT;
+	if (sWaitObjFn == 0)
+		return -LINUX_ENOSYS;
+	if (user_memcpy(kfds, fds, (size_t)nfds * 8) != B_OK)
+		return -LINUX_EFAULT;
+
+	for (i = 0; i < (int32)nfds; i++) {
+		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
+			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
+		ev = (uint16)(kfds[i * 8 + 4] | (kfds[i * 8 + 5] << 8));
+		/* Haiku object_wait_info: object, type, events */
+		hinfos[i * 8 + 0] = (uint8)fd;
+		hinfos[i * 8 + 1] = (uint8)(fd >> 8);
+		hinfos[i * 8 + 2] = (uint8)(fd >> 16);
+		hinfos[i * 8 + 3] = (uint8)(fd >> 24);
+		if (fd < 0) {
+			hinfos[i * 8 + 4] = 0;
+			hinfos[i * 8 + 5] = 0;
+			hinfos[i * 8 + 6] = 0;
+			hinfos[i * 8 + 7] = 0;
+		} else {
+			uint16 hev = linux_to_haiku_pevents(ev);
+			hinfos[i * 8 + 4] = 0; /* B_OBJECT_TYPE_FD */
+			hinfos[i * 8 + 5] = 0;
+			hinfos[i * 8 + 6] = (uint8)hev;
+			hinfos[i * 8 + 7] = (uint8)(hev >> 8);
+		}
+	}
+	if (user_memcpy(scratch, hinfos, (size_t)nfds * 8) != B_OK)
+		return -LINUX_EFAULT;
+
+	if (timeoutMs < 0) {
+		flags = 0;
+		tout = 0x7fffffffffffffffLL;
+	} else {
+		flags = 8; /* B_RELATIVE_TIMEOUT */
+		if (timeoutMs > 0x7fffffffLL / 1000)
+			tout = 0x7fffffffLL;
+		else
+			tout = timeoutMs * 1000;
+	}
+	fn = (haiku_waitobj_fn)(addr_t)sWaitObjFn;
+	st = fn(scratch, (int32)nfds, flags, tout);
+	if (st < 0) {
+		if ((uint32)(int32)st == 0x80000009
+			|| (uint32)(int32)st == 0x8000000b)
+			return 0;
+		return haiku_status_to_linux((int64)st);
+	}
+	if (user_memcpy(hinfos, scratch, (size_t)nfds * 8) != B_OK)
+		return -LINUX_EFAULT;
+
+	ready = 0;
+	for (i = 0; i < (int32)nfds; i++) {
+		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
+			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
+		rev = 0;
+		if (fd < 0)
+			rev = 0;
+		else {
+			uint16 hev = (uint16)(hinfos[i * 8 + 6]
+				| (hinfos[i * 8 + 7] << 8));
+			rev = haiku_to_linux_pevents(hev);
+		}
+		kfds[i * 8 + 6] = (uint8)rev;
+		kfds[i * 8 + 7] = (uint8)(rev >> 8);
+		if (rev != 0)
+			ready++;
+	}
+	if (user_memcpy(fds, kfds, (size_t)nfds * 8) != B_OK)
+		return -LINUX_EFAULT;
+	(void)n;
+	return (int64)ready;
+}
+
+extern "C" int64
+sys_compat_ppoll(void* fds, int64 nfds, const void* ts, void* scratch)
+{
+	uint64 usec;
+	int64 ms;
+	int64 err;
+
+	if (ts == NULL)
+		return sys_compat_poll(fds, nfds, -1, scratch);
+	err = futex_copy_timespec(ts, &usec);
+	if (err < 0)
+		return err;
+	ms = (int64)((usec + 999) / 1000);
+	return sys_compat_poll(fds, nfds, ms, scratch);
 }
 
 extern "C" int64

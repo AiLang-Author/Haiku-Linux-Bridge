@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 23: Linux `futex` WAIT/WAKE; `FUTEXOK`)  
+**Last updated:** 2026-08-15 (Day 24: Linux `poll`/`ppoll`; `POLLOK`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -17,7 +17,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 20](STANDUP_DAY20.md) (`hello_fork` / `FORKOK`) →
 [Day 21](STANDUP_DAY21.md) (child IRETQ to `0x40101c`; stamp only Linux RIP) →
 [Day 22](STANDUP_DAY22.md) (Linux `execve` via `_user_exec` of `sys_compat_run`) →
-[Day 23](STANDUP_DAY23.md) (Linux `futex` WAIT/WAKE; `FUTEXOK`).
+[Day 23](STANDUP_DAY23.md) (Linux `futex` WAIT/WAKE; `FUTEXOK`) →
+[Day 24](STANDUP_DAY24.md) (Linux `poll`/`ppoll`; `POLLOK`).
 
 ---
 
@@ -56,15 +57,14 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 23):** single-process Linux CLI is guest-green.
-`hello_fork` / `hello_exec` stay green. **Linux `futex` WAIT/WAKE
-is guest-green:** `hello_futex` `FUTEXOK` (`-EAGAIN`, wake 0,
-`-ETIMEDOUT`). COM1 `uUuUuU`. WAIT parks on the official
-per-thread kstack, not global `gKstack`. `rt_sigaction` remains
-the glibc install-and-ignore stub.
+**Where we are (Day 24):** single-process Linux CLI is guest-green.
+`hello_fork` / `hello_exec` / `hello_futex` stay green. **Linux
+`poll`/`ppoll` are guest-green:** `hello_poll` `POLLOK` (`pipe2` +
+empty poll 0 + write + `POLLIN`). COM1 `oOWoOWeE`. Guest dump:
+`_kern_wait_for_objects=0x06`. Block on the official kstack.
 
-**What needs doing next:** `poll` / `ppoll` (pipelines).
-`CLONE_VM` / PI futex later. ioctl still later.
+**What needs doing next:** `select` if a CLI path needs it; else
+file `mmap`. `CLONE_VM` later. ioctl still later.
 
 ---
 
@@ -140,6 +140,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK` RC=0. Child IRETQ to `0x40101c`. Stamp RIP-guarded. Day 20–21. |
 | Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
 | Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
+| Linux `poll`/`ppoll` (7/271) | **Works** | `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
 | Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
 | LTP subset staged (42 static Linux ELFs) | **Host built** | `payload/ltp/bin/` — run only after hello_min works |
 
@@ -191,6 +192,7 @@ Dumped from `/boot/system/lib/libroot.so` `_kern_write` stub and `syscalls.h` or
 | 110 | `getppid` | — | `get_team_info.parent` | |
 | 59 | `execve` | `0x2e` (46) | `_kern_exec` | Flatten to `sys_compat_run` + linux path; unmark; user pointers |
 | 202 | `futex` | — | driver sem wait/wake | WAIT/WAKE/BITSET/REQUEUE-as-wake. Park on official kstack. |
+| 7 / 271 | `poll` / `ppoll` | `0x06` | `_kern_wait_for_objects` | Linux pollfd ↔ `object_wait_info`. User scratch. |
 
 Confirm any new number with `payload/ltp/dump_sc.c` on the guest before adding it to `syscall_hook.S`. Guest `unmap`/`mprotect` are `0xd5`/`0xd6` on hrev57937 — later Haiku sources insert two syscalls and shift them to `0xd7`/`0xd8`.
 
@@ -238,8 +240,8 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **`poll` / `ppoll`** — pipelines. `futex` WAIT/WAKE and
-   `rt_sigaction` (no-op) are guest-green. Adopt-on-every-miss stays off.
+1. **`select` if a CLI path needs it; else file `mmap`.** `poll`/`ppoll`
+   and `futex` WAIT/WAKE are guest-green. Adopt-on-every-miss stays off.
 2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
@@ -296,6 +298,8 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_exec.s` | Linux `execve("/boot/home/hello_min")`; `EXEC_RC=0` Day 22 |
 | `tests/hello_futex.s` | futex WAIT EAGAIN / WAKE 0 / WAIT timeout; `FUTEXOK` Day 23 |
 | `scripts/guest_run_futex.sh` | Guest: futex probe; POST `futex_out.txt` |
+| `tests/hello_poll.s` | pipe2 + poll empty/ready; `POLLOK` Day 24 |
+| `scripts/guest_run_poll.sh` | Guest: poll probe; POST `poll_out.txt` |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
 | `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
@@ -310,6 +314,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY21.md` | Day 21 wrap: child to `0x40101c`; RIP-guarded stamp |
 | `docs/STANDUP_DAY22.md` | Day 22 wrap: Linux `execve` / `hello_min` |
 | `docs/STANDUP_DAY23.md` | Day 23 wrap: Linux `futex` WAIT/WAKE |
+| `docs/STANDUP_DAY24.md` | Day 24 wrap: Linux `poll`/`ppoll` |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |
