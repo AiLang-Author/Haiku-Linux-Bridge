@@ -66,9 +66,9 @@ Host QEMU and the :8083 fetch server hit the session 10-hour cap
 overnight (not the guest). Both were restarted. Last serial before
 that reset is `haiku_serial.log.pre_timeout`.
 
-Morning grind: parent now waits on `gs:8` until `set_robust_list`
-returns. COM1 is `5SFgbB` `H` `R` — `B` means the C helper returned,
-`H` means the parent saw it, `R` is parent IRETQ. Still Kill Thread
-before `execve`. Next: child's `rbp` was 0 (iframe zeroed). Hook
-now saves user `rbp` into `gForkUserRbp` and plants it on the child
-iframe. That driver is in the tree; needs guest `go_fork` + reboot.
+Later: `CLONE_CHILD_SETTID` write on tramp `getpid` (`T`). Child
+now does `cdcWeE` — close, dup2, close, write, exit — after
+`5SFgT` `bB` `H` `R`. Still no `execve` (`x`); still Kill Thread
+149. `execveat` (322) is aliased to execve. Next: why the child
+writes and exits instead of exec'ing `cat`, and why the parent
+then dies (likely SIGPIPE / missing `wait4` / CLEARTID).

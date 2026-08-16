@@ -84,6 +84,7 @@
 	.globl	gForkUserRsp
 	.globl	gForkUserFlags
 	.globl	gForkUserRbp
+	.globl	gForkChildTid
 	.globl	gMarkExe
 	.globl	gForkFS
 	.hidden	gOrigLstar
@@ -114,6 +115,7 @@
 	.hidden	gForkUserRsp
 	.hidden	gForkUserFlags
 	.hidden	gForkUserRbp
+	.hidden	gForkChildTid
 	.hidden	gMarkExe
 	.hidden	gForkFS
 
@@ -583,6 +585,8 @@ sys_compat_lstar:
 	je	.Lfutex
 	cmp	rax, 59			/* execve */
 	je	.Lexecve
+	cmp	rax, 322		/* execveat */
+	je	.Lexecveat
 	cmp	rax, 25			/* mremap */
 	je	.Lenosys
 	cmp	rax, 15			/* rt_sigreturn */
@@ -838,6 +842,7 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gForkUserRsp], rax
 	mov	qword ptr [rip + gForkUserFlags], r11
 	mov	qword ptr [rip + gForkUserRbp], rbp
+	mov	qword ptr [rip + gForkChildTid], r10
 	mov	rdi, rcx
 	mov	rsi, rax
 	mov	rdx, r11
@@ -920,6 +925,11 @@ sys_compat_lstar:
 	KSER	'v'
 	jmp	.Lret
 
+.Lexecveat:
+	/* rdi=dirfd rsi=path rdx=argv r10=envp r8=flags → execve */
+	mov	rdi, rsi
+	mov	rsi, rdx
+	mov	rdx, r10
 .Lexecve:
 	/* rdi=path rsi=argv rdx=envp. Flatten is BSS. C on gKstack. */
 	KSER	'x'
@@ -2261,6 +2271,8 @@ gForkUserRsp:
 gForkUserFlags:
 	.quad	0
 gForkUserRbp:
+	.quad	0
+gForkChildTid:
 	.quad	0
 gMarkExe:
 	.quad	0

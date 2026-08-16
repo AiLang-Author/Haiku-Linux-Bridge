@@ -350,6 +350,7 @@ extern "C" {
 	extern uint64 gMarkExe;
 	extern uint64 gForkFS;
 	extern uint64 gForkUserRbp;
+	extern uint64 gForkChildTid;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -1110,9 +1111,20 @@ extern "C" int64
 sys_compat_getpid(void)
 {
 	team_info info;
+	int32 tid;
+	uint64 p;
 
 	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
 		return 1;
+	/* CLONE_CHILD_SETTID: write tid in the *child* aspace.
+	 * Saved r10 at clone. First child syscall is tramp getpid. */
+	p = gForkChildTid;
+	if (p >= 0x100000ULL) {
+		tid = find_thread(NULL);
+		if (user_memcpy((void*)(addr_t)p, &tid, 4) == B_OK)
+			kser_puts("T\n");
+		gForkChildTid = 0;
+	}
 	return info.team;
 }
 
