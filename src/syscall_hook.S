@@ -83,6 +83,7 @@
 	.globl	gForkUserRip
 	.globl	gForkUserRsp
 	.globl	gForkUserFlags
+	.globl	gForkUserRbp
 	.globl	gMarkExe
 	.globl	gForkFS
 	.hidden	gOrigLstar
@@ -112,6 +113,7 @@
 	.hidden	gForkUserRip
 	.hidden	gForkUserRsp
 	.hidden	gForkUserFlags
+	.hidden	gForkUserRbp
 	.hidden	gMarkExe
 	.hidden	gForkFS
 
@@ -835,6 +837,7 @@ sys_compat_lstar:
 	mov	rax, qword ptr [gs:16]
 	mov	qword ptr [rip + gForkUserRsp], rax
 	mov	qword ptr [rip + gForkUserFlags], r11
+	mov	qword ptr [rip + gForkUserRbp], rbp
 	mov	rdi, rcx
 	mov	rsi, rax
 	mov	rdx, r11
@@ -2256,6 +2259,8 @@ gForkUserRip:
 gForkUserRsp:
 	.quad	0
 gForkUserFlags:
+	.quad	0
+gForkUserRbp:
 	.quad	0
 gMarkExe:
 	.quad	0

@@ -305,6 +305,7 @@ static uint64 sForkGs0;
 static uint64 sForkGs8;
 static uint64 sForkKtop;
 static int64 sLastFork;
+static volatile int sChildRobust;
 static int32 sHaveUid;
 static int32 sHaveGid;
 static uint32 sUid;
@@ -348,6 +349,7 @@ extern "C" {
 	extern uint64 gForkPending;
 	extern uint64 gMarkExe;
 	extern uint64 gForkFS;
+	extern uint64 gForkUserRbp;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
@@ -1191,6 +1193,7 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	int j;
 
 	sLastFork = 0;
+	sChildRobust = 0;
 	sForkGs0 = 0;
 	sForkGs8 = 0;
 	sForkKtop = 0;
@@ -1292,6 +1295,9 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		child_sp = gForkTramp + 0x200;
 		tb[9] = 0x49;
 		tb[10] = 0xbb;
+		/* Parent is held in kernel until set_robust, so the
+		 * real Linux stack is still intact. Use it. */
+		child_sp = userRsp;
 		for (bi = 0; bi < 8; bi++)
 			tb[11 + bi] = (uint8)(child_sp >> (8 * bi));
 		tb[19] = 0x4c;
@@ -1305,9 +1311,7 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		tb[33] = 0xff;
 		tb[34] = 0xe3;
 		__asm__ __volatile__("sti");
-		if (user_memcpy((void*)(addr_t)gForkTramp, tb, 35) == B_OK
-			&& user_memcpy((void*)(addr_t)child_sp,
-				(const void*)(addr_t)userRsp, 0x600) == B_OK) {
+		if (user_memcpy((void*)(addr_t)gForkTramp, tb, 35) == B_OK) {
 			f->ip = gForkTramp;
 			kser_puts("J\n");
 		} else if (userRip >= 0x100000ULL)
@@ -1327,6 +1331,8 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	f->ss = USER_SS;
 	f->vector = 99;
 	f->ax = 0;
+	if (gForkUserRbp >= 0x100000ULL)
+		f->bp = gForkUserRbp;
 
 	/* Short breadcrumb only. Long F4 kser dump under CLI
 	 * repeatedly #PF'd (ip 0 / 0xfb) before _user_fork. */
@@ -1358,6 +1364,26 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	kser_puts("5");
 	if (st < 0)
 		return haiku_status_to_linux((int64)st);
+
+	/* Hold parent on the official kstack (gs:8) until the child
+	 * finishes set_robust_list. Parent IRETQ+ret reuses the clone
+	 * stack and the child then rets into junk (COM1 SFgb, no x).
+	 * Do not wait on gKstack — child getpid/set_robust use it. */
+	{
+		uint64 oldsp, k8;
+		int n;
+
+		__asm__ __volatile__("movq %%rsp, %0" : "=r"(oldsp));
+		__asm__ __volatile__("movq %%gs:8, %0" : "=r"(k8));
+		k8 &= ~(uint64)15;
+		__asm__ __volatile__("movq %0, %%rsp" :: "r"(k8) : "memory");
+		__asm__ __volatile__("sti");
+		for (n = 0; n < 4000000 && sChildRobust == 0; n++)
+			__asm__ __volatile__("pause");
+		__asm__ __volatile__("cli");
+		__asm__ __volatile__("movq %0, %%rsp" :: "r"(oldsp) : "memory");
+		kser_puts(sChildRobust ? "H\n" : "h\n");
+	}
 
 	/* Parent is already marked. Do not smash gLinuxCR3[0] —
 	 * that unmarked a sibling when slot 0 was not this team. */
@@ -1395,6 +1421,8 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		/* Same IRETQ flags as the live COM1 'U' run. 0x202
 		 * (no IOPL) reset after R with this tramp+64 landing. */
 		local.flags = 0x3202;
+		if (gForkUserRbp >= 0x100000ULL)
+			local.bp = gForkUserRbp;
 		kser_puts("R\n");
 		if (sRetUserland >= 0xffffffff80000000ULL) {
 			ret = (ret_fn)(addr_t)sRetUserland;
@@ -2458,6 +2486,7 @@ sys_compat_set_robust_list(void* head, uint64 len)
 	kser_puts("B\n");
 	sRobustList = (uint64)(addr_t)head;
 	sRobustLen = len;
+	sChildRobust = 1;
 	return 0;
 }
 

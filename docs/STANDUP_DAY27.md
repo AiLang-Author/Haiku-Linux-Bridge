@@ -63,6 +63,12 @@ Landmines: do not write user pointers under CLI; `gRseqPtr` /
 ### Morning note (2026-08-16)
 
 Host QEMU and the :8083 fetch server hit the session 10-hour cap
-overnight. Both were restarted. Guest disk is intact. Last serial
-before the reset is `haiku_serial.log.pre_timeout`. `main` is
-`578fdb7`. Next grind is still `SFgb` → `B` / child `ret`.
+overnight (not the guest). Both were restarted. Last serial before
+that reset is `haiku_serial.log.pre_timeout`.
+
+Morning grind: parent now waits on `gs:8` until `set_robust_list`
+returns. COM1 is `5SFgbB` `H` `R` — `B` means the C helper returned,
+`H` means the parent saw it, `R` is parent IRETQ. Still Kill Thread
+before `execve`. Next: child's `rbp` was 0 (iframe zeroed). Hook
+now saves user `rbp` into `gForkUserRbp` and plants it on the child
+iframe. That driver is in the tree; needs guest `go_fork` + reboot.
