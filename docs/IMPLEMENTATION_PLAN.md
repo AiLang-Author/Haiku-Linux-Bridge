@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-15 (Day 25: `select` + file `mmap`; `SELECTOK`/`MMAPFOK`)  
+**Last updated:** 2026-08-15 (Day 26: `fork`+`execve`+`poll`; `PIPELINEOK`)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -19,7 +19,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 22](STANDUP_DAY22.md) (Linux `execve` via `_user_exec` of `sys_compat_run`) →
 [Day 23](STANDUP_DAY23.md) (Linux `futex` WAIT/WAKE; `FUTEXOK`) →
 [Day 24](STANDUP_DAY24.md) (Linux `poll`/`ppoll`; `POLLOK`) →
-[Day 25](STANDUP_DAY25.md) (`select` + file `mmap`; pipeline child exec).
+[Day 25](STANDUP_DAY25.md) (`select` + file `mmap`; pipeline child exec) →
+[Day 26](STANDUP_DAY26.md) (`fork`+`execve`+`poll`; `PIPELINEOK`).
 
 ---
 
@@ -58,14 +59,13 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 25):** `select` and file `mmap` are guest-green
-(`SELECTOK` / `MMAPFOK`). Stamp-after-fork now dispatches the
-child's first syscall (`dup2`/`execve`, not only `exit`). Combined
-`hello_pipeline` child's `execve` reached `hello_min`; parent
-crashed after `poll` woke. Guest dump: `map_file=0xd4`.
+**Where we are (Day 26):** `select`, file `mmap`, and combined
+`fork`+`execve`+`poll` are guest-green. `hello_pipeline` prints
+`PIPELINEOK`. Mark no longer wipes sibling CR3 slots (that was
+Kill Thread on the parent). COM1 `F4`/`5R`/`SoxXEC`/`XGO`/`VvWeE`.
 
-**What needs doing next:** parent join after `fork`+`execve`+`poll`.
-`CLONE_VM` later. ioctl still later.
+**What needs doing next:** `CLONE_VM` / pthread, or busybox `sh`
+pipelines. ioctl still later.
 
 ---
 
@@ -245,9 +245,8 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **Parent join after `fork`+`execve`+`poll`.** `select` and file
-   `mmap` are guest-green. Stamp-after-fork dispatches. Adopt-on-every-miss
-   stays off.
+1. **`CLONE_VM` / pthread, or busybox `sh` pipelines.** `fork`+`execve`+
+   `poll` is guest-green. Adopt-on-every-miss stays off.
 2. **ioctl / TTY / sockets** — only after the CLI 90% set is green.
    Rare/deprecated numbers wait for a filed issue.
 
@@ -308,7 +307,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `scripts/guest_run_poll.sh` | Guest: poll probe; POST `poll_out.txt` |
 | `tests/hello_select.s` | pipe2 + select empty/ready; `SELECTOK` Day 25 |
 | `tests/hello_mmapf.s` | file mmap ELF magic; `MMAPFOK` Day 25 |
-| `tests/hello_pipeline.s` | clone+poll+execve; child reached hello_min, parent crash open |
+| `tests/hello_pipeline.s` | clone+poll+execve hello_min; `PIPELINEOK` Day 26 |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
 | `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
@@ -325,6 +324,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY23.md` | Day 23 wrap: Linux `futex` WAIT/WAKE |
 | `docs/STANDUP_DAY24.md` | Day 24 wrap: Linux `poll`/`ppoll` |
 | `docs/STANDUP_DAY25.md` | Day 25 wrap: `select` + file `mmap` |
+| `docs/STANDUP_DAY26.md` | Day 26 wrap: `fork`+`execve`+`poll` |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |
 | `tests/ltp_sys_compat.run` | later LTP subset |

@@ -250,19 +250,30 @@ sys_compat_lstar:
 	KSER	'M'
 	mov	qword ptr [rip + gForkTramp], rdx
 	mov	qword ptr [rip + gForkHaikuRsp], r8
-	xor	r8, r8
-.Lmark_clr:
-	lea	r9, [rip + gLinuxCR3]
-	mov	qword ptr [r9 + r8 * 8], 0
-	lea	r9, [rip + gLinuxTeam]
-	mov	qword ptr [r9 + r8 * 8], 0
-	inc	r8
-	cmp	r8, 8
-	jb	.Lmark_clr
+	/* Add or refresh this CR3. Do not wipe other slots —
+	 * exec's loader mark was unmarking the parent (Kill Thread). */
 	mov	rax, cr3
 	and	rax, 0xfffffffffffff000
-	mov	[rip + gLinuxCR3], rax
-	mov	qword ptr [rip + gLinuxN], 1
+	lea	r9, [rip + gLinuxCR3]
+	xor	r8, r8
+.Lmark_find:
+	cmp	[r9 + r8 * 8], rax
+	je	.Lmark_have
+	inc	r8
+	cmp	r8, 8
+	jb	.Lmark_find
+	xor	r8, r8
+.Lmark_empty:
+	cmp	qword ptr [r9 + r8 * 8], 0
+	je	.Lmark_got
+	inc	r8
+	cmp	r8, 8
+	jb	.Lmark_empty
+	xor	r8, r8
+.Lmark_got:
+	mov	[r9 + r8 * 8], rax
+	inc	qword ptr [rip + gLinuxN]
+.Lmark_have:
 	mov	qword ptr [rip + gForkPending], 0
 	inc	qword ptr [rip + gMarkCount]
 	cmp	rsi, 4096
@@ -865,10 +876,7 @@ sys_compat_lstar:
 	jmp	.Lret
 
 .Lexecve:
-	/* rdi=path rsi=argv rdx=envp. Flat args + loader path live
-	 * in user scratch below RSP. rcx/r11 survive for a failed
-	 * return; success never comes back. Must set RBP: flatten
-	 * + _user_exec are large C frames; leftover user RBP #PF. */
+	/* rdi=path rsi=argv rdx=envp. Flatten is BSS. C on gKstack. */
 	KSER	'x'
 	push	rcx
 	push	r11
@@ -929,7 +937,8 @@ sys_compat_lstar:
 	KSER	'O'
 	jmp	.Lret
 .Lpoll:
-	/* rdi=fds rsi=nfds rdx=timeout_ms */
+	/* rdi=fds rsi=nfds rdx=timeout_ms. Official kstack — gKstack
+	 * wait_for_objects never woke (no O, no timeout). */
 	KSER	'o'
 	push	rcx
 	push	r11

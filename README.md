@@ -28,7 +28,7 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ## Current status (honest)
 
-**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first. Update it when a syscall lands or a trap changes. Latest wrap: [`docs/STANDUP_DAY25.md`](docs/STANDUP_DAY25.md).
+**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first. Update it when a syscall lands or a trap changes. Latest wrap: [`docs/STANDUP_DAY26.md`](docs/STANDUP_DAY26.md).
 
 Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` and extra drivers are later.
 
@@ -60,6 +60,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `poll` / `ppoll` | **Works** — `_user_wait_for_objects` 0x06. `hello_poll` / `POLLOK`. See Day 24. |
 | Linux `select` / `pselect6` | **Works** — fd_set → poll. `hello_select` / `SELECTOK`. See Day 25. |
 | Linux file `mmap` | **Works** — `_user_map_file` 0xd4. `hello_mmapf` / `MMAPFOK`. See Day 25. |
+| `fork`+`execve`+`poll` | **Works** — `hello_pipeline` / `PIPELINEOK`. Mark keeps sibling CR3 slots. See Day 26. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
 | Linux `ioctl` | Deferred on purpose |

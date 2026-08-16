@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-15 (Day 25: `select` + file `mmap` guest-green)
+**Last updated:** 2026-08-15 (Day 26: `fork`+`execve`+`poll` guest-green)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -157,9 +157,9 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, pipe/pipe2, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** join `fork`+`execve`+
-`poll` in one process (`hello_pipeline` child exec is green; parent
-crash after poll is open), then `CLONE_VM` (pthread).
+**Highest remaining for “coreutils in the wild”:** busybox `sh` /
+real pipelines, then `CLONE_VM` (pthread). `hello_pipeline` is
+guest-green (`PIPELINEOK`, Day 26).
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
 ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.

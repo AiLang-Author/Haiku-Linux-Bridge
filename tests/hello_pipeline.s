@@ -87,19 +87,40 @@ _start:
 	syscall
 	test	rax, rax
 	jle	.Lfail
+	/* Loader prints [+] lines on the pipe before hello_min.
+	 * Read until we see "Hello" or EOF. */
+.Lrd:
 	mov	edi, dword ptr [fds]
 	lea	rsi, [buf]
-	mov	rdx, 64
+	mov	rdx, 128
 	.att_syntax prefix
 	movq	$0, %rax
 	.intel_syntax noprefix
 	syscall
-	cmp	rax, 5
-	jl	.Lfail
-	cmp	byte ptr [buf], 'H'
-	jne	.Lfail
-	cmp	byte ptr [buf + 1], 'e'
-	jne	.Lfail
+	test	rax, rax
+	jle	.Lfail
+	xor	ecx, ecx
+.Lsc:
+	mov	rdx, rax
+	sub	rdx, 5
+	jl	.Lrd
+	cmp	rcx, rdx
+	ja	.Lrd
+	cmp	byte ptr [buf + rcx], 'H'
+	jne	.Lsc2
+	cmp	byte ptr [buf + rcx + 1], 'e'
+	jne	.Lsc2
+	cmp	byte ptr [buf + rcx + 2], 'l'
+	jne	.Lsc2
+	cmp	byte ptr [buf + rcx + 3], 'l'
+	jne	.Lsc2
+	cmp	byte ptr [buf + rcx + 4], 'o'
+	jne	.Lsc2
+	jmp	.Lgot
+.Lsc2:
+	inc	rcx
+	jmp	.Lsc
+.Lgot:
 	mov	rdi, r13
 	lea	rsi, [wstatus]
 	xor	rdx, rdx
