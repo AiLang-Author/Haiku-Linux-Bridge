@@ -33,6 +33,7 @@
 
 #define LINUX_EPERM         1
 #define LINUX_ENOENT        2
+#define LINUX_ESRCH         3
 #define LINUX_EINTR         4
 #define LINUX_EIO           5
 #define LINUX_EBADF         9
@@ -310,6 +311,14 @@ static uint64 sWaitObjFn;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
+#define LINUX_MAP_SLOTS 16
+struct linux_file_map {
+	uint64 addr;
+	uint64 len;
+	int32 area;
+	int32 team;
+};
+static struct linux_file_map sFileMaps[LINUX_MAP_SLOTS];
 static uint64 sKernWriteStatFn;
 static char sWstatPath[1024];
 static uint64 sWstatScratch;
@@ -324,6 +333,7 @@ static uint64 sForkKtop;
 static int64 sLastFork;
 static volatile int sChildRobust;
 extern "C" volatile int sChildDone;
+extern "C" volatile int sExitCloses;
 static uint8 sStackSnap[512];
 static uint64 sStackSnapAt;
 static int32 sHaveUid;
@@ -331,8 +341,16 @@ static int32 sHaveGid;
 static uint32 sUid;
 static uint32 sGid;
 static uint64 sClearTid;
-static uint64 sRobustList;
-static uint64 sRobustLen;
+extern "C" uint64 sRobustList;
+extern "C" uint64 sRobustLen;
+#define TEAM_R_SLOTS 8
+struct team_robust {
+	int32 team;
+	uint64 list;
+	uint64 len;
+	uint64 cleartid;
+};
+static struct team_robust sTeamR[TEAM_R_SLOTS];
 static int64 sLastPath;
 static int64 sLastWait;
 static int64 sLastNent;
@@ -392,6 +410,7 @@ extern "C" {
 	int64 sys_compat_gettid(void);
 	int64 sys_compat_set_tid_address(void* ptr);
 	int64 sys_compat_set_robust_list(void* head, uint64 len);
+	int64 sys_compat_get_robust_list(int64 pid, void* headp, void* lenp);
 	int64 sys_compat_prctl(int64 option, int64 a2, int64 a3, int64 a4,
 		int64 a5);
 	int64 sys_compat_dispatch_fast(uint64* saved);
@@ -1156,6 +1175,47 @@ sys_compat_chdir(int64 fd, const void* path)
 	return haiku_status_to_linux((int64)st);
 }
 
+static struct team_robust*
+team_r_get(int32 team, int create)
+{
+	int i, empty;
+
+	if (team <= 0)
+		return NULL;
+	empty = -1;
+	for (i = 0; i < TEAM_R_SLOTS; i++) {
+		if (sTeamR[i].team == team)
+			return &sTeamR[i];
+		if (empty < 0 && sTeamR[i].team == 0)
+			empty = i;
+	}
+	if (!create)
+		return NULL;
+	if (empty < 0)
+		empty = 0;
+	sTeamR[empty].team = team;
+	sTeamR[empty].list = 0;
+	sTeamR[empty].len = 0;
+	sTeamR[empty].cleartid = 0;
+	return &sTeamR[empty];
+}
+
+static void
+team_r_drop(int32 team)
+{
+	int i;
+
+	for (i = 0; i < TEAM_R_SLOTS; i++) {
+		if (sTeamR[i].team == team) {
+			sTeamR[i].team = 0;
+			sTeamR[i].list = 0;
+			sTeamR[i].len = 0;
+			sTeamR[i].cleartid = 0;
+			return;
+		}
+	}
+}
+
 static void
 linux_clear_all(void)
 {
@@ -1166,6 +1226,21 @@ linux_clear_all(void)
 		gLinuxTeam[i] = 0;
 	}
 	gLinuxN = 0;
+	{
+		int m;
+		for (m = 0; m < LINUX_MAP_SLOTS; m++) {
+			sFileMaps[m].addr = 0;
+			sFileMaps[m].len = 0;
+			sFileMaps[m].area = 0;
+			sFileMaps[m].team = 0;
+		}
+	}
+	for (i = 0; i < TEAM_R_SLOTS; i++) {
+		sTeamR[i].team = 0;
+		sTeamR[i].list = 0;
+		sTeamR[i].len = 0;
+		sTeamR[i].cleartid = 0;
+	}
 }
 
 static int copy_user_cstr(char* dst, const void* user, int max);
@@ -1216,6 +1291,15 @@ sys_compat_mark_team(void)
 	sClearTid = 0;
 	sRobustList = 0;
 	sRobustLen = 0;
+	sExitCloses = 0;
+	{
+		struct team_robust* tr = team_r_get(info.team, 1);
+		if (tr != NULL) {
+			tr->list = 0;
+			tr->len = 0;
+			tr->cleartid = 0;
+		}
+	}
 	dprintf("[sys_compat] mark team=%" B_PRId32 " parent=%" B_PRId32 "\n",
 		info.team, info.parent);
 	kser_puts("MARK team=");
@@ -1270,6 +1354,13 @@ sys_compat_getpid(void)
 		tid = find_thread(NULL);
 		if (user_memcpy((void*)(addr_t)p, &tid, 4) == B_OK)
 			kser_puts("T\n");
+		/* CLONE_CHILD_CLEARTID uses the same slot. */
+		sClearTid = p;
+		{
+			struct team_robust* tr = team_r_get(info.team, 1);
+			if (tr != NULL)
+				tr->cleartid = p;
+		}
 		gForkChildTid = 0;
 	}
 	return info.team;
@@ -1662,12 +1753,50 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 	if ((options & 2) != 0)
 		hflags |= HAIKU_WUNTRACED | HAIKU_WSTOPPED;
 	fn = (haiku_wait_child_fn)(addr_t)sWaitFn;
-	st = fn((int32)pid, hflags, userInfo, NULL);
-	sLastWait = (int64)st;
-	if (st == (int32)0x8000000b) /* B_WOULD_BLOCK */
-		return 0;
-	if (st < 0)
-		return haiku_status_to_linux((int64)st);
+	{
+		team_info self;
+		int32 self_team = 0;
+		int live_waits = 0;
+		int reaped = 0;
+
+		if (get_team_info(B_CURRENT_TEAM, &self) == B_OK)
+			self_team = self.team;
+		for (;;) {
+			int i, live;
+
+			if (!reaped) {
+				st = fn((int32)pid, hflags, userInfo, NULL);
+				sLastWait = (int64)st;
+				if (st == (int32)0x8000000b) {
+					if ((options & 1) != 0)
+						return 0;
+					snooze(5000);
+					continue;
+				}
+				if (st < 0)
+					return haiku_status_to_linux((int64)st);
+				reaped = 1;
+			}
+			/* Child may still be in userspace after
+			 * wait_for_child returned (thread id, not
+			 * team id). Hold until it unmarks. */
+			live = 0;
+			for (i = 0; i < LINUX_MARK_SLOTS; i++) {
+				if (gLinuxCR3[i] != 0)
+					live++;
+			}
+			/* Parent occupies one slot. A still-marked
+			 * child occupies another. Stamp does not
+			 * write gLinuxTeam[], so do not require it. */
+			if (live > 1 && (options & 1) == 0 && live_waits < 250) {
+				kser_putc('w');
+				live_waits++;
+				snooze(20000);
+				continue;
+			}
+			break;
+		}
+	}
 	if (status != NULL && userInfo != NULL) {
 		if (user_memcpy(info, userInfo, sizeof(info)) != B_OK)
 			return -LINUX_EFAULT;
@@ -2465,6 +2594,18 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 		return -LINUX_ENOMEM;
 	}
 	kser_puts("MO\n");
+	{
+		int m;
+		for (m = 0; m < LINUX_MAP_SLOTS; m++) {
+			if (sFileMaps[m].area == 0) {
+				sFileMaps[m].addr = (uint64)(addr_t)mapped;
+				sFileMaps[m].len = len;
+				sFileMaps[m].area = area;
+				sFileMaps[m].team = info.team;
+				break;
+			}
+		}
+	}
 	return (int64)(addr_t)mapped;
 }
 
@@ -2780,21 +2921,79 @@ sys_compat_mprotect(void* addr, uint64 len, int64 prot)
 extern "C" int64
 sys_compat_munmap(void* addr, uint64 len)
 {
-	haiku_unmap_fn fn;
-	int32 st;
 	uint64 a = (uint64)(addr_t)addr;
+	team_info info;
+	int m;
+	int32 area;
+	int32 st;
 
 	if (len == 0)
 		return 0;
-	/* Arena carve is not a Haiku mapping we should punch out. */
+	/* Arena carve is not a Haiku mapping. */
 	if (gBrkBase != 0 && a >= gBrkBase && a < gArenaHi)
 		return 0;
-	if (sUnmapFn == 0)
+
+	len = (len + 4095) & ~(uint64)4095;
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		info.team = -1;
+
+	area = 0;
+	for (m = 0; m < LINUX_MAP_SLOTS; m++) {
+		if (sFileMaps[m].area != 0
+			&& sFileMaps[m].addr == a
+			&& (sFileMaps[m].team == info.team
+				|| sFileMaps[m].team == 0)) {
+			area = sFileMaps[m].area;
+			sFileMaps[m].addr = 0;
+			sFileMaps[m].len = 0;
+			sFileMaps[m].area = 0;
+			sFileMaps[m].team = 0;
+			break;
+		}
+	}
+	if (area == 0) {
+		area = area_for(addr);
+		if (area >= 0) {
+			area_info ai;
+			if (get_area_info(area, &ai) != B_OK
+				|| ai.name[0] != 'l'
+				|| ai.name[1] != 'i'
+				|| ai.name[2] != 'n'
+				|| ai.name[3] != 'u'
+				|| ai.name[4] != 'x'
+				|| ai.name[5] != '_')
+				area = 0;
+		} else
+			area = 0;
+	}
+	if (area <= 0)
 		return 0;
-	fn = (haiku_unmap_fn)(addr_t)sUnmapFn;
-	st = fn(addr, len);
-	if (st != 0)
+	/* Kernel delete_area, not _user_unmap_memory. The syscall
+	 * wrapper KTd on vm_map_file ranges (COM1 cuU). */
+	st = delete_area(area);
+	if (st != B_OK) {
+		int32 area2;
+		kser_puts("NF=");
+		kser_hex((uint64)(uint32)st);
+		kser_putc('\n');
+		/* Table id is stale after fork_team copies the area.
+		 * Resolve again; never call _user_unmap_memory. */
+		area2 = area_for(addr);
+		if (area2 > 0 && area2 != area) {
+			st = delete_area(area2);
+			if (st == B_OK) {
+				kser_puts("ND\n");
+				return 0;
+			}
+			kser_puts("NF2=");
+			kser_hex((uint64)(uint32)st);
+			kser_putc('\n');
+		}
+		/* Leave the map; team death tears it down. Returning
+		 * EINVAL here sent glibc into a close/futex KT. */
 		return 0;
+	}
+	kser_puts("ND\n");
 	return 0;
 }
 
@@ -2850,17 +3049,142 @@ sys_compat_gettid(void)
 extern "C" int64
 sys_compat_set_tid_address(void* ptr)
 {
+	team_info info;
+	struct team_robust* tr;
+
 	sClearTid = (uint64)(addr_t)ptr;
+	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK) {
+		tr = team_r_get(info.team, 1);
+		if (tr != NULL)
+			tr->cleartid = (uint64)(addr_t)ptr;
+	}
 	return sys_compat_gettid();
+}
+
+#define LINUX_FUTEX_OWNER_DIED 0x40000000u
+
+extern "C" void
+sys_compat_exit_prep(void)
+{
+	uint64 head, next, pend, entry, ctid;
+	int64 off;
+	uint32 word;
+	int32 zero;
+	int n;
+	team_info info;
+	struct team_robust* tr;
+
+	/* Linux mm_release: walk robust futex list, then clear_child_tid. */
+	head = sRobustList;
+	ctid = sClearTid;
+	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK) {
+		tr = team_r_get(info.team, 0);
+		if (tr != NULL) {
+			if (tr->list != 0)
+				head = tr->list;
+			if (tr->cleartid != 0)
+				ctid = tr->cleartid;
+		}
+	}
+	if (head >= 0x100000ULL) {
+		next = 0;
+		off = 0;
+		pend = 0;
+		if (user_memcpy(&next, (void*)(addr_t)head, 8) == B_OK
+			&& user_memcpy(&off, (void*)(addr_t)(head + 8), 8) == B_OK
+			&& user_memcpy(&pend, (void*)(addr_t)(head + 16), 8) == B_OK) {
+			entry = next;
+			for (n = 0; n < 64; n++) {
+				if (entry < 0x100000ULL || entry == head)
+					break;
+				if (off > 4096 || off < -4096)
+					break;
+				if (user_memcpy(&word,
+					(void*)(addr_t)(entry + (uint64)off), 4) == B_OK) {
+					word |= LINUX_FUTEX_OWNER_DIED;
+					user_memcpy((void*)(addr_t)(entry + (uint64)off),
+						&word, 4);
+					sys_compat_futex(
+						(void*)(addr_t)(entry + (uint64)off),
+						LINUX_FUTEX_WAKE, 1, NULL, NULL, 0);
+				}
+				if (user_memcpy(&entry, (void*)(addr_t)entry, 8) != B_OK)
+					break;
+			}
+			if (pend >= 0x100000ULL && pend != head
+				&& off <= 4096 && off >= -4096) {
+				if (user_memcpy(&word,
+					(void*)(addr_t)(pend + (uint64)off), 4) == B_OK) {
+					word |= LINUX_FUTEX_OWNER_DIED;
+					user_memcpy((void*)(addr_t)(pend + (uint64)off),
+						&word, 4);
+				}
+			}
+		}
+	}
+	sRobustList = 0;
+	sRobustLen = 0;
+	sClearTid = 0;
+	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK)
+		team_r_drop(info.team);
+	if (ctid >= 0x100000ULL) {
+		zero = 0;
+		if (user_memcpy((void*)(addr_t)ctid, &zero, 4) == B_OK)
+			sys_compat_futex((void*)(addr_t)ctid,
+				LINUX_FUTEX_WAKE, 1, NULL, NULL, 0);
+	}
+	kser_puts("t\n");
 }
 
 extern "C" int64
 sys_compat_set_robust_list(void* head, uint64 len)
 {
-	kser_puts("B\n");
+	team_info info;
+	struct team_robust* tr;
+
+	kser_puts("B");
+	kser_putc(head == NULL ? '0' : '1');
+	kser_putc('\n');
 	sRobustList = (uint64)(addr_t)head;
 	sRobustLen = len;
 	sChildRobust = 1;
+	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK) {
+		tr = team_r_get(info.team, 1);
+		if (tr != NULL) {
+			tr->list = (uint64)(addr_t)head;
+			tr->len = len;
+		}
+	}
+	/* Record NULL. Do not skip later _kern_close — that is real
+	 * work; team death is not a substitute for a working close. */
+	if (head == NULL)
+		sExitCloses = 1;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_get_robust_list(int64 pid, void* headp, void* lenp)
+{
+	team_info info;
+	struct team_robust* tr;
+	uint64 head, len;
+
+	(void)pid;
+	head = sRobustList;
+	len = sRobustLen;
+	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK) {
+		tr = team_r_get(info.team, 0);
+		if (tr != NULL) {
+			head = tr->list;
+			len = tr->len;
+		}
+	}
+	if (headp != NULL
+		&& user_memcpy(headp, &head, sizeof(head)) != B_OK)
+		return -LINUX_EFAULT;
+	if (lenp != NULL
+		&& user_memcpy(lenp, &len, sizeof(len)) != B_OK)
+		return -LINUX_EFAULT;
 	return 0;
 }
 
@@ -3511,15 +3835,10 @@ dev_close(void* /*cookie*/)
 static status_t
 dev_free(void* /*cookie*/)
 {
-	uint64 cr3 = read_cr3() & ~(uint64)0xfff;
-	int slot = linux_slot_by_cr3(cr3);
-	if (slot >= 0) {
-		gLinuxCR3[slot] = 0;
-		gLinuxTeam[slot] = 0;
-		if (gLinuxN > 0)
-			gLinuxN--;
-		dprintf("[sys_compat] LEAVE cr3=%#" B_PRIx64 "\n", cr3);
-	}
+	/* Do not unmark. sys_compat_run leaves this fd open across
+	 * mark+jmp; glibc exit then close(2)s it. Unmarking here made
+	 * the next Linux syscall (often exit_group=231) identity-pass
+	 * and Kill Thread (COM1 …gbB c, no e). Exit already unmarks. */
 	return B_OK;
 }
 
@@ -3789,7 +4108,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR5\n");
+	kser_puts("PR11f\n");
 	discover_syscall_table();
 	discover_vm_map_file();
 	discover_kern_write_stat();

@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-16 (Day 36: one addon; munmap no-op; uname01 still 149)  
+**Last updated:** 2026-08-17 (Day 37: real munmap; exit_prep; uname01 still 149)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -30,7 +30,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 33](STANDUP_DAY33.md) (`chown`/`ftruncate` without stack scratch) →
 [Day 34](STANDUP_DAY34.md) (`/proc/meminfo`; LTP `uname01` TPASS) →
 [Day 35](STANDUP_DAY35.md) (auto Terminal; `setpgid`; uname01 2/0) →
-[Day 36](STANDUP_DAY36.md) (one addon; `munmap` no-op; teardown after `Nn`).
+[Day 36](STANDUP_DAY36.md) (one addon; `munmap` no-op; teardown after `Nn`) →
+[Day 37](STANDUP_DAY37.md) (real `delete_area` munmap; exit_prep; still 149).
 
 ---
 
@@ -70,11 +71,15 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 36):** One `sys_compat` addon (user tree only).
-`kill`/`msync`/`alarm` stub 0. `munmap` returns 0 (no kernel unmap).
-LTP `uname01` is **passed 2 / broken 0**, then Kill Thread (149)
-after unlink+munmap+`set_robust_list`+close (`vWWWWWWccNngbB c`).
-Pipe / wstat / mmap still green. `UserBootscript` auto-starts Terminal.
+**Where we are (Day 37):** One `sys_compat` addon (user tree only).
+`munmap` is `delete_area` on tracked `linux_*` areas (`ND` / `NF=`).
+`exit_prep` walks the robust list and clear_child_tid. `wait4` no
+longer returns 0 on `B_WOULD_BLOCK`. LTP `uname01` is **passed 2 /
+broken 0**, then Kill Thread (149) at COM1 `…Vvkgb`. Pipe / wstat /
+mmap still green (`WSTAT_RC=0`, `MMAPF_RC=0`, `PIPE_RC=0`).
+
+**Where we were (Day 36):** `munmap` stub 0. Same 2/0/0 then 149
+after `vWWWWWWccNngbB c`.
 
 **Where we were (Day 31):** `sh -c 'echo HI | cat'` prints `HI`,
 `SH_PIPE_RC=0`. Two clones, `execve /proc/self/exe` as `cat`,
@@ -83,10 +88,11 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** The last `close` / glibc exit after
-`set_robust_list` (COM1 ends `…gbB c`, no `e`). Interactive TTY
-`sh` needs ioctl — later. Do not hold until `set_robust`. Do not
-leave a second addon in `/boot/system/non-packaged/`.
+**What needs doing next:** Why `uname01` KTs at `kgb` after `wait4`
+returns (no `e`). The LTP ipc `delete_area` is still `B_BAD_VALUE`.
+Interactive TTY `sh` needs ioctl — later. Do not stub
+`set_robust_list(NULL)` into `exit_team`. Do not skip `_kern_close`.
+Do not leave a second addon in `/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

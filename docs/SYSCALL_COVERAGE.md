@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-16 (Day 36: munmap no-op; kill/alarm stubs; one addon)
+**Last updated:** 2026-08-17 (Day 37: munmap delete_area; exit_prep; uname01 still 149)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -40,9 +40,9 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 12 | brk | works |
 | 9 | mmap | **works** (ANON arena + file via kernel `vm_map_file` / `_vm_map_file(..., false)`). `hello_mmapf` `MMAPFOK`. Day 32. |
 | 10 | mprotect | works |
-| 11 | munmap | **stub 0** (no `_kern_unmap_memory`; team death frees areas). COM1 `n`. Day 36. |
+| 11 | munmap | **works** for tracked `linux_mmap` via `delete_area` (`ND`). Never `_user_unmap_memory` (`cuU` KT). Stale id after fork: `NF=` then return 0. Day 37. |
 | 218 | set_tid_address | works |
-| 273 | set_robust_list | works |
+| 273 | set_robust_list | works (in-hook store, rdx kept). `get_robust_list` 274 wired. Day 37. |
 | 334 | rseq | works |
 | 157 | prctl | works |
 | 302 | prlimit64 | stub (fill 8MB/∞) |

@@ -161,6 +161,7 @@
 	.extern	sys_compat_gettid
 	.extern	sys_compat_set_tid_address
 	.extern	sys_compat_set_robust_list
+	.extern	sys_compat_get_robust_list
 	.extern	sys_compat_prctl
 	.extern	sys_compat_rename
 	.extern	sys_compat_symlink
@@ -179,9 +180,17 @@
 	.extern	sys_compat_fcntl
 	.extern	sys_compat_statx
 	.extern	sys_compat_try_fork
+	.extern	sys_compat_exit_prep
 	.extern	sys_compat_fork_parent_dump
 	.globl	sChildDone
 	.hidden	sChildDone
+	.globl	sExitCloses
+	.hidden	sExitCloses
+	.globl	sRobustList
+	.hidden	sRobustList
+	.globl	sRobustLen
+	.hidden	sRobustLen
+	.extern	sys_compat_exit_prep
 
 #define SYS_COMPAT_MARK_NR	0x1337
 
@@ -581,6 +590,8 @@ sys_compat_lstar:
 	je	.Lreadlinkat
 	cmp	rax, 273		/* Linux set_robust_list */
 	je	.Lset_robust_list
+	cmp	rax, 274		/* Linux get_robust_list */
+	je	.Lget_robust_list
 	cmp	rax, 302		/* prlimit64 */
 	je	.Lprlimit
 	cmp	rax, 318		/* getrandom */
@@ -794,6 +805,16 @@ sys_compat_lstar:
 
 .Lexit:
 	KSER	'e'
+	/* Linux mm_release on this thread's kstack, not gKstack.
+	 * rdi is the exit status — park it, restore after C. */
+	mov	qword ptr [rip + gTmpR8], rdi
+	mov	rsp, qword ptr [gs:8]
+	sub	rsp, 0xA00
+	and	rsp, -16
+	sti
+	call	sys_compat_exit_prep
+	cli
+	mov	rdi, qword ptr [rip + gTmpR8]
 	/* Drop this CR3 only. A live child must stay marked. */
 	push	r8
 	push	r9
@@ -1417,12 +1438,18 @@ sys_compat_lstar:
 	push	r10
 	CALL_C	sys_compat_mprotect
 .Lmunmap:
-	/* LTP teardown munmaps the MAP_SHARED ipc page after the
-	 * green summary. _kern_unmap_memory there Kill-Thread'd
-	 * (COM1 cuU, no e). Team death frees areas. */
+	/* File maps from vm_map_file are Haiku areas. delete_area
+	 * them in C. Do not call _user_unmap_memory (that KTd). */
 	KSER	'n'
-	xor	rax, rax
-	jmp	.Lret
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_munmap
 .Lgetuid:
 	push	rcx
 	push	r11
@@ -1484,6 +1511,9 @@ sys_compat_lstar:
 	push	r10
 	CALL_C	sys_compat_set_tid_address
 .Lset_robust_list:
+	/* Store (head,len) here. CALL_C on gKstack raced the
+	 * parent's wait4/getpid and KTd at gbB1 (PR11b). Keep
+	 * rdx — glibc _Fork returns edx as the child pid. */
 	KSER	'b'
 	push	rcx
 	push	r11
@@ -1493,7 +1523,28 @@ sys_compat_lstar:
 	push	r8
 	push	r9
 	push	r10
-	CALL_C	sys_compat_set_robust_list
+	mov	qword ptr [rip + sRobustList], rdi
+	mov	qword ptr [rip + sRobustLen], rsi
+	xor	rax, rax
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+.Lget_robust_list:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_get_robust_list
 .Lprctl:
 	push	rcx
 	push	r11
@@ -2373,7 +2424,9 @@ sys_compat_lstar:
 .Lret:
 	/* Do not store into gRseqPtr here. After fork that user page
 	 * is COW-RO; a CLI write is KDL (lstar+0x2240 on exit01).
-	 * Register/unregister already wrote cpu_id. */
+	 * Register/unregister already wrote cpu_id.
+	 * Do not apply_fs here — every-sysret WRMSR/ULS write KTd
+	 * the pipe parent after wait4 (PR11 first guest). */
 .Lsysret:
 	mov	rsp, qword ptr [gs:16]
 	swapgs
@@ -2474,6 +2527,13 @@ gForkFS:
 	.quad	0
 sChildDone:
 	.long	0
+sExitCloses:
+	.long	0
+	.align	8
+sRobustList:
+	.quad	0
+sRobustLen:
+	.quad	0
 	.align	16
 gKstack:
 	.space	32768

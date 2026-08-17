@@ -22,6 +22,7 @@ cd "$SRC"
 for f in sys_compat_dev.cpp syscall_hook.S sys_compat_abi.h sys_compat_run.c Makefile.driver; do
 	curl -s -o "$f" "$HOST/src/$f"
 done
+# sys_compat_run is rebuilt below from the just-fetched .c
 curl -s -o /boot/home/hello_min "$HOST/payload/tests/hello_min"
 curl -s -o /boot/home/busybox "$HOST/payload/tests/busybox"
 curl -s -o /boot/home/hello_fork_probe "$HOST/tests/hello_fork_probe"
@@ -54,7 +55,7 @@ chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/run_pipeline.sh /boot/home/run_sh.sh /boot/home/run_next.sh
 rm -rf objects.* *.o objects 2>/dev/null || true
 grep -n 'kser_puts("K"' sys_compat_dev.cpp || echo 'NO_K_IN_SRC'
-grep -n 'PR5' sys_compat_dev.cpp || echo 'NO_PR5_IN_SRC'
+grep -n 'PR11f' sys_compat_dev.cpp || echo 'NO_PR11_IN_SRC'
 grep -n 'sKernWriteStatFn' sys_compat_dev.cpp || echo 'NO_WK_IN_SRC'
 grep -n 'SF' sys_compat_dev.cpp || echo 'NO_SF_IN_SRC'
 make -f Makefile.driver clean || true

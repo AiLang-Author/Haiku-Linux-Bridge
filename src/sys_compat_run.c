@@ -375,6 +375,10 @@ int main(int argc, char** argv)
     printf("[+] fork IRETQ trampoline %p\n", (void*)tramp);
     /* Do not Haiku-fork here. Serial showed mark+jmp after a Haiku
      * fork reboots before Linux clone. Keep the 0x400000 map pristine. */
+    /* Close before mark. A leftover fd is closed by glibc exit and
+     * used to unmark in dev_free. Mark is raw 0x1337; the fd is only
+     * a load check + ULS discover. */
+    close(compat_fd);
     printf("[+] mark via raw syscall 0x%x then jmp 0x%lx (no libc after mark)\n",
            SYS_COMPAT_MARK_NR, (unsigned long)ehdr.e_entry);
     fflush(stdout);
