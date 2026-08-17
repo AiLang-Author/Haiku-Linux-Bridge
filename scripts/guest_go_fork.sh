@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install try_fork diagnostic driver. No UserBootscript.
+# Install driver. UserBootscript only auto-starts Terminal.
 # License: Public Domain / CC0 1.0 Universal
 set -x
 HOST="http://10.0.2.2:8083"
@@ -65,6 +65,20 @@ chmod 755 /boot/home/sys_compat_run
 curl -s -o dump_sc.c "$HOST/payload/ltp/dump_sc.c"
 gcc -O2 dump_sc.c -o /tmp/dump_sc && /tmp/dump_sc | tee /tmp/dump_sc.txt
 curl -s -X POST --data-binary @/tmp/dump_sc.txt "$HOST/results/dump_sc_exec.txt" || true
+# Desktop login: open a Terminal so the host can type without Deskbar.
+BOOTDIR=/boot/home/config/settings/boot
+mkdir -p "$BOOTDIR"
+BOOT="$BOOTDIR/UserBootscript"
+curl -s -o /tmp/haiku_UserBootscript "$HOST/scripts/haiku_UserBootscript"
+if [ -s /tmp/haiku_UserBootscript ]; then
+	if [ ! -f "$BOOT" ] || ! grep -q SYS_COMPAT_AUTOTERM "$BOOT" 2>/dev/null; then
+		cat /tmp/haiku_UserBootscript >> "$BOOT"
+		echo "[+] appended Terminal autostart to $BOOT"
+	fi
+	chmod 755 "$BOOT"
+fi
+curl -s -o /boot/home/launch_term.sh "$HOST/scripts/guest_launch_term.sh"
+chmod 755 /boot/home/launch_term.sh
 echo GO_FORK_DONE | tee /tmp/go_fork_done.txt
 curl -s -X POST --data-binary @/tmp/go_fork_done.txt "$HOST/results/go_fork_done.txt" || true
 echo GO_FORK_DONE

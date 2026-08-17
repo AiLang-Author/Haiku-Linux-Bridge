@@ -1,0 +1,7 @@
+#!/bin/sh
+# Auto-start Terminal after the desktop comes up.
+# Installed as ~/config/settings/boot/UserBootscript
+# License: Public Domain / CC0 1.0 Universal
+# SYS_COMPAT_AUTOTERM
+sleep 4
+/boot/system/apps/Terminal &

@@ -1,7 +1,9 @@
 #!/bin/sh
-# PR1: /proc/meminfo + wstat/mmap/pipe regression.
+# PR3: setpgid stub + /proc/meminfo + wstat/mmap/pipe.
 # License: Public Domain / CC0 1.0 Universal
 set -x
+hey -o application/x-vnd.Haiku-debug_server quit of Window "Crashed program" 2>/dev/null || true
+hey -o debug_server quit of Window 0 2>/dev/null || true
 HOST="http://10.0.2.2:8083"
 OUT=/tmp/next.out
 RUN=/boot/home/sys_compat_run

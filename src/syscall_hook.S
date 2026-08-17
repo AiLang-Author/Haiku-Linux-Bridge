@@ -531,7 +531,7 @@ sys_compat_lstar:
 	cmp	rax, 39			/* Linux getpid */
 	je	.Lgetpid
 	cmp	rax, 109		/* setpgid — LTP fork_testrun */
-	je	.Lok0
+	je	.Lsetpgid
 	cmp	rax, 110		/* getppid */
 	je	.Lgetppid
 	cmp	rax, 111		/* getpgrp */
@@ -820,6 +820,8 @@ sys_compat_lstar:
 	KSER	'E'
 	jmp	.Llstar
 
+.Lsetpgid:
+	KSER	'G'
 .Lok0:
 	xor	rax, rax
 	jmp	.Lret
