@@ -593,6 +593,18 @@ sys_compat_lstar:
 	je	.Lexit
 	cmp	rax, 231		/* Linux exit_group */
 	je	.Lexit
+	cmp	rax, 62			/* kill — heartbeat / teardown */
+	je	.Lkill
+	cmp	rax, 200		/* tkill */
+	je	.Lkill
+	cmp	rax, 234		/* tgkill */
+	je	.Lkill
+	cmp	rax, 26			/* msync */
+	je	.Lok0
+	cmp	rax, 37			/* alarm */
+	je	.Lok0
+	cmp	rax, 38			/* setitimer */
+	je	.Lok0
 	cmp	rax, 13			/* rt_sigaction — glibc installs and ignores */
 	je	.Lok0
 	cmp	rax, 14			/* rt_sigprocmask */
@@ -820,6 +832,13 @@ sys_compat_lstar:
 	KSER	'E'
 	jmp	.Llstar
 
+.Lkill:
+	/* LTP heartbeat is kill(ppid, SIGUSR1). Do not deliver.
+	 * SIGKILL/SIGTERM to self still just succeed — exit_group
+	 * follows. Never identity-pass (Haiku 62 is not kill). */
+	KSER	'k'
+	xor	rax, rax
+	jmp	.Lret
 .Lsetpgid:
 	KSER	'G'
 .Lok0:
@@ -1398,15 +1417,12 @@ sys_compat_lstar:
 	push	r10
 	CALL_C	sys_compat_mprotect
 .Lmunmap:
-	push	rcx
-	push	r11
-	push	rdi
-	push	rsi
-	push	rdx
-	push	r8
-	push	r9
-	push	r10
-	CALL_C	sys_compat_munmap
+	/* LTP teardown munmaps the MAP_SHARED ipc page after the
+	 * green summary. _kern_unmap_memory there Kill-Thread'd
+	 * (COM1 cuU, no e). Team death frees areas. */
+	KSER	'n'
+	xor	rax, rax
+	jmp	.Lret
 .Lgetuid:
 	push	rcx
 	push	r11
@@ -1922,6 +1938,7 @@ sys_compat_lstar:
 	push	r9
 	push	r10
 .Lunlink_go:
+	KSER	'N'
 	mov	[rip + gSavedRsp], rsp
 	lea	rsp, [rip + gKstackEnd]
 	and	rsp, -16

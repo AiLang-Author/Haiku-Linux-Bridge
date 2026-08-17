@@ -3789,7 +3789,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR3\n");
+	kser_puts("PR5\n");
 	discover_syscall_table();
 	discover_vm_map_file();
 	discover_kern_write_stat();

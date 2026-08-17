@@ -54,12 +54,31 @@ chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/run_pipeline.sh /boot/home/run_sh.sh /boot/home/run_next.sh
 rm -rf objects.* *.o objects 2>/dev/null || true
 grep -n 'kser_puts("K"' sys_compat_dev.cpp || echo 'NO_K_IN_SRC'
-grep -n 'PR3' sys_compat_dev.cpp || echo 'NO_PR3_IN_SRC'
+grep -n 'PR5' sys_compat_dev.cpp || echo 'NO_PR5_IN_SRC'
 grep -n 'sKernWriteStatFn' sys_compat_dev.cpp || echo 'NO_WK_IN_SRC'
 grep -n 'SF' sys_compat_dev.cpp || echo 'NO_SF_IN_SRC'
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }
 make -f Makefile.driver driverinstall || { echo INSTALL_FAILED; exit 1; }
+# Keep exactly one addon. A leftover system-tree copy loads after
+# the user one and re-hooks LSTAR (COM1 printed PR5 then PR4).
+# driverinstall has also written the new binary only to system.
+USERBIN=/boot/home/config/non-packaged/add-ons/kernel/drivers/bin/sys_compat
+USERDEV=/boot/home/config/non-packaged/add-ons/kernel/drivers/dev/misc/sys_compat
+SYSBIN=/boot/system/non-packaged/add-ons/kernel/drivers/bin/sys_compat
+SYSDEV=/boot/system/non-packaged/add-ons/kernel/drivers/dev/misc/sys_compat
+BUILT=$(ls -t objects.*/sys_compat 2>/dev/null | head -1)
+mkdir -p "$(dirname "$USERBIN")" "$(dirname "$USERDEV")"
+if [ -n "$BUILT" ] && [ -f "$BUILT" ]; then
+	cp -f "$BUILT" "$USERBIN"
+	echo "[+] copied $BUILT -> $USERBIN"
+elif [ -f "$SYSBIN" ]; then
+	cp -f "$SYSBIN" "$USERBIN"
+	echo "[+] copied $SYSBIN -> $USERBIN"
+fi
+ln -sfn "$USERBIN" "$USERDEV"
+rm -f "$SYSBIN" "$SYSDEV"
+echo "[+] user addon only; system-tree copy removed"
 gcc -O2 sys_compat_run.c -o /boot/home/sys_compat_run
 chmod 755 /boot/home/sys_compat_run
 curl -s -o dump_sc.c "$HOST/payload/ltp/dump_sc.c"
@@ -71,11 +90,12 @@ mkdir -p "$BOOTDIR"
 BOOT="$BOOTDIR/UserBootscript"
 curl -s -o /tmp/haiku_UserBootscript "$HOST/scripts/haiku_UserBootscript"
 if [ -s /tmp/haiku_UserBootscript ]; then
-	if [ ! -f "$BOOT" ] || ! grep -q SYS_COMPAT_AUTOTERM "$BOOT" 2>/dev/null; then
-		cat /tmp/haiku_UserBootscript >> "$BOOT"
-		echo "[+] appended Terminal autostart to $BOOT"
+	if [ -f "$BOOT" ] && ! grep -q SYS_COMPAT_AUTOTERM "$BOOT" 2>/dev/null; then
+		cp "$BOOT" "$BOOT.bak"
 	fi
+	cp /tmp/haiku_UserBootscript "$BOOT"
 	chmod 755 "$BOOT"
+	echo "[+] wrote Terminal autostart to $BOOT"
 fi
 curl -s -o /boot/home/launch_term.sh "$HOST/scripts/guest_launch_term.sh"
 chmod 755 /boot/home/launch_term.sh

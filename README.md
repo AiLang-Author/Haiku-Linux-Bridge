@@ -28,7 +28,7 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY30.md`](docs/STANDUP_DAY30.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY36.md`](docs/STANDUP_DAY36.md).
 
 **Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 
@@ -66,7 +66,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | busybox `sh -c` (builtin + pipe) | **Works** — `SHOK`, `echo HI \| cat` → `HI` `SH_PIPE_RC=0`, `SHDONE`. See Day 31. |
 | more busybox (`id` `pwd` `printf` `dirname` `basename` `od`) | **Works** — Day 27. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
-| LTP first-wave | **uname01** passed 2 / broken 0 (Day 35). Teardown still Kill Thread (149). |
+| LTP first-wave | **uname01** passed 2 / broken 0 (Day 35–36). Teardown still Kill Thread (149) after unlink/munmap/`set_robust_list`/close. |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

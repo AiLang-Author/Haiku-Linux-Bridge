@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-16 (Day 35: auto Terminal; setpgid; uname01 2/0)
+**Last updated:** 2026-08-16 (Day 36: munmap no-op; kill/alarm stubs; one addon)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -40,7 +40,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 12 | brk | works |
 | 9 | mmap | **works** (ANON arena + file via kernel `vm_map_file` / `_vm_map_file(..., false)`). `hello_mmapf` `MMAPFOK`. Day 32. |
 | 10 | mprotect | works |
-| 11 | munmap | works |
+| 11 | munmap | **stub 0** (no `_kern_unmap_memory`; team death frees areas). COM1 `n`. Day 36. |
 | 218 | set_tid_address | works |
 | 273 | set_robust_list | works |
 | 334 | rseq | works |
@@ -55,6 +55,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 186 | gettid | works |
 | 39 | getpid | wired (unproven) |
 | 109 | setpgid | stub (0). Guest: `uname01` no longer TBROK. Day 35. |
+| 62/200/234 | kill/tkill/tgkill | stub (0). COM1 `k`. Do not identity-pass (Haiku 62 ≠ kill). Day 36. |
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
@@ -106,6 +107,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 96 | gettimeofday | **works**. busybox `date` → Fri Aug 14 18:17:47 UTC 2026 |
 | 35 | nanosleep | wired (returns 0) |
 | 230 | clock_nanosleep | **wired** (same helper as nanosleep) |
+| 26 | msync | stub (0). Day 36. |
+| 37/38 | alarm/setitimer | stub (0). Day 36. |
 
 ### Process spawn (LTP / shells / make)
 
@@ -133,11 +136,12 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 13 | rt_sigaction | **stub** (return 0 — glibc install-and-ignore) |
 | 14 | rt_sigprocmask | **stub** (return 0) |
 | 15 | rt_sigreturn | **-ENOSYS** |
+| 62/200/234 | kill/tkill/tgkill | **stub** (return 0). LTP heartbeat. Day 36. |
 
 ### Intentionally later
 
 ioctl (TTY/sockets), socket/connect/bind/listen/accept, clone(CLONE_VM),
-ptrace, mount, bpf, io_uring, inotify, epoll, mmap of files.
+ptrace, mount, bpf, io_uring, inotify, epoll.
 
 ## Score
 

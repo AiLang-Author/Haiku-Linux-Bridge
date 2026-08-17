@@ -1,5 +1,5 @@
 #!/bin/sh
-# PR3: setpgid stub + /proc/meminfo + wstat/mmap/pipe.
+# PR5: wstat/mmap/pipe/uname01. POST results before cat.
 # License: Public Domain / CC0 1.0 Universal
 set -x
 hey -o application/x-vnd.Haiku-debug_server quit of Window "Crashed program" 2>/dev/null || true
@@ -35,6 +35,7 @@ fi
 	$RUN /boot/home/ltp/bin/uname01
 	echo UNAME_RC=$?
 } > "$OUT" 2>&1
-cat "$OUT"
+# POST first: after a Kill Thread the same shell's cat may die.
 curl -s -X POST --data-binary @"$OUT" "$HOST/results/next_out.txt" || true
+cat "$OUT"
 echo RUN_NEXT_DONE

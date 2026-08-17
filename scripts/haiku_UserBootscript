@@ -1,7 +1,12 @@
 #!/bin/sh
-# Auto-start Terminal after the desktop comes up.
+# Auto-start Terminal after Tracker/Deskbar are up.
 # Installed as ~/config/settings/boot/UserBootscript
 # License: Public Domain / CC0 1.0 Universal
 # SYS_COMPAT_AUTOTERM
-sleep 4
-/boot/system/apps/Terminal &
+sleep 12
+# hey after Tracker is up. Direct & is a fallback if hey is early.
+if [ -x /boot/system/apps/Terminal ]; then
+	/boot/system/apps/Terminal &
+fi
+hey application/x-vnd.Be-TRAK do Launch of file /boot/system/apps/Terminal
+
