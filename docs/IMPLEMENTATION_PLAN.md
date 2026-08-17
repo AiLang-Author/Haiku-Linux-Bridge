@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-16 (Day 33: wstat via `_kern_write_stat` + arena scratch)  
+**Last updated:** 2026-08-16 (Day 34: `/proc/meminfo`; uname01 TPASS)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -27,7 +27,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 30](STANDUP_DAY30.md) (no-hold IRETQ; second clone + execve) →
 [Day 31](STANDUP_DAY31.md) (`echo HI | cat` green) →
 [Day 32](STANDUP_DAY32.md) (file `mmap` via `vm_map_file`) →
-[Day 33](STANDUP_DAY33.md) (`chown`/`ftruncate` without stack scratch).
+[Day 33](STANDUP_DAY33.md) (`chown`/`ftruncate` without stack scratch) →
+[Day 34](STANDUP_DAY34.md) (`/proc/meminfo`; LTP `uname01` TPASS).
 
 ---
 
@@ -66,11 +67,10 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 33):** Path `chown`/`chmod`/`truncate` call
-`_kern_write_stat` with kernel pointers. fd-only uses
-`_user_write_stat` and the last loader-arena page (`WRsc`).
-`hello_wstat` `WSTATOK`. Pipe still `HI` `PIPE_RC=0`. LTP
-`uname01` is past `tst_tmpdir`; next hole is `/proc/meminfo`.
+**Where we are (Day 34):** `/proc/meminfo` is a real temp file
+(`PO`). LTP `uname01` **TPASS**es `uname` and `sysname`. Harness
+`TBROK`s `setpgid` (`ENOSYS`); stub is in the hook, not yet
+guest-proven. Pipe / wstat / mmap still green.
 
 **Where we were (Day 31):** `sh -c 'echo HI | cat'` prints `HI`,
 `SH_PIPE_RC=0`. Two clones, `execve /proc/self/exe` as `cat`,
@@ -79,9 +79,9 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Synthetic `/proc/meminfo` so LTP
-`uname01` leaves the harness. Interactive TTY `sh` needs ioctl —
-later. Do not hold until `set_robust`.
+**What needs doing next:** Guest-prove `setpgid` (0) so LTP
+`uname01` exits 0. Interactive TTY `sh` needs ioctl — later.
+Do not hold until `set_robust`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -151,7 +151,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `ioctl` (16) | **Stub** | `-ENOTTY`. Enough for `ls`. |
 | Linux `fstat` / `newfstatat` | **Works** | `_user_read_stat` via `kSyscallInfos[0x9c]`. Haiku `stat` (128 B, 32-bit `dev_t`) → Linux `stat` (144 B). Guest: `hello_stat` printed `STATOK`; busybox `ls -l` shows real types/sizes (`results/ltp/stat_out.txt`). |
 | LTP first-wave (17 bins) | **Measured** | `hello_min` pass. 16 LTP ELFs TBROK in the harness (`mkdtemp` → `mkdir` ENOSYS). Kernel stayed up. `results/ltp/ltp_smoke.txt`. |
-| Linux `mkdir`/`getcwd`/`chdir`/`unlink`/`access` | **Works** | `_kern_create_dir` 0x7b etc. LTP tmpdir is created. `uname01` is past `chown`/`ftruncate`; next harness wall is `/proc/meminfo`. |
+| Linux `mkdir`/`getcwd`/`chdir`/`unlink`/`access` | **Works** | `_kern_create_dir` 0x7b etc. LTP tmpdir is created. `uname01` TPASS; harness wants `setpgid`. |
 | Linux `mprotect`/`munmap`/`chmod`/`chown`/`truncate`/`getuid`/`prctl`/`gettid` | **Works** | Path wstat: `_kern_write_stat` + kernel `stat`. fd wstat: `_user_write_stat` + last arena page (`WRsc`). `hello_wstat` `WSTATOK`. LTP `uname01` past `tst_tmpdir`. Day 33. |
 | Linux `rename`/`symlink`/`readlink`/`stat`/`lstat`/`dup`/`fsync`/`clock_gettime`/`utimensat` | **Works** | Guest dump: `rename=0x81` `symlink=0x7e` `read_link=0x7d` `dup=0x9f` `fsync=0x77`. `hello_util` **UTILOK**. busybox `cp`/`mv`/`ln -s`/`readlink`/`touch`/`rm`/`cat`/`echo`/`ls` all RC=0. Hard `link` may EPERM. Adopt-on-CR3-miss is off. |
 | Linux `time`/`gettimeofday`/`clock_gettime` (real RTC) | **Works** | `_kern_get_clock` **0xc0** (not libroot `real_time_clock_usecs` — that KDLs). `hello_date` **DATEOK 1786731467**. busybox `date` / `date -u` printed **Fri Aug 14 18:17:47 UTC 2026**. |
@@ -351,6 +351,7 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `docs/STANDUP_DAY31.md` | Day 31 wrap: `echo HI \| cat` green |
 | `docs/STANDUP_DAY32.md` | Day 32 wrap: file mmap via `vm_map_file` |
 | `docs/STANDUP_DAY33.md` | Day 33 wrap: wstat without user-stack scratch |
+| `docs/STANDUP_DAY34.md` | Day 34 wrap: `/proc/meminfo`; uname01 TPASS |
 | `docs/STATUS.md` | Public tester brief + how to file bugs |
 | `scripts/guest_dump_syslog.sh` | Pull `/var/log/previous_syslog` after a reset |
 | `docs/SYSCALL_COVERAGE.md` | Core ~90 syscall 90% map |

@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-16 (Day 33: wstat without user-stack scratch)
+**Last updated:** 2026-08-16 (Day 34: `/proc/meminfo`; uname01 TPASS)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -54,7 +54,10 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 105/106 | setuid/setgid | works (layer-local) |
 | 186 | gettid | works |
 | 39 | getpid | wired (unproven) |
+| 109 | setpgid | stub (0; LTP harness; not guest-proven) |
 | 110 | getppid | wired |
+| 111 | getpgrp | stub (pid) |
+| 121 | getpgid | stub (pid) |
 | 231/60 | exit_group/exit | works |
 
 ### File I/O (coreutils hot path)
@@ -63,8 +66,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 0 | read | works |
 | 1 | write | works |
-| 2 | open | works |
-| 257 | openat | works |
+| 2 | open | works (`/proc/meminfo` materialized; other `/proc`/`/sys` `-ENOENT`) |
+| 257 | openat | works (same) |
 | 3 | close | works |
 | 8 | lseek | works |
 | 5 | fstat | works |

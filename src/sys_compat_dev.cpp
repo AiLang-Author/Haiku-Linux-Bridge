@@ -81,6 +81,7 @@
 #define HAIKU_WAIT_CHILD 0x2d
 /* syscalls.h: is_computer_on … get_safemode then wait_for_objects. */
 #define HAIKU_WAIT_OBJ   0x06
+#define HAIKU_OPEN       0x72
 #define HAIKU_READ       0x95
 #define HAIKU_WRITE      0x97
 /* Sandwich: wait_child=0x2d exec=0x2e fork=0x2f (syscalls.h order). */
@@ -269,6 +270,8 @@ typedef int32 (*haiku_mapfile_fn)(const void* name, void* addrPtr,
 	uint32 spec, uint64 size, uint32 prot, uint32 mapping,
 	int32 unmapRange, int32 fd, int64 offset);
 typedef int64 (*haiku_rw_fn)(int32 fd, int64 pos, void* buf, uint64 n);
+typedef int32 (*haiku_open_fn)(int32 fd, const void* path, int32 openMode,
+	int32 perms);
 typedef area_id (*haiku_vmmap_fn)(team_id team, const char* name,
 	void** address, uint32 spec, addr_t size, uint32 prot, uint32 mapping,
 	bool unmapRange, int fd, off_t offset);
@@ -312,6 +315,7 @@ static char sWstatPath[1024];
 static uint64 sWstatScratch;
 static uint64 sReadFn;
 static uint64 sWriteFn;
+static uint64 sOpenFn;
 static char sLinuxExe[256];
 static uint64 sRetUserland;
 static uint64 sForkGs0;
@@ -375,6 +379,8 @@ extern "C" {
 	extern uint64 gForkRetAddr;
 	extern uint8 gKstack[];
 	extern uint8 gKstackEnd[];
+	int64 sys_compat_open(int64 dirfd, const void* path, int64 flags,
+		int64 mode);
 	int64 sys_compat_wstat(int64 fd, const void* path, int64 flags,
 		uint32 mask, int64 a, int64 b);
 	int64 sys_compat_mprotect(void* addr, uint64 len, int64 prot);
@@ -776,6 +782,8 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_READ].function;
 				sWriteFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_WRITE].function;
+				sOpenFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_OPEN].function;
 			}
 			dprintf("[sys_compat] kSyscallInfos=%p read_dir=%#" B_PRIx64
 				" read_stat=%#" B_PRIx64 " write_stat=%#" B_PRIx64
@@ -791,6 +799,9 @@ discover_syscall_table(void)
 			kser_putc('\n');
 			kser_puts("MAPFfn=");
 			kser_hex(sMapFileFn);
+			kser_putc('\n');
+			kser_puts("OPENfn=");
+			kser_hex(sOpenFn);
 			kser_putc('\n');
 			discover_return_to_userland();
 			return;
@@ -2474,6 +2485,191 @@ sys_compat_sendfile(int64 outFd, int64 inFd, void* offp, uint64 count)
 	return -LINUX_EINVAL;
 }
 
+#define HAIKU_O_CREAT_BIT  0x200
+#define HAIKU_O_EXCL_BIT   0x100
+#define HAIKU_O_TRUNC_BIT  0x400
+#define HAIKU_O_APPEND_BIT 0x800
+#define HAIKU_O_NOFOLLOW_BIT 0x80000
+#define HAIKU_O_DIRECTORY_BIT 0x200000
+
+static int32
+xlat_oflags(int64 linuxFlags)
+{
+	int32 h = (int32)linuxFlags & 3;
+	if (linuxFlags & 0x40) h |= HAIKU_O_CREAT_BIT;
+	if (linuxFlags & 0x80) h |= HAIKU_O_EXCL_BIT;
+	if (linuxFlags & 0x200) h |= HAIKU_O_TRUNC_BIT;
+	if (linuxFlags & 0x400) h |= HAIKU_O_APPEND_BIT;
+	if (linuxFlags & 0x800) h |= HAIKU_O_NONBLOCK;
+	if (linuxFlags & LINUX_O_CLOEXEC) h |= HAIKU_O_CLOEXEC;
+	if (linuxFlags & 0x20000) h |= HAIKU_O_NOFOLLOW_BIT;
+	return h;
+}
+
+static int
+sc_eq(const char* a, const char* b)
+{
+	while (*a && *a == *b) {
+		a++;
+		b++;
+	}
+	return *a == 0 && *b == 0;
+}
+
+static int
+sc_starts(const char* s, const char* p)
+{
+	while (*p) {
+		if (*s++ != *p++)
+			return 0;
+	}
+	return 1;
+}
+
+static int
+put_str(char* dst, int max, int n, const char* s)
+{
+	while (*s && n < max - 1)
+		dst[n++] = *s++;
+	if (n < max)
+		dst[n] = 0;
+	return n;
+}
+
+static int
+put_dec(char* dst, int max, int n, uint64 v)
+{
+	char tmp[24];
+	int i = 0;
+	if (v == 0)
+		tmp[i++] = '0';
+	while (v > 0 && i < 20) {
+		tmp[i++] = (char)('0' + (v % 10));
+		v /= 10;
+	}
+	while (i > 0 && n < max - 1)
+		dst[n++] = tmp[--i];
+	if (n < max)
+		dst[n] = 0;
+	return n;
+}
+
+static int
+fill_proc_node(const char* path, char* dst, int max)
+{
+	system_info info;
+	uint64 total_kb;
+	uint64 free_kb;
+	int n;
+
+	if (get_system_info(&info) != B_OK) {
+		info.max_pages = 262144;
+		info.used_pages = 65536;
+		info.cpu_count = 1;
+	}
+	total_kb = ((uint64)info.max_pages * B_PAGE_SIZE) / 1024;
+	if (info.max_pages > info.used_pages)
+		free_kb = ((uint64)(info.max_pages - info.used_pages)
+			* B_PAGE_SIZE) / 1024;
+	else
+		free_kb = 0;
+
+	n = 0;
+	if (sc_eq(path, "/proc/meminfo")) {
+		n = put_str(dst, max, n, "MemTotal:       ");
+		n = put_dec(dst, max, n, total_kb);
+		n = put_str(dst, max, n, " kB\nMemFree:        ");
+		n = put_dec(dst, max, n, free_kb);
+		n = put_str(dst, max, n, " kB\nMemAvailable:   ");
+		n = put_dec(dst, max, n, free_kb);
+		n = put_str(dst, max, n,
+			" kB\nBuffers:            4096 kB\n"
+			"Cached:            16384 kB\n"
+			"SwapTotal:             0 kB\n"
+			"SwapFree:              0 kB\n");
+		return n;
+	}
+	if (sc_eq(path, "/proc/cpuinfo")) {
+		n = put_str(dst, max, n,
+			"processor\t: 0\nvendor_id\t: GenuineIntel\n"
+			"cpu cores\t: ");
+		n = put_dec(dst, max, n, info.cpu_count ? info.cpu_count : 1);
+		n = put_str(dst, max, n, "\n");
+		return n;
+	}
+	if (sc_eq(path, "/proc/stat")) {
+		n = put_str(dst, max, n,
+			"cpu  1000 0 500 20000 100 0 10 0 0 0\n"
+			"processes 100\nprocs_running 1\n");
+		return n;
+	}
+	return -1;
+}
+
+static int64
+open_proc_node(const char* kpath)
+{
+	static const char tmpPath[] = "/tmp/.linux_proc";
+	char body[512];
+	int n;
+	int32 fd;
+	int32 wr;
+	haiku_open_fn ofn;
+	haiku_rw_fn wfn;
+	haiku_path2_fn ufn;
+	void* upath;
+	void* ubody;
+
+	n = fill_proc_node(kpath, body, (int)sizeof(body));
+	if (n <= 0)
+		return -LINUX_ENOENT;
+	if (sWstatScratch < 0x100000ULL || sOpenFn == 0 || sWriteFn == 0)
+		return -LINUX_ENOENT;
+	upath = (void*)(addr_t)sWstatScratch;
+	ubody = (void*)(addr_t)(sWstatScratch + 64);
+	if (user_memcpy(upath, tmpPath, sizeof(tmpPath)) != B_OK)
+		return -LINUX_EFAULT;
+	if (user_memcpy(ubody, body, (size_t)n) != B_OK)
+		return -LINUX_EFAULT;
+	ofn = (haiku_open_fn)(addr_t)sOpenFn;
+	fd = ofn(-100, upath,
+		2 | HAIKU_O_CREAT_BIT | HAIKU_O_TRUNC_BIT, 0600);
+	if (fd < 0)
+		return haiku_status_to_linux((int64)fd);
+	wfn = (haiku_rw_fn)(addr_t)sWriteFn;
+	wr = (int32)wfn(fd, 0, ubody, (uint64)n);
+	if (wr < 0) {
+		/* keep the fd; a short file is better than EBADF later */
+	}
+	if (sUnlinkFn != 0) {
+		ufn = (haiku_path2_fn)(addr_t)sUnlinkFn;
+		ufn(-100, upath);
+	}
+	kser_puts("PO\n");
+	return (int64)fd;
+}
+
+extern "C" int64
+sys_compat_open(int64 dirfd, const void* path, int64 flags, int64 mode)
+{
+	haiku_open_fn fn;
+	int32 st;
+
+	if (path == NULL)
+		return -LINUX_EFAULT;
+	if (copy_user_cstr(sWstatPath, path, (int)sizeof(sWstatPath)) < 0)
+		return -LINUX_EFAULT;
+	if (sc_starts(sWstatPath, "/proc/") || sc_starts(sWstatPath, "/sys/"))
+		return open_proc_node(sWstatPath);
+	if (sOpenFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_open_fn)(addr_t)sOpenFn;
+	st = fn((int32)dirfd, path, xlat_oflags(flags), (int32)mode);
+	if (st >= 0)
+		return (int64)st;
+	return haiku_status_to_linux((int64)st);
+}
+
 extern "C" int64
 sys_compat_wstat(int64 fd, const void* path, int64 flags, uint32 mask,
 	int64 a, int64 b)
@@ -3593,7 +3789,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("WS2\n");
+	kser_puts("PR3\n");
 	discover_syscall_table();
 	discover_vm_map_file();
 	discover_kern_write_stat();

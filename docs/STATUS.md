@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY33.md`](STANDUP_DAY33.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY34.md`](STANDUP_DAY34.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 33)
+## What you can expect today (`main`, Day 34)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -34,8 +34,8 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 Non-interactive `sh -c` pipelines work. Interactive TTY `sh` still
 needs `ioctl` (deferred). `sendfile` of a regular file still returns
 `-EINVAL` (pipe fallback is enough for `cat`). Do not hold a clone
-parent until `set_robust`. LTP `uname01` is past `tst_tmpdir`; it
-now wants `/proc/meminfo`.
+parent until `set_robust`. LTP `uname01` **TPASS**es `uname`/`sysname`. The harness still
+`TBROK`s on `setpgid` (`ENOSYS`).
 
 Extra single-process applets: `id`, `pwd`, `true`, `printf`,
 `dirname`, `basename`, `od`.

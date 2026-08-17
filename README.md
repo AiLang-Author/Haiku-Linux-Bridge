@@ -66,7 +66,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | busybox `sh -c` (builtin + pipe) | **Works** — `SHOK`, `echo HI \| cat` → `HI` `SH_PIPE_RC=0`, `SHDONE`. See Day 31. |
 | more busybox (`id` `pwd` `printf` `dirname` `basename` `od`) | **Works** — Day 27. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
-| LTP first-wave | **Measured** — 1/17 pass (`hello_min`). Harness needs `mkdir` (now in) then `clone`. |
+| LTP first-wave | **uname01** TPASS `uname`/`sysname` (Day 34). Harness still `setpgid`. |
 | Linux `ioctl` | Deferred on purpose |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

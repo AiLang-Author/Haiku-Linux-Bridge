@@ -150,6 +150,7 @@
 	.extern	sys_compat_pselect
 	.extern	sys_compat_mmap
 	.extern	sys_compat_sendfile
+	.extern	sys_compat_open
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
@@ -529,8 +530,14 @@ sys_compat_lstar:
 	je	.Lbrk
 	cmp	rax, 39			/* Linux getpid */
 	je	.Lgetpid
+	cmp	rax, 109		/* setpgid — LTP fork_testrun */
+	je	.Lok0
 	cmp	rax, 110		/* getppid */
 	je	.Lgetppid
+	cmp	rax, 111		/* getpgrp */
+	je	.Lgetpid
+	cmp	rax, 121		/* getpgid */
+	je	.Lgetpid
 	cmp	rax, 293		/* pipe2 */
 	je	.Lpipe2
 	cmp	rax, 56			/* Linux clone */
@@ -733,11 +740,17 @@ sys_compat_lstar:
 
 .Lopen:
 	/* Linux: rdi=path rsi=flags rdx=mode
-	 * Haiku _kern_open(dirfd,path,openMode,perms): AT_FDCWD=-100 on both
-	 * Directories must use _kern_open_dir (0x74) or read_dir is B_UNSUPPORTED.
+	 * Directories use _kern_open_dir. /proc /sys go to C.
+	 * Everything else stays on LSTAR — CALL_C on every open
+	 * smashed gKstack when LTP fork_testrun raced wait4.
 	 */
 	test	rsi, 0x10000		/* LINUX O_DIRECTORY */
 	jnz	.Lopen_dir_cwd
+	mov	r8d, dword ptr [rdi]
+	cmp	r8d, 0x6f72702f		/* "/pro" */
+	je	.Lopen_c
+	cmp	r8d, 0x7379732f		/* "/sys" */
+	je	.Lopen_c
 	mov	r10, rdx
 	mov	rdx, rsi
 	XLAT_OFLAGS
@@ -752,9 +765,14 @@ sys_compat_lstar:
 	jmp	.Llstar
 
 .Lopenat:
-	/* Linux: rdi=dirfd rsi=path rdx=flags r10=mode — same layout */
+	/* Linux: rdi=dirfd rsi=path rdx=flags r10=mode */
 	test	rdx, 0x10000		/* LINUX O_DIRECTORY */
 	jnz	.Lopenat_dir
+	mov	r8d, dword ptr [rsi]
+	cmp	r8d, 0x6f72702f		/* "/pro" */
+	je	.Lopenat_c
+	cmp	r8d, 0x7379732f		/* "/sys" */
+	je	.Lopenat_c
 	XLAT_OFLAGS
 	mov	rax, 0x72
 	jmp	.Llstar
@@ -1132,6 +1150,67 @@ sys_compat_lstar:
 	pop	rcx
 	jmp	.Lret
 .endm
+
+.Lopen_c:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	push	rbp
+	mov	rcx, rdx
+	mov	rdx, rsi
+	mov	rsi, rdi
+	mov	rdi, -100
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_open
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	pop	rbp
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+
+.Lopenat_c:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	push	rbp
+	mov	rcx, r10
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_open
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	pop	rbp
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
 
 .Lchmod:
 	push	rcx

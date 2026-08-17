@@ -1,5 +1,5 @@
 #!/bin/sh
-# WS1: path wstat via _kern_write_stat + mmap/pipe regression.
+# PR1: /proc/meminfo + wstat/mmap/pipe regression.
 # License: Public Domain / CC0 1.0 Universal
 set -x
 HOST="http://10.0.2.2:8083"
