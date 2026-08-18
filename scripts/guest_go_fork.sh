@@ -45,6 +45,11 @@ curl -s -o /boot/home/run_mmapf.sh "$HOST/scripts/guest_run_mmapf.sh"
 curl -s -o /boot/home/run_pipeline.sh "$HOST/scripts/guest_run_pipeline.sh"
 curl -s -o /boot/home/run_sh.sh "$HOST/scripts/guest_run_sh.sh"
 curl -s -o /boot/home/run_next.sh "$HOST/scripts/guest_run_next.sh"
+curl -s -o /boot/home/dismiss_crash.sh "$HOST/scripts/guest_dismiss_crash.sh"
+curl -s -o /boot/home/dc.sh "$HOST/scripts/guest_dc.sh"
+curl -s -o /boot/home/linux_kconfig "$HOST/payload/linux_kconfig"
+cp -f /boot/home/linux_kconfig /boot/config-6.1.0 2>/dev/null || true
+chmod 644 /boot/home/linux_kconfig /boot/config-6.1.0 2>/dev/null || true
 chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/hello_fork /boot/home/hello_exec /boot/home/hello_futex \
 	/boot/home/hello_poll /boot/home/hello_select /boot/home/hello_mmapf \
@@ -52,18 +57,20 @@ chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/ltp/bin/uname01 \
 	/boot/home/run_fork.sh /boot/home/run_exec.sh /boot/home/run_futex.sh \
 	/boot/home/run_poll.sh /boot/home/run_select.sh /boot/home/run_mmapf.sh \
-	/boot/home/run_pipeline.sh /boot/home/run_sh.sh /boot/home/run_next.sh
+	/boot/home/run_pipeline.sh /boot/home/run_sh.sh /boot/home/run_next.sh \
+	/boot/home/dismiss_crash.sh /boot/home/dc.sh
 rm -rf objects.* *.o objects 2>/dev/null || true
 grep -n 'kser_puts("K"' sys_compat_dev.cpp || echo 'NO_K_IN_SRC'
-grep -n 'PR11f' sys_compat_dev.cpp || echo 'NO_PR11_IN_SRC'
+grep -n 'PR22' sys_compat_dev.cpp || echo 'NO_PR22_IN_SRC'
+grep -n 'sUserDeleteArea' sys_compat_dev.cpp || echo 'NO_UD_IN_SRC'
 grep -n 'sKernWriteStatFn' sys_compat_dev.cpp || echo 'NO_WK_IN_SRC'
 grep -n 'SF' sys_compat_dev.cpp || echo 'NO_SF_IN_SRC'
 make -f Makefile.driver clean || true
 make -f Makefile.driver || { echo MAKE_FAILED; exit 1; }
 make -f Makefile.driver driverinstall || { echo INSTALL_FAILED; exit 1; }
 # Keep exactly one addon. A leftover system-tree copy loads after
-# the user one and re-hooks LSTAR (COM1 printed PR5 then PR4).
-# driverinstall has also written the new binary only to system.
+# the user one and re-hooks LSTAR (COM1 printed PR13 then PR12b).
+# driverinstall writes the new binary to the system tree.
 USERBIN=/boot/home/config/non-packaged/add-ons/kernel/drivers/bin/sys_compat
 USERDEV=/boot/home/config/non-packaged/add-ons/kernel/drivers/dev/misc/sys_compat
 SYSBIN=/boot/system/non-packaged/add-ons/kernel/drivers/bin/sys_compat
@@ -78,16 +85,48 @@ elif [ -f "$SYSBIN" ]; then
 	echo "[+] copied $SYSBIN -> $USERBIN"
 fi
 ln -sfn "$USERBIN" "$USERDEV"
-rm -f "$SYSBIN" "$SYSDEV"
-echo "[+] user addon only; system-tree copy removed"
+# Remove every other sys_compat publish point. find both /boot and
+# /system — a leftover PR12b in either tree re-hooks LSTAR last.
+{
+	echo "=== find before ==="
+	find /boot /system -name 'sys_compat' 2>/dev/null
+} > /tmp/addons.txt
+for p in "$SYSBIN" "$SYSDEV" \
+	/boot/system/add-ons/kernel/drivers/bin/sys_compat \
+	/boot/system/add-ons/kernel/drivers/dev/misc/sys_compat \
+	/boot/system/non-packaged/add-ons/kernel/drivers/bin/sys_compat \
+	/boot/system/non-packaged/add-ons/kernel/drivers/dev/misc/sys_compat \
+	/system/non-packaged/add-ons/kernel/drivers/bin/sys_compat \
+	/system/non-packaged/add-ons/kernel/drivers/dev/misc/sys_compat
+do
+	if [ -e "$p" ] || [ -L "$p" ]; then
+		echo "RM $p" >> /tmp/addons.txt
+		rm -f "$p" || echo "RM_FAIL $p" >> /tmp/addons.txt
+	fi
+done
+find /boot /system -name 'sys_compat' 2>/dev/null | while read f; do
+	if [ "$f" != "$USERBIN" ] && [ "$f" != "$USERDEV" ]; then
+		echo "RM2 $f" >> /tmp/addons.txt
+		rm -f "$f" || echo "RM2_FAIL $f" >> /tmp/addons.txt
+	fi
+done
+{
+	echo "=== find after ==="
+	find /boot /system -name 'sys_compat' 2>/dev/null
+	echo "=== user ==="
+	ls -la "$USERBIN" "$USERDEV" 2>&1
+} >> /tmp/addons.txt
+curl -s -X POST --data-binary @/tmp/addons.txt "$HOST/results/addons.txt" || true
+echo "[+] user addon only; extras removed"
 gcc -O2 sys_compat_run.c -o /boot/home/sys_compat_run
 chmod 755 /boot/home/sys_compat_run
 curl -s -o dump_sc.c "$HOST/payload/ltp/dump_sc.c"
 gcc -O2 dump_sc.c -o /tmp/dump_sc && /tmp/dump_sc | tee /tmp/dump_sc.txt
 curl -s -X POST --data-binary @/tmp/dump_sc.txt "$HOST/results/dump_sc_exec.txt" || true
-# Desktop login: open a Terminal so the host can type without Deskbar.
+# Desktop login: official Haiku boot/launch symlink + UserBootscript.
 BOOTDIR=/boot/home/config/settings/boot
-mkdir -p "$BOOTDIR"
+mkdir -p "$BOOTDIR/launch"
+ln -sfn /boot/system/apps/Terminal "$BOOTDIR/launch/Terminal"
 BOOT="$BOOTDIR/UserBootscript"
 curl -s -o /tmp/haiku_UserBootscript "$HOST/scripts/haiku_UserBootscript"
 if [ -s /tmp/haiku_UserBootscript ]; then
@@ -96,10 +135,16 @@ if [ -s /tmp/haiku_UserBootscript ]; then
 	fi
 	cp /tmp/haiku_UserBootscript "$BOOT"
 	chmod 755 "$BOOT"
-	echo "[+] wrote Terminal autostart to $BOOT"
+	echo "[+] wrote $BOOTDIR/launch/Terminal and $BOOT"
 fi
 curl -s -o /boot/home/launch_term.sh "$HOST/scripts/guest_launch_term.sh"
 chmod 755 /boot/home/launch_term.sh
+# Re-fetch Linux test ELFs (earlier curls without _ clobbered them).
+curl -s -o /boot/home/hello_wstat "$HOST/tests/hello_wstat"
+curl -s -o /boot/home/hello_mmapf "$HOST/tests/hello_mmapf"
+chmod 755 /boot/home/hello_wstat /boot/home/hello_mmapf
+curl -s -o /boot/home/run_next.sh "$HOST/scripts/guest_run_next.sh"
+chmod 755 /boot/home/run_next.sh
 echo GO_FORK_DONE | tee /tmp/go_fork_done.txt
 curl -s -X POST --data-binary @/tmp/go_fork_done.txt "$HOST/results/go_fork_done.txt" || true
 echo GO_FORK_DONE

@@ -1,12 +1,18 @@
 #!/bin/sh
-# Auto-start Terminal after Tracker/Deskbar are up.
-# Installed as ~/config/settings/boot/UserBootscript
-# License: Public Domain / CC0 1.0 Universal
 # SYS_COMPAT_AUTOTERM
-sleep 12
-# hey after Tracker is up. Direct & is a fallback if hey is early.
-if [ -x /boot/system/apps/Terminal ]; then
-	/boot/system/apps/Terminal &
-fi
-hey application/x-vnd.Be-TRAK do Launch of file /boot/system/apps/Terminal
+# Official Haiku user boot (do not drop the launch/ loop).
+# Docs: https://www.haiku-os.org/docs/userguide/en/bash-scripting.html
+# Stock: https://github.com/haiku/haiku/blob/master/data/config/boot/UserBootscript
+#   1. Symlink apps into ~/config/settings/boot/launch
+#   2. This script /bin/open's every entry after Desktop is up.
+# License: Public Domain / CC0 1.0 Universal
 
+# DO NOT EDIT above the custom section — launch_daemon / docs expect this.
+for file in "$HOME"/config/settings/boot/launch/*
+do
+	[ -e "$file" ] && /bin/open "$file" &
+done
+
+# FEEL FREE TO EDIT BELOW
+# Terminal is started by the launch/ symlink above. Do not start it
+# again here or two windows open.

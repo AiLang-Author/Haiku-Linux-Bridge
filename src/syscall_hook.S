@@ -154,6 +154,7 @@
 	.extern	sys_compat_wstat
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
+	.extern	sys_compat_close
 	.extern	sys_compat_getuid
 	.extern	sys_compat_getgid
 	.extern	sys_compat_setuid
@@ -190,6 +191,8 @@
 	.hidden	sRobustList
 	.globl	sRobustLen
 	.hidden	sRobustLen
+	.globl	sWstatScratch
+	.hidden	sWstatScratch
 	.extern	sys_compat_exit_prep
 
 #define SYS_COMPAT_MARK_NR	0x1337
@@ -256,6 +259,8 @@ sys_compat_lstar:
 	jmp	.Lstamp_done
 .Lstamp_got:
 	mov	[r9 + r8 * 8], rax
+	lea	r9, [rip + gLinuxTeam]
+	mov	qword ptr [r9 + r8 * 8], 1
 	inc	qword ptr [rip + gLinuxN]
 	mov	qword ptr [rip + gForkPending], 0
 	/* Still on gs:8. Do not KSER after restoring the user stack. */
@@ -708,8 +713,21 @@ sys_compat_lstar:
 	jmp	.Llstar
 
 .Lclose:
-	/* Linux: rdi=fd  Haiku _kern_close: rdi=fd  (0x9e) */
+	/* Pipe/cat: identity 0x9e. After set_robust_list(NULL)
+	 * (sExitCloses) glibc is in exit — jmp LSTAR KTs. Service
+	 * those closes on this thread's gs:8, not gKstack. */
 	KSER	'c'
+	cmp	dword ptr [rip + sExitCloses], 0
+	je	.Lclose_id
+	push	rcx
+	push	r11
+	sti
+	call	sys_compat_close
+	cli
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+.Lclose_id:
 	mov	rax, 0x9e
 	jmp	.Llstar
 
@@ -1006,16 +1024,20 @@ sys_compat_lstar:
 
 .Lwait4:
 	/* rdi=pid rsi=status rdx=options r10=rusage.
-	 * Info scratch is below the user RSP (Haiku writes it via
-	 * user_memcpy). Do not push on that COW-RO stack.
-	 * rcx/r11 are SYSCALL RIP/RFLAGS — must survive to sysretq. */
+	 * Haiku wait_for_child user_memcpy's siginfo to userInfo.
+	 * rsp-256 sits in the Linux frames (safe_waitpid / fork_testrun)
+	 * and smashes status / RIP. Prefer the mark arena page. */
 	KSER	'V'
 	push	rcx
 	push	r11
 	push	rbx
 	push	rbp
+	mov	r8, qword ptr [rip + sWstatScratch]
+	cmp	r8, 0x100000
+	jae	1f
 	mov	r8, qword ptr [gs:16]
 	sub	r8, 256
+1:
 	mov	rcx, r10
 	mov	rbx, rsp
 	mov	rsp, qword ptr [gs:8]
@@ -1449,7 +1471,29 @@ sys_compat_lstar:
 	push	r8
 	push	r9
 	push	r10
-	CALL_C	sys_compat_munmap
+	mov	[rip + gSavedRsp], rsp
+	lea	rsp, [rip + gKstackEnd]
+	and	rsp, -16
+	sti
+	call	sys_compat_munmap
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	/* C returns 1 after ND. Set the flag HERE so .Lclose in this
+	 * image sees it (C write was invisible across dual loads). */
+	cmp	rax, 1
+	jne	1f
+	mov	dword ptr [rip + sExitCloses], 1
+	xor	rax, rax
+1:
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
 .Lgetuid:
 	push	rcx
 	push	r11
@@ -1525,6 +1569,10 @@ sys_compat_lstar:
 	push	r10
 	mov	qword ptr [rip + sRobustList], rdi
 	mov	qword ptr [rip + sRobustLen], rsi
+	test	rdi, rdi
+	jnz	1f
+	mov	dword ptr [rip + sExitCloses], 1
+1:
 	xor	rax, rax
 	pop	r10
 	pop	r9
@@ -2533,6 +2581,8 @@ sExitCloses:
 sRobustList:
 	.quad	0
 sRobustLen:
+	.quad	0
+sWstatScratch:
 	.quad	0
 	.align	16
 gKstack:

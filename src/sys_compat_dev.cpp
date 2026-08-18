@@ -280,6 +280,11 @@ typedef area_id (*haiku_vmmap_fn)(team_id team, const char* name,
 typedef area_id (*haiku_vmmapk_fn)(team_id team, const char* name,
 	void** address, uint32 spec, addr_t size, uint32 prot, uint32 mapping,
 	bool unmapRange, int fd, off_t offset, bool kernel);
+/* Kernel delete_area() always uses the kernel aspace (B_BAD_VALUE
+ * on a user linux_mmap). Need vm_delete_area(team, id, kernel).
+ * _user_delete_area is CurrentID()+kernel=false (syscall path). */
+typedef int32 (*haiku_vmdel_fn)(int32 team, int32 area, bool kernel);
+typedef int32 (*haiku_userdel_fn)(int32 area);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -311,17 +316,22 @@ static uint64 sWaitObjFn;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
+static haiku_vmdel_fn sVmDeleteArea;
+static haiku_userdel_fn sUserDeleteArea;
+typedef int32 (*haiku_close_fn)(int32 fd);
+static haiku_close_fn sKernClose;
 #define LINUX_MAP_SLOTS 16
 struct linux_file_map {
 	uint64 addr;
 	uint64 len;
 	int32 area;
 	int32 team;
+	int32 fd;
 };
 static struct linux_file_map sFileMaps[LINUX_MAP_SLOTS];
 static uint64 sKernWriteStatFn;
 static char sWstatPath[1024];
-static uint64 sWstatScratch;
+extern "C" uint64 sWstatScratch;
 static uint64 sReadFn;
 static uint64 sWriteFn;
 static uint64 sOpenFn;
@@ -403,6 +413,7 @@ extern "C" {
 		uint32 mask, int64 a, int64 b);
 	int64 sys_compat_mprotect(void* addr, uint64 len, int64 prot);
 	int64 sys_compat_munmap(void* addr, uint64 len);
+	int64 sys_compat_close(int64 fd);
 	int64 sys_compat_getuid(void);
 	int64 sys_compat_getgid(void);
 	int64 sys_compat_setuid(int64 uid);
@@ -520,6 +531,23 @@ kser_puts(const char* s)
 		kser_putc(*s++);
 }
 
+/* user_memcpy on a non-user / non-canonical pointer GPFs (KDL),
+ * it does not return B_BAD_ADDRESS. Reject those here. */
+static int
+linux_user_ok(const void* p, uint64 n)
+{
+	uint64 a = (uint64)(addr_t)p;
+	if (p == NULL || n == 0)
+		return 0;
+	if (a < 0x100000ULL)
+		return 0;
+	if (a >= 0x0000800000000000ULL)
+		return 0;
+	if (n >= 0x0000800000000000ULL - a)
+		return 0;
+	return 1;
+}
+
 static void
 kser_hex(uint64 v)
 {
@@ -579,6 +607,8 @@ install_lstar(void* /*cookie*/, int cpu)
 		gOrigLstar = current;
 	if (gOrigLstar == 0 || gOrigLstar == hook)
 		return;
+	if (current != gOrigLstar)
+		kser_puts("REHOOK\n");
 
 	wrmsr(IA32_LSTAR, hook);
 	dprintf("[sys_compat] CPU %d LSTAR %#" B_PRIx64 " -> hook %#" B_PRIx64 "\n",
@@ -678,6 +708,136 @@ discover_vm_map_file(void)
 		kser_putc('\n');
 	} else if (sVmMapFile == 0)
 		kser_puts("VMno\n");
+}
+
+static void
+discover_vm_delete_area(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"vm_delete_area",
+		"_Z14vm_delete_areaiib",
+		"_Z14vm_delete_areailb",
+		NULL
+	};
+
+	sVmDeleteArea = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sVmDeleteArea = (haiku_vmdel_fn)p;
+				kser_puts("VDfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("VDno\n");
+}
+
+static void
+discover_user_delete_area(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"_user_delete_area",
+		"_Z17_user_delete_areai",
+		NULL
+	};
+
+	sUserDeleteArea = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sUserDeleteArea = (haiku_userdel_fn)p;
+				kser_puts("UDfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("UDno\n");
+}
+
+static void
+discover_kern_close(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	/* common_close(fd, false) / _user_close — the team's fds.
+	 * _kern_close is kernel aspace (wrong, like delete_area). */
+	static const char* const names[] = {
+		"_user_close",
+		"_Z11_user_closei",
+		"common_close",
+		"_Z12common_closeib",
+		NULL
+	};
+
+	sKernClose = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sKernClose = (haiku_close_fn)p;
+				kser_puts("CLfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("CLno\n");
+}
+
+static void
+print_sys_compat_images(void)
+{
+	image_info info;
+	int32 cookie;
+	int i;
+	const char* n;
+
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		n = info.name;
+		if (n == NULL)
+			continue;
+		for (i = 0; n[i] != 0; i++) {
+			if (n[i] == 's' && n[i + 1] == 'y' && n[i + 2] == 's'
+				&& n[i + 3] == '_' && n[i + 4] == 'c'
+				&& n[i + 5] == 'o' && n[i + 6] == 'm') {
+				kser_puts("IMG=");
+				kser_puts(n);
+				kser_putc('\n');
+				break;
+			}
+		}
+	}
 }
 
 static void
@@ -1233,6 +1393,7 @@ linux_clear_all(void)
 			sFileMaps[m].len = 0;
 			sFileMaps[m].area = 0;
 			sFileMaps[m].team = 0;
+			sFileMaps[m].fd = -1;
 		}
 	}
 	for (i = 0; i < TEAM_R_SLOTS; i++) {
@@ -1754,16 +1915,9 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 		hflags |= HAIKU_WUNTRACED | HAIKU_WSTOPPED;
 	fn = (haiku_wait_child_fn)(addr_t)sWaitFn;
 	{
-		team_info self;
-		int32 self_team = 0;
-		int live_waits = 0;
 		int reaped = 0;
 
-		if (get_team_info(B_CURRENT_TEAM, &self) == B_OK)
-			self_team = self.team;
 		for (;;) {
-			int i, live;
-
 			if (!reaped) {
 				st = fn((int32)pid, hflags, userInfo, NULL);
 				sLastWait = (int64)st;
@@ -1777,22 +1931,20 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 					return haiku_status_to_linux((int64)st);
 				reaped = 1;
 			}
-			/* Child may still be in userspace after
-			 * wait_for_child returned (thread id, not
-			 * team id). Hold until it unmarks. */
-			live = 0;
-			for (i = 0; i < LINUX_MARK_SLOTS; i++) {
-				if (gLinuxCR3[i] != 0)
-					live++;
-			}
-			/* Parent occupies one slot. A still-marked
-			 * child occupies another. Stamp does not
-			 * write gLinuxTeam[], so do not require it. */
-			if (live > 1 && (options & 1) == 0 && live_waits < 250) {
-				kser_putc('w');
-				live_waits++;
-				snooze(20000);
-				continue;
+			/* wait_for_child already wait_for_thread'd. A KT
+			 * child never .Lexit-unmarks. Drop sibling CR3
+			 * so we do not spin `w` for 5s. */
+			{
+				uint64 mycr3 = read_cr3() & ~(uint64)0xfff;
+				int j;
+				for (j = 0; j < LINUX_MARK_SLOTS; j++) {
+					if (gLinuxCR3[j] != 0 && gLinuxCR3[j] != mycr3) {
+						gLinuxCR3[j] = 0;
+						gLinuxTeam[j] = 0;
+						if (gLinuxN != 0)
+							gLinuxN--;
+					}
+				}
 			}
 			break;
 		}
@@ -2283,7 +2435,8 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 		return -LINUX_EINVAL;
 	if (fds == NULL || scratch == NULL)
 		return -LINUX_EFAULT;
-	if (((uint64)(addr_t)scratch) < 0x100000ULL)
+	if (!linux_user_ok(fds, (uint64)nfds * 8)
+		|| !linux_user_ok(scratch, (uint64)nfds * 8))
 		return -LINUX_EFAULT;
 	if (sWaitObjFn == 0)
 		return -LINUX_ENOSYS;
@@ -2597,11 +2750,12 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	{
 		int m;
 		for (m = 0; m < LINUX_MAP_SLOTS; m++) {
-			if (sFileMaps[m].area == 0) {
+			if (sFileMaps[m].fd < 0 && sFileMaps[m].area == 0) {
 				sFileMaps[m].addr = (uint64)(addr_t)mapped;
 				sFileMaps[m].len = len;
 				sFileMaps[m].area = area;
 				sFileMaps[m].team = info.team;
+				sFileMaps[m].fd = (int32)fd;
 				break;
 			}
 		}
@@ -2944,56 +3098,107 @@ sys_compat_munmap(void* addr, uint64 len)
 			&& (sFileMaps[m].team == info.team
 				|| sFileMaps[m].team == 0)) {
 			area = sFileMaps[m].area;
+			/* Keep fd. close() after delete_area of this
+			 * map KTs inside _kern_close. */
+			sFileMaps[m].area = 0;
 			sFileMaps[m].addr = 0;
 			sFileMaps[m].len = 0;
-			sFileMaps[m].area = 0;
-			sFileMaps[m].team = 0;
 			break;
 		}
 	}
-	if (area == 0) {
-		area = area_for(addr);
-		if (area >= 0) {
-			area_info ai;
-			if (get_area_info(area, &ai) != B_OK
-				|| ai.name[0] != 'l'
-				|| ai.name[1] != 'i'
-				|| ai.name[2] != 'n'
-				|| ai.name[3] != 'u'
-				|| ai.name[4] != 'x'
-				|| ai.name[5] != '_')
-				area = 0;
-		} else
+	/* Always resolve via area_for. The table id is the pre-fork
+	 * area; fork_team gives the parent a new id for the same VA. */
+	{
+		int32 now = area_for(addr);
+		if (now > 0)
+			area = now;
+	}
+	if (area > 0) {
+		area_info ai;
+		/* Only file maps from linux mmap. linux_stack / linux_tls
+		 * / linux_arena / linux_tramp also start with linux_ —
+		 * deleting those on glibc teardown KTs the next close. */
+		if (get_area_info(area, &ai) != B_OK
+			|| ai.name[0] != 'l' || ai.name[1] != 'i'
+			|| ai.name[2] != 'n' || ai.name[3] != 'u'
+			|| ai.name[4] != 'x' || ai.name[5] != '_'
+			|| ai.name[6] != 'm' || ai.name[7] != 'm'
+			|| ai.name[8] != 'a' || ai.name[9] != 'p') {
+			kser_puts("Ns=");
+			if (get_area_info(area, &ai) == B_OK)
+				kser_puts(ai.name);
+			kser_putc('\n');
 			area = 0;
+		}
 	}
 	if (area <= 0)
 		return 0;
-	/* Kernel delete_area, not _user_unmap_memory. The syscall
-	 * wrapper KTd on vm_map_file ranges (COM1 cuU). */
-	st = delete_area(area);
+	/* Kernel delete_area() is vm_delete_area(kernel aspace) and
+	 * returns B_BAD_VALUE for a user linux_mmap. Try
+	 * vm_delete_area(team, id, kernel), then _user_delete_area.
+	 * Never _user_unmap_memory. */
+	{
+		area_info ai;
+		int32 team = info.team;
+		if (get_area_info(area, &ai) == B_OK && ai.team > 0)
+			team = ai.team;
+		kser_puts("Nt=");
+		kser_hex((uint64)(uint32)team);
+		kser_puts(" a=");
+		kser_hex((uint64)(uint32)area);
+		kser_puts(" ");
+		kser_puts(ai.name);
+		kser_putc('\n');
+		st = (int32)0x80000000;
+		if (sVmDeleteArea != 0) {
+			kser_puts("VD\n");
+			st = sVmDeleteArea(team, area, true);
+		}
+		if (st != B_OK && sUserDeleteArea != 0) {
+			kser_puts("UD\n");
+			st = sUserDeleteArea(area);
+		}
+		if (st != B_OK) {
+			kser_puts("DA\n");
+			st = delete_area(area);
+		}
+	}
 	if (st != B_OK) {
-		int32 area2;
 		kser_puts("NF=");
 		kser_hex((uint64)(uint32)st);
 		kser_putc('\n');
-		/* Table id is stale after fork_team copies the area.
-		 * Resolve again; never call _user_unmap_memory. */
-		area2 = area_for(addr);
-		if (area2 > 0 && area2 != area) {
-			st = delete_area(area2);
-			if (st == B_OK) {
-				kser_puts("ND\n");
-				return 0;
-			}
-			kser_puts("NF2=");
-			kser_hex((uint64)(uint32)st);
-			kser_putc('\n');
-		}
-		/* Leave the map; team death tears it down. Returning
-		 * EINVAL here sent glibc into a close/futex KT. */
 		return 0;
 	}
 	kser_puts("ND\n");
+	/* Hook turns 1 into sExitCloses and returns 0 to Linux. */
+	return 1;
+}
+
+extern "C" int64
+sys_compat_close(int64 fd)
+{
+	int m;
+	int32 st;
+
+	kser_puts("cX=");
+	kser_hex((uint64)(uint32)fd);
+	kser_putc('\n');
+	for (m = 0; m < LINUX_MAP_SLOTS; m++) {
+		if (sFileMaps[m].fd == (int32)fd
+			&& sFileMaps[m].area == 0) {
+			sFileMaps[m].fd = -1;
+			sFileMaps[m].addr = 0;
+			sFileMaps[m].len = 0;
+			sFileMaps[m].team = 0;
+			kser_puts("cM\n");
+			return 0;
+		}
+	}
+	if (sKernClose != 0) {
+		st = sKernClose((int32)fd);
+		if (st != B_OK)
+			return haiku_status_to_linux((int64)st);
+	}
 	return 0;
 }
 
@@ -4085,11 +4290,18 @@ init_hardware(void)
 	return B_OK;
 }
 
+static int32 sDriverLive;
+
 extern "C" status_t
 init_driver(void)
 {
 	const uint32 IA32_LSTAR = 0xc0000082;
 	uint64 current = rdmsr(IA32_LSTAR);
+
+	if (sDriverLive != 0) {
+		kser_puts("DUskip\n");
+		return B_OK;
+	}
 
 	if (current == 0) {
 		dprintf("[sys_compat] refusing to load: LSTAR is zero\n");
@@ -4108,9 +4320,13 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR11f\n");
+	kser_puts("PR22\n");
+	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
+	discover_vm_delete_area();
+	discover_user_delete_area();
+	discover_kern_close();
 	discover_kern_write_stat();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");
@@ -4121,6 +4337,7 @@ init_driver(void)
 			sFutexW[i].sem = -1;
 		}
 	}
+	sDriverLive = 1;
 	return B_OK;
 }
 
