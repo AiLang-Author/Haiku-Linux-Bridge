@@ -1,16 +1,16 @@
-# Status for testers (2026-08-17)
+# Status for testers (2026-08-18)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY38.md`](STANDUP_DAY38.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY39.md`](STANDUP_DAY39.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 38)
+## What you can expect today (`main`, Day 39)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -35,8 +35,7 @@ Non-interactive `sh -c` pipelines work. Interactive TTY `sh` still
 needs `ioctl` (deferred). `sendfile` of a regular file still returns
 `-EINVAL` (pipe fallback is enough for `cat`). `munmap` of file maps is
 `vm_delete_area(team)` (not `_user_unmap_memory`). LTP `uname01` is
-**passed 2 / failed 0 / broken 0**. The team still Kill Threads after
-the last `munmap` (`UNAME_RC=149`, COM1 `ND gbc cX=2 uU`). Desktop
+**passed 2 / failed 0 / broken 0** and **`UNAME_RC=0`**. Desktop
 login starts one Terminal via `boot/launch`. One `sys_compat` addon only.
 
 Extra single-process applets: `id`, `pwd`, `true`, `printf`,

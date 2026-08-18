@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-17 (Day 38: PR22 ND + exit-window close; uname01 still 149)
+**Last updated:** 2026-08-18 (Day 39: uname01 UNAME_RC=0)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -59,7 +59,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
-| 231/60 | exit_group/exit | works |
+| 231/60 | exit_group/exit | **works**. After `ND`, `_user_exit_team` + `thread_exit` (not LSTAR `0x29`). `UNAME_RC=0`. Day 39. |
 
 ### File I/O (coreutils hot path)
 
@@ -69,7 +69,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 1 | write | works |
 | 2 | open | works (`/proc/meminfo` materialized; other `/proc`/`/sys` `-ENOENT`) |
 | 257 | openat | works (same) |
-| 3 | close | works (identity `_kern_close` 0x9e). After `ND`, `_user_close` on `gs:8` (`cX=`). Day 38. |
+| 3 | close | works (identity `_kern_close` 0x9e). After `ND`, skip `_user_close` (`cS`) and `.Lexit`. Day 39. |
 | 8 | lseek | works |
 | 5 | fstat | works |
 | 4/6 | stat/lstat | works |

@@ -155,6 +155,7 @@
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
 	.extern	sys_compat_close
+	.extern	sys_compat_exit_team
 	.extern	sys_compat_getuid
 	.extern	sys_compat_getgid
 	.extern	sys_compat_setuid
@@ -362,6 +363,7 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gRseqPtr], 0
 	mov	qword ptr [rip + gRseqLen], 0
 	mov	qword ptr [rip + gRseqSig], 0
+	mov	dword ptr [rip + sExitCloses], 0
 	push	rcx
 	push	r11
 	push	rdi
@@ -726,7 +728,10 @@ sys_compat_lstar:
 	cli
 	pop	r11
 	pop	rcx
-	jmp	.Lret
+	/* Host: munmap then exit_group. Returning to glibc after
+	 * ND+close KTs before the next syscall. */
+	xor	rdi, rdi
+	jmp	.Lexit
 .Lclose_id:
 	mov	rax, 0x9e
 	jmp	.Llstar
@@ -867,8 +872,23 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gRseqSig], 0
 .Lexit_keepfs:
 	mov	dword ptr [rip + sChildDone], 1
-	mov	rax, 0x29
 	KSER	'E'
+	/* After ND, official 0x29 KTs. Call _user_exit_team on
+	 * this kstack. Named label — KSER uses 1:/2:. */
+	cmp	dword ptr [rip + sExitCloses], 0
+	je	.Lexit_lstar
+	mov	dword ptr [rip + sExitCloses], 0
+	mov	rdi, qword ptr [rip + gTmpR8]
+	sti
+	call	sys_compat_exit_team
+	/* _user_exit_team posts SIGKILL and returns. Do not sysret
+	 * (that KDLd under CLI). Wait for the signal with IF on. */
+.Lexit_wait:
+	sti
+	hlt
+	jmp	.Lexit_wait
+.Lexit_lstar:
+	mov	rax, 0x29
 	jmp	.Llstar
 
 .Lkill:
@@ -1106,6 +1126,13 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	KSER	'U'
+	/* After ND, returning to glibc KTs (user #PF or next LSTAR).
+	 * Host does munmap then exit_group. Finish that here. */
+	cmp	dword ptr [rip + sExitCloses], 0
+	je	.Lfutex_ret
+	xor	rdi, rdi
+	jmp	.Lexit
+.Lfutex_ret:
 	jmp	.Lret
 
 .Lppoll:
@@ -1569,10 +1596,6 @@ sys_compat_lstar:
 	push	r10
 	mov	qword ptr [rip + sRobustList], rdi
 	mov	qword ptr [rip + sRobustLen], rsi
-	test	rdi, rdi
-	jnz	1f
-	mov	dword ptr [rip + sExitCloses], 1
-1:
 	xor	rax, rax
 	pop	r10
 	pop	r9
@@ -2481,6 +2504,17 @@ sys_compat_lstar:
 	sysretq
 
 .Llstar:
+	/* After ND, jmp official LSTAR KTs (identity close). The
+	 * only LSTAR still allowed is _kern_exit_team (0x29).
+	 * Named labels: KSER uses 1:/2: and je 1f would land in it. */
+	cmp	dword ptr [rip + sExitCloses], 0
+	je	.Llstar_go
+	cmp	rax, 0x29
+	je	.Llstar_go
+	KSER	'X'
+	xor	rax, rax
+	jmp	.Lret
+.Llstar_go:
 	mov	rsp, qword ptr [gs:16]
 	swapgs
 	jmp	[rip + gOrigLstar]

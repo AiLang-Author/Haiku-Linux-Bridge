@@ -61,7 +61,7 @@ chmod 755 /boot/home/hello_min /boot/home/busybox /boot/home/hello_fork_probe \
 	/boot/home/dismiss_crash.sh /boot/home/dc.sh
 rm -rf objects.* *.o objects 2>/dev/null || true
 grep -n 'kser_puts("K"' sys_compat_dev.cpp || echo 'NO_K_IN_SRC'
-grep -n 'PR22' sys_compat_dev.cpp || echo 'NO_PR22_IN_SRC'
+grep -n 'PR31' sys_compat_dev.cpp || echo 'NO_PR31_IN_SRC'
 grep -n 'sUserDeleteArea' sys_compat_dev.cpp || echo 'NO_UD_IN_SRC'
 grep -n 'sKernWriteStatFn' sys_compat_dev.cpp || echo 'NO_WK_IN_SRC'
 grep -n 'SF' sys_compat_dev.cpp || echo 'NO_SF_IN_SRC'

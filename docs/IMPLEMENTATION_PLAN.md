@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-17 (Day 38: PR22 ND + exit-window close; uname01 still 149)  
+**Last updated:** 2026-08-18 (Day 39: uname01 UNAME_RC=0)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -32,7 +32,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 35](STANDUP_DAY35.md) (auto Terminal; `setpgid`; uname01 2/0) →
 [Day 36](STANDUP_DAY36.md) (one addon; `munmap` no-op; teardown after `Nn`) →
 [Day 37](STANDUP_DAY37.md) (real `delete_area` munmap; exit_prep; still 149) →
-[Day 38](STANDUP_DAY38.md) (PR22 `vm_delete_area` `ND`; C close after `ND`; still 149).
+[Day 38](STANDUP_DAY38.md) (PR22 `vm_delete_area` `ND`; C close after `ND`; still 149) →
+[Day 39](STANDUP_DAY39.md) (`UNAME_RC=0`; exit-window `thread_exit` after `ND`).
 
 ---
 
@@ -72,14 +73,16 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 38):** One `sys_compat` addon (user tree only).
-`munmap` of `linux_mmap` is `vm_delete_area(team)` (`VD`/`ND`). Hook
-sets `sExitCloses` when that C returns 1 (dual-load BSS). After `ND`,
-close is `_user_close` on `gs:8` (`cX=`), not identity `0x9e`. LTP
-`uname01` is **passed 2 / failed 0 / broken 0**, then Kill Thread
-after `ND gbc cX=2 uU` (no `e`/`E`). `UNAME_RC=149`. Pipe / wstat /
-mmap still green (`WSTAT_RC=0`, `MMAPF_RC=0`, `PIPE_RC=0`). Official
+**Where we are (Day 39):** One `sys_compat` addon (user tree only).
+`munmap` of `linux_mmap` is `vm_delete_area(team)` (`VD`/`ND`). After
+`ND`, close skips `_user_close` (`cS`) and `.Lexit` calls
+`_user_exit_team` + `thread_exit` (not LSTAR `0x29`). LTP `uname01`
+is **passed 2 / failed 0 / broken 0**, **`UNAME_RC=0`**. Pipe / wstat /
+mmap green (`WSTAT_RC=0`, `MMAPF_RC=0`, `PIPE_RC=0`). Official
 `UserBootscript` `launch/` starts one Terminal.
+
+**Where we were (Day 38):** After `ND`, C close then futex (`uU`),
+Kill Thread, `UNAME_RC=149`. No `e`/`E`.
 
 **Where we were (Day 37):** `munmap` via public `delete_area` was
 `B_BAD_VALUE` (kernel aspace). Same 2/0/0 then 149 at `…Vvkgb`.
@@ -94,12 +97,10 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** After `ND`, do not `jmp .Llstar` except
-`exit_team`. Host Linux does `munmap` then `exit_group(0)`; guest
-still KTs after C close + futex (`uU`). Interactive TTY `sh` needs
-ioctl — later. Do not stub `set_robust_list(NULL)` into `exit_team`.
-Do not wrap every close. Do not leave a second addon in
-`/boot/system/non-packaged/`.
+**What needs doing next:** ioctl / TTY for interactive `sh`. Keep
+widening the CLI 90% set. Do not set `sExitCloses` on
+`set_robust_list(NULL)` (that hung the pipe). Do not wrap every
+close. Do not leave a second addon in `/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

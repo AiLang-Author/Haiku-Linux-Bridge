@@ -320,6 +320,10 @@ static haiku_vmdel_fn sVmDeleteArea;
 static haiku_userdel_fn sUserDeleteArea;
 typedef int32 (*haiku_close_fn)(int32 fd);
 static haiku_close_fn sKernClose;
+typedef void (*haiku_exit_team_fn)(int32 status);
+static haiku_exit_team_fn sUserExitTeam;
+typedef void (*haiku_thread_exit_fn)(void);
+static haiku_thread_exit_fn sThreadExit;
 #define LINUX_MAP_SLOTS 16
 struct linux_file_map {
 	uint64 addr;
@@ -414,6 +418,7 @@ extern "C" {
 	int64 sys_compat_mprotect(void* addr, uint64 len, int64 prot);
 	int64 sys_compat_munmap(void* addr, uint64 len);
 	int64 sys_compat_close(int64 fd);
+	void sys_compat_exit_team(int64 status);
 	int64 sys_compat_getuid(void);
 	int64 sys_compat_getgid(void);
 	int64 sys_compat_setuid(int64 uid);
@@ -812,6 +817,73 @@ discover_kern_close(void)
 		}
 	}
 	kser_puts("CLno\n");
+}
+
+static void
+discover_user_exit_team(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"_user_exit_team",
+		"_Z15_user_exit_teami",
+		"_Z15_user_exit_teaml",
+		NULL
+	};
+
+	sUserExitTeam = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sUserExitTeam = (haiku_exit_team_fn)p;
+				kser_puts("EXfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("EXno\n");
+}
+
+static void
+discover_thread_exit(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"thread_exit",
+		"_Z11thread_exitv",
+		NULL
+	};
+
+	sThreadExit = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sThreadExit = (haiku_thread_exit_fn)p;
+				kser_puts("TXfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("TXno\n");
 }
 
 static void
@@ -3194,6 +3266,12 @@ sys_compat_close(int64 fd)
 			return 0;
 		}
 	}
+	/* After ND, _user_close of the next fd (stderr=2) KTs.
+	 * Host Linux does munmap then exit_group — no close. */
+	if (sExitCloses != 0) {
+		kser_puts("cS\n");
+		return 0;
+	}
 	if (sKernClose != 0) {
 		st = sKernClose((int32)fd);
 		if (st != B_OK)
@@ -3341,6 +3419,20 @@ sys_compat_exit_prep(void)
 	kser_puts("t\n");
 }
 
+extern "C" void
+sys_compat_exit_team(int64 status)
+{
+	/* After ND, jmp LSTAR 0x29 KTs. _user_exit_team sets
+	 * CLD_EXITED then stops the thread — no official LSTAR. */
+	kser_puts("EX\n");
+	if (sUserExitTeam != 0)
+		sUserExitTeam((int32)status);
+	kser_puts("EXR\n");
+	if (sThreadExit != 0)
+		sThreadExit();
+	kser_puts("TXR\n");
+}
+
 extern "C" int64
 sys_compat_set_robust_list(void* head, uint64 len)
 {
@@ -3360,10 +3452,6 @@ sys_compat_set_robust_list(void* head, uint64 len)
 			tr->len = len;
 		}
 	}
-	/* Record NULL. Do not skip later _kern_close — that is real
-	 * work; team death is not a substitute for a working close. */
-	if (head == NULL)
-		sExitCloses = 1;
 	return 0;
 }
 
@@ -4308,6 +4396,43 @@ init_driver(void)
 		return B_ERROR;
 	}
 
+	/* Another load of this driver already hooked LSTAR (same
+	 * path, two vnodes). Last hook wins and has empty CR3/BSS.
+	 * If LSTAR is no longer inside kernel_x86_64, leave it. */
+	{
+		image_info inf;
+		int32 cook = 0;
+		int hooked = 0;
+		while (get_next_image_info(B_SYSTEM_TEAM, &cook, &inf) == B_OK) {
+			const char* nm = inf.name;
+			int i, iskern;
+			if (nm == NULL)
+				continue;
+			iskern = 0;
+			for (i = 0; nm[i] != 0; i++) {
+				if (nm[i] == 'k' && nm[i + 1] == 'e'
+					&& nm[i + 2] == 'r' && nm[i + 3] == 'n'
+					&& nm[i + 4] == 'e' && nm[i + 5] == 'l'
+					&& nm[i + 6] == '_' && nm[i + 7] == 'x'
+					&& nm[i + 8] == '8' && nm[i + 9] == '6') {
+					iskern = 1;
+					break;
+				}
+			}
+			if (!iskern || inf.text == NULL)
+				continue;
+			if (current < (uint64)(addr_t)inf.text
+				|| current >= (uint64)(addr_t)inf.text
+					+ (uint64)inf.text_size) {
+				kser_puts("DUhooked\n");
+				return B_OK;
+			}
+			hooked = 1;
+			break;
+		}
+		(void)hooked;
+	}
+
 	dprintf("[sys_compat] loading, current LSTAR %#" B_PRIx64 "\n", current);
 	linux_clear_all();
 	call_all_cpus_sync(&install_lstar, NULL);
@@ -4320,13 +4445,15 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR22\n");
+	kser_puts("PR31\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
 	discover_vm_delete_area();
 	discover_user_delete_area();
 	discover_kern_close();
+	discover_user_exit_team();
+	discover_thread_exit();
 	discover_kern_write_stat();
 	if (sFutexMu < 0)
 		sFutexMu = create_sem(1, "sys_compat_futex");
