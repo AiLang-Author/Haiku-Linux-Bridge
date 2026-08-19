@@ -396,6 +396,10 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	xor	rax, rax
+	/* Linux _start: rdx is rtld_fini. Do not return the fork
+	 * tramp (xor-edi / SYS_exit 60) — glibc would call it on
+	 * exit() and skip fflush. Tramp is already in gForkTramp. */
+	xor	rdx, rdx
 	KSER	'Q'
 	sysretq
 
@@ -1972,9 +1976,9 @@ sys_compat_lstar:
 	mov	rax, -2			/* -ENOENT */
 	jmp	.Lret
 .Lioctl:
-	/* isatty() is ioctl(TCGETS). Return 0 so stdio is line-buffered
-	 * and date's printf writes before exit (fully-buffered fflush
-	 * was skipped when glibc took SYS_exit 60). */
+	/* isatty() is ioctl(TCGETS). Return 0 (success, empty termios).
+	 * Redirected FILE* flush is rdx=0 after mark (rtld_fini), not
+	 * this. Do not treat the buffer as real termios. */
 	cmp	esi, 0x5401		/* TCGETS */
 	je	.Lok0
 	cmp	esi, 0x5413		/* TIOCGWINSZ */

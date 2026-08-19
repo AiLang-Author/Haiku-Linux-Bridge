@@ -4529,7 +4529,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR37\n");
+	kser_puts("PR38\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

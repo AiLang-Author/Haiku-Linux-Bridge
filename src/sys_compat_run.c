@@ -389,6 +389,11 @@ int main(int argc, char** argv)
     /*
      * Mark + jump in one asm block. r12/r13 survive the mark sysret.
      * rdi/rsi = arena, rdx = IRETQ trampoline, r8 = Haiku RSP.
+     *
+     * Linux _start does mov %rdx,%r9 (rtld_fini). The tramp is
+     * xor-edi / SYS_exit 60 — if rdx is still the tramp, glibc
+     * exit() calls it before fflush and date/puts never write.
+     * Mark already stored the tramp in gForkTramp; zero rdx.
      */
     {
         uint64_t haiku_rsp;
@@ -403,6 +408,7 @@ int main(int argc, char** argv)
         __asm__ __volatile__(
             "mov $0x1337, %%rax\n\t"
             "syscall\n\t"
+            "xor %%edx, %%edx\n\t"
             "mov %%r12, %%rsp\n\t"
             "jmp *%%r13\n\t"
             :

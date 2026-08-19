@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 43: `WRPROBE` in redirect; `date` still no write)
+**Updated:** 2026-08-19 (Day 44: redirected `date`/`md5sum`/`puts` write)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -42,22 +42,22 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `false` | **`FALSE_RC=1`** (Day 42) |
 | `cmp` (stderr) | `cmp: EOF on …`, **`CMP_RC=1`** (Day 42) |
 | `id` | **PR32:** `uid=0(user) gid=0(root) groups=0(root)` |
-
-`PIPE_RC` / `SHPIPE_RC` is 0. `HI` did not show in the redirected log
-(same stdout-flush hole as below).
+| glibc `puts` | **`PRINTF_OK`** (Day 44) |
+| `date -u` | **`Wed Nov 15 04:41:07 UTC 2023`** in the redirect (Day 44) |
+| `md5sum` | **`56b119667b17e283b4c3535154b59aa7`** host match (Day 44) |
+| `nproc` | **`1`** (affinity stub is one CPU; stdout now lands) |
+| `printf` | **`BBPRINTF_OK`** |
 
 ## Fragile / wrong (punch these before a toolchain)
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
-| **Redirected busybox stdio still missing** | Raw `hello_wr` prints **`WRPROBE`** then exits. `date`/`md5sum` never `write` (COM1 no `W`, last `ax=0x3c`). Host of the same `date` does `write` then `exit_group`. | Last compile-step lines that sat in `FILE*` never leave. |
-| **Redirected stdout still missing** | `date`, `md5sum`, `nproc` printed nothing in the capture. `date` serial is `mQbWet` (a `write` then exit). `md5sum` is `mQbcet` (close, no write). Interactive `date` has printed a UTC line on earlier days. | Last writes of a compile step can vanish if they sat in libc `FILE*` buffers. |
-| **`sched_getaffinity` unproven** | `nproc` silent, no write on COM1 | Host strace shows it. |
+| **`ioctl` still `-ENOTTY`** (except `TCGETS`/`TIOCGWINSZ` = 0) | not blocking redirected CLI stdout | Next slice: real TTY / fbdev onto Haiku drivers. |
+| **`sched_getaffinity` one CPU** | `nproc` prints `1` on QEMU `-smp 4` | Fine for CLI; wrong for parallel make later. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
-| **`ioctl` still `-ENOTTY`** | not blocking this battery | Next slice after exit/flush: TTY / fbdev. |
 | **`rt_sigreturn` `-ENOSYS`** | host glibc/busybox traces it | Fine while signals are stubs. |
 | **`sendfile` pipe `-EINVAL`** | Linux-correct; `cat` uses read/write | Leave it. |
-| **Pipe child stdout** | `echo HI \| cat` RC=0, `HI` not in the capture | Same flush/status story; do not treat pipelines as fully proven. |
+| **Pipe child stdout** | `echo HI \| cat` was RC=0 with `HI` missing **before** Day 44. Re-prove after rdx=0. | Do not treat pipelines as fully proven until re-run. |
 
 ## Not a layer bug
 
@@ -85,13 +85,21 @@ but they are not what this busybox set exercises.
 - `getgroups`, `umask`, `sync`, `sched_getaffinity` wired.
 - Guest-reprove: `id` groups green. `false` / redirected `date` still not.
 
+## Day 44 trap changes
+
+- After mark, `rdx=0` before `jmp` Linux `_start`. `rdx` is `rtld_fini`;
+  the fork tramp was xor-edi / `SYS_exit` 60 and skipped `fflush`.
+- Mark sysret also zeros `rdx`. Guest-proven with loader xor only
+  (hook still PR37 until reboot).
+
 ## Next
 
-1. Why busybox `date` never `write`s on a redirected fd (`hello_wr` does).
-2. Real TTY/fbdev ioctl onto Haiku drivers (not a Linux display stack). `TCGETS` is only `isatty`=true.
-3. Do not expand into distro packages or pthreads until 1 is green.
+1. Real TTY/fbdev ioctl onto Haiku drivers (not a Linux display stack). `TCGETS` is only `isatty`=true.
+2. Re-prove `echo HI | cat` in a redirect now that FILE* flush works.
+3. Do not expand into distro packages or pthreads until TTY is green enough for interactive `sh`.
 
-`false` / `cmp` `$?` is guest-green (Day 42).
+`false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
+`md5sum` / glibc `puts` are guest-green (Day 44).
 
 Scripts: `scripts/catalog_applet_syscalls.sh` (host),
 `scripts/guest_run_applets.sh` (guest battery),

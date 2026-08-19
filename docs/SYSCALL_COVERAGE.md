@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-19 (Day 40: 55-syscall applet catalog; status+flush)
+**Last updated:** 2026-08-19 (Day 44: redirected FILE* fflush via rdx=0)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -59,14 +59,14 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
-| 231/60 | exit_group/exit | **works**. Always `_user_exit_team(status)` + `thread_exit`. Callee-saved kept on `gs:8` (glibc `exit()` uses `r14`). `hello_exit` **42**, `return 1` **1**, busybox **`false`/`cmp` 1**. Day 42. |
+| 231/60 | exit_group/exit | **works**. Always `_user_exit_team(status)` + `thread_exit`. Callee-saved kept on `gs:8` (glibc `exit()` uses `r14`). After mark, `rdx=0` so glibc `exit()` fflush runs (`rtld_fini` is not the fork tramp). `hello_exit` **42**, `return 1` **1**, busybox **`false`/`cmp` 1**. Redirected `date`/`md5sum`/`puts` write. Day 42/44. |
 
 ### File I/O (coreutils hot path)
 
 | # | name | status |
 |---|---|---|
 | 0 | read | works |
-| 1 | write | works (identity `_kern_write` 0x97). After `ND`, C `_user_write` on `gs:8`. Redirected `date` still silent. Day 40. |
+| 1 | write | **works** (identity `_kern_write` 0x97). After `ND`, C `_user_write` on `gs:8`. Redirected glibc FILE* fflush after `rdx=0` (Day 44). |
 | 2 | open | works (`/proc/meminfo` materialized; other `/proc`/`/sys` `-ENOENT`) |
 | 257 | openat | works (same) |
 | 3 | close | works (identity `_kern_close` 0x9e). After `ND`, skip `_user_close` (`cS`) and **return** (`.Lret`, not `.Lexit`). Day 40. |
@@ -95,7 +95,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 95 | umask | **wired** (in-hook, default 022). Day 40. Not in the status script. |
 | 115 | getgroups | **works**. Guest `id` → `groups=0(root)`. Day 40. |
 | 162 | sync | stub (0). Day 40. |
-| 204 | sched_getaffinity | **wired** (one CPU bit). Guest `nproc` still silent. Day 40. |
+| 204 | sched_getaffinity | **wired** (one CPU bit). Guest `nproc` prints **`1`**. Day 44. |
 | 72 | fcntl | **works** (`_kern_fcntl` 0x76; F_DUPFD/GETFD/SETFD/GETFL/SETFL/DUPFD_CLOEXEC; flag xlat) |
 | 332 | statx | **works** (`_kern_read_stat` → 256-byte `statx`; BASIC\|BTIME) |
 | 221 | fadvise64 | **works** (hint, return 0) |
