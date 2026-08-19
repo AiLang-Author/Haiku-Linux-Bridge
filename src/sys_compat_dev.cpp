@@ -49,6 +49,7 @@
 #define LINUX_ENAMETOOLONG 36
 #define LINUX_ENOSYS       38
 #define LINUX_ENOTTY       25
+#define LINUX_ENODEV       19
 #define LINUX_E2BIG         7
 #define LINUX_ETIMEDOUT   110
 
@@ -288,6 +289,12 @@ typedef area_id (*haiku_vmmapk_fn)(team_id team, const char* name,
  * _user_delete_area is CurrentID()+kernel=false (syscall path). */
 typedef int32 (*haiku_vmdel_fn)(int32 team, int32 area, bool kernel);
 typedef int32 (*haiku_userdel_fn)(int32 area);
+typedef int32 (*haiku_vmclone_fn)(int32 team, const char* name, void** addr,
+	uint32 spec, uint32 prot, uint32 mapping, int32 unmapRange,
+	int32 source, int32 kernel);
+typedef int32 (*haiku_vmphys_fn)(int32 team, const char* name, void** addr,
+	uint32 spec, uint64 size, uint32 prot, uint32 mapping,
+	uint64 phys, int32 kernel);
 
 static struct ksc_info* sSyscallInfos;
 static uint64 sReadDirFn;
@@ -322,6 +329,8 @@ static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
 static haiku_vmdel_fn sVmDeleteArea;
 static haiku_userdel_fn sUserDeleteArea;
+static haiku_vmclone_fn sVmCloneArea;
+static haiku_vmphys_fn sVmMapPhys;
 typedef int32 (*haiku_close_fn)(int32 fd);
 static haiku_close_fn sKernClose;
 typedef void (*haiku_exit_team_fn)(int32 status);
@@ -337,6 +346,14 @@ struct linux_file_map {
 	int32 fd;
 };
 static struct linux_file_map sFileMaps[LINUX_MAP_SLOTS];
+static int32 sFbFd = -1;
+static area_id sFbSrcArea;
+static uint32 sFbWidth;
+static uint32 sFbHeight;
+static uint32 sFbBpp;
+static uint32 sFbPitch;
+static uint64 sFbAper;
+static uint64 sFbPhys;
 static uint64 sKernWriteStatFn;
 static char sWstatPath[1024];
 extern "C" uint64 sWstatScratch;
@@ -721,6 +738,76 @@ discover_vm_map_file(void)
 		kser_putc('\n');
 	} else if (sVmMapFile == 0)
 		kser_puts("VMno\n");
+}
+
+static void
+discover_vm_clone_area(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"vm_clone_area",
+		"_Z13vm_clone_areaiPKcPPvjjjbib",
+		"_Z13vm_clone_areaiPKcPPvjjjiib",
+		"_Z13vm_clone_areaiPKcPPvjmjjbib",
+		NULL
+	};
+
+	sVmCloneArea = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sVmCloneArea = (haiku_vmclone_fn)p;
+				kser_puts("CAfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("CAno\n");
+}
+
+static void
+discover_vm_map_phys(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"vm_map_physical_memory",
+		"_Z23vm_map_physical_memoryiPKcPPvjmjjyb",
+		"_Z23vm_map_physical_memoryiPKcPPvjmjjmb",
+		"_Z23vm_map_physical_memoryiPKcPPvjjjyb",
+		NULL
+	};
+
+	sVmMapPhys = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sVmMapPhys = (haiku_vmphys_fn)p;
+				kser_puts("PHfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("PHno\n");
 }
 
 static void
@@ -2770,6 +2857,8 @@ sys_compat_pselect(int64 nfds, void* rfds, void* wfds, void* efds,
 #define LINUX_MAP_FIXED   0x10
 #define LINUX_MAP_ANON    0x20
 
+static int64 mmap_fb(void* addr, uint64 len, int64 prot, int64 flags);
+
 extern "C" int64
 sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	int64 fd, int64 offset)
@@ -2780,6 +2869,8 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	team_info info;
 
 	kser_puts("MM\n");
+	if (sFbFd >= 0 && (int32)fd == sFbFd)
+		return mmap_fb(addr, len, prot, flags);
 	if (len == 0)
 		return -LINUX_EINVAL;
 	if ((flags & LINUX_MAP_ANON) != 0)
@@ -3029,6 +3120,240 @@ open_proc_node(const char* kpath)
 	return (int64)fd;
 }
 
+static int
+aname_is(const char* n, const char* w)
+{
+	int i;
+
+	for (i = 0; w[i] != 0; i++) {
+		if (n[i] != w[i])
+			return 0;
+	}
+	return n[i] == 0;
+}
+
+static int
+fb_refresh(void)
+{
+	int32 tcookie;
+	team_info tinfo;
+	ssize_t acookie;
+	area_info ainfo;
+	uint8 shared[256];
+	uint32 i;
+	uint16 w, h;
+
+	sFbSrcArea = 0;
+	sFbWidth = 0;
+	sFbHeight = 0;
+	sFbBpp = 32;
+	sFbPitch = 0;
+	sFbAper = 0;
+	sFbPhys = 0;
+	tcookie = 0;
+	while (get_next_team_info(&tcookie, &tinfo) == B_OK) {
+		acookie = 0;
+		while (get_next_area_info(tinfo.team, &acookie, &ainfo) == B_OK) {
+			if (aname_is(ainfo.name, "vesa frame buffer")) {
+				physical_entry pe;
+				int32 nmap;
+
+				sFbSrcArea = ainfo.area;
+				sFbAper = ainfo.size;
+				pe.address = 0;
+				pe.size = 0;
+				nmap = get_memory_map(ainfo.address, 4096, &pe, 1);
+				if (nmap >= 0 && pe.address != 0)
+					sFbPhys = (uint64)pe.address;
+			}
+			if (aname_is(ainfo.name, "vesa shared info")
+				&& (uint64)(addr_t)ainfo.address >= 0xffff800000000000ULL
+				&& ainfo.size >= 64) {
+				for (i = 0; i < 256 && i < ainfo.size; i++)
+					shared[i] = ((const uint8*)ainfo.address)[i];
+				/* display_timing: pixel_clock@0, h_display@4,
+				 * v_display@12 (kHz and pixels). Prefer 1280x800. */
+				for (i = 0; i + 16 <= 256 && i + 16 <= ainfo.size;
+					i += 2) {
+					uint32 pc;
+					pc = (uint32)shared[i]
+						| ((uint32)shared[i + 1] << 8)
+						| ((uint32)shared[i + 2] << 16)
+						| ((uint32)shared[i + 3] << 24);
+					w = (uint16)(shared[i + 4]
+						| (shared[i + 5] << 8));
+					h = (uint16)(shared[i + 12]
+						| (shared[i + 13] << 8));
+					if (pc < 20000 || pc > 400000)
+						continue;
+					if (w < 640 || w > 3840 || (w & 7) != 0)
+						continue;
+					if (h < 400 || h > 2160 || w == h)
+						continue;
+					if (sFbAper != 0
+						&& (uint64)w * (uint64)h * 4 > sFbAper)
+						continue;
+					sFbWidth = w;
+					sFbHeight = h;
+					if (w == 1280 && h == 800)
+						break;
+				}
+			}
+		}
+	}
+	sFbPitch = sFbWidth * (sFbBpp / 8);
+	kser_puts("FB ");
+	kser_hex((uint64)sFbWidth);
+	kser_puts("x");
+	kser_hex((uint64)sFbHeight);
+	kser_puts(" a=");
+	kser_hex((uint64)(uint32)sFbSrcArea);
+	kser_puts(" p=");
+	kser_hex(sFbPhys);
+	kser_putc('\n');
+	return 0;
+}
+
+static int64
+open_fb_node(int64 flags)
+{
+	haiku_open_fn ofn;
+	int32 fd;
+	static const char nullPath[] = "/dev/null";
+	void* upath;
+
+	(void)flags;
+	if (fb_refresh() < 0)
+		return -LINUX_ENODEV;
+	if (sWstatScratch < 0x100000ULL || sOpenFn == 0)
+		return -LINUX_ENODEV;
+	upath = (void*)(addr_t)sWstatScratch;
+	if (user_memcpy(upath, nullPath, sizeof(nullPath)) != B_OK)
+		return -LINUX_EFAULT;
+	ofn = (haiku_open_fn)(addr_t)sOpenFn;
+	fd = ofn(-100, upath, 2, 0);
+	if (fd < 0)
+		return haiku_status_to_linux((int64)fd);
+	sFbFd = fd;
+	return (int64)fd;
+}
+
+static int64
+mmap_fb(void* addr, uint64 len, int64 prot, int64 flags)
+{
+	team_info info;
+	void* mapped;
+	int32 area;
+	uint32 spec, hprot, mapping;
+	int m;
+
+	if (sFbSrcArea <= 0)
+		return -LINUX_ENODEV;
+	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+		return -LINUX_ENOMEM;
+	if ((flags & LINUX_MAP_FIXED) != 0)
+		spec = B_EXACT_ADDRESS;
+	else if (addr != NULL)
+		spec = B_BASE_ADDRESS;
+	else
+		spec = B_RANDOMIZED_ANY_ADDRESS;
+	hprot = (uint32)prot & 7;
+	if (hprot == 0)
+		hprot = B_READ_AREA | B_WRITE_AREA;
+	mapping = 0;
+	mapped = addr;
+	area = -1;
+	if (sVmMapPhys != 0 && sFbPhys != 0)
+		area = sVmMapPhys(info.team, "linux_fb", &mapped, spec,
+			sFbAper != 0 ? sFbAper : len, hprot, mapping,
+			sFbPhys, 0);
+	if (area < 0 && sVmCloneArea != 0)
+		area = sVmCloneArea(info.team, "linux_fb", &mapped, spec,
+			hprot, mapping, (flags & LINUX_MAP_FIXED) != 0 ? 1 : 0,
+			sFbSrcArea, 0);
+	if (area < 0)
+		area = clone_area("linux_fb", &mapped, spec, hprot, sFbSrcArea);
+	if (area < 0) {
+		kser_puts("FBE\n");
+		kser_hex((uint64)(uint32)area);
+		kser_putc('\n');
+		return haiku_status_to_linux((int64)area);
+	}
+	if ((uint64)(addr_t)mapped < 0x100000ULL) {
+		kser_puts("FBZ\n");
+		return -LINUX_ENOMEM;
+	}
+	kser_puts("FBO\n");
+	(void)len;
+	for (m = 0; m < LINUX_MAP_SLOTS; m++) {
+		if (sFileMaps[m].fd < 0 && sFileMaps[m].area == 0) {
+			sFileMaps[m].addr = (uint64)(addr_t)mapped;
+			sFileMaps[m].len = sFbAper != 0 ? sFbAper : len;
+			sFileMaps[m].area = area;
+			sFileMaps[m].team = info.team;
+			sFileMaps[m].fd = sFbFd;
+			break;
+		}
+	}
+	return (int64)(addr_t)mapped;
+}
+
+static void put_u32(uint8* p, uint32 v);
+
+static int64
+ioctl_fb(int64 cmd, void* arg)
+{
+	uint8 buf[160];
+	int i;
+	uint32 vis;
+
+	if (arg == NULL)
+		return -LINUX_EFAULT;
+	if (sFbWidth == 0 && fb_refresh() < 0)
+		return -LINUX_ENODEV;
+	for (i = 0; i < 160; i++)
+		buf[i] = 0;
+	vis = sFbPitch * sFbHeight;
+	if ((uint32)cmd == 0x4600) {
+		/* FBIOGET_VSCREENINFO 160 B */
+		put_u32(buf + 0, sFbWidth);
+		put_u32(buf + 4, sFbHeight);
+		put_u32(buf + 8, sFbWidth);
+		put_u32(buf + 12, sFbHeight);
+		put_u32(buf + 24, sFbBpp);
+		put_u32(buf + 32, 16);	/* red.offset */
+		put_u32(buf + 36, 8);
+		put_u32(buf + 44, 8);	/* green.offset */
+		put_u32(buf + 48, 8);
+		put_u32(buf + 56, 0);	/* blue.offset */
+		put_u32(buf + 60, 8);
+		put_u32(buf + 68, 24);	/* transp.offset */
+		put_u32(buf + 72, 8);
+		if (user_memcpy(arg, buf, 160) != B_OK)
+			return -LINUX_EFAULT;
+		return 0;
+	}
+	if ((uint32)cmd == 0x4601) {
+		/* FBIOPUT_VSCREENINFO: do not steal the mode from app_server */
+		return 0;
+	}
+	if ((uint32)cmd == 0x4602) {
+		/* FBIOGET_FSCREENINFO 80 B */
+		buf[0] = 'H'; buf[1] = 'a'; buf[2] = 'i'; buf[3] = 'k';
+		buf[4] = 'u'; buf[5] = 'V'; buf[6] = 'E'; buf[7] = 'S';
+		buf[8] = 'A';
+		put_u32(buf + 24, vis);
+		put_u32(buf + 36, 2);	/* FB_VISUAL_TRUECOLOR */
+		put_u32(buf + 48, sFbPitch);
+		if (user_memcpy(arg, buf, 80) != B_OK)
+			return -LINUX_EFAULT;
+		return 0;
+	}
+	if ((uint32)cmd == 0x4611)
+		return 0;		/* FBIOBLANK */
+	return -LINUX_ENOTTY;
+}
+
 extern "C" int64
 sys_compat_open(int64 dirfd, const void* path, int64 flags, int64 mode)
 {
@@ -3041,6 +3366,8 @@ sys_compat_open(int64 dirfd, const void* path, int64 flags, int64 mode)
 		return -LINUX_EFAULT;
 	if (sc_starts(sWstatPath, "/proc/") || sc_starts(sWstatPath, "/sys/"))
 		return open_proc_node(sWstatPath);
+	if (sc_starts(sWstatPath, "/dev/fb"))
+		return open_fb_node(flags);
 	if (sOpenFn == 0)
 		return -LINUX_ENOSYS;
 	fn = (haiku_open_fn)(addr_t)sOpenFn;
@@ -4289,6 +4616,8 @@ sys_compat_ioctl(int64 fd, int64 cmd, void* arg)
 		hlen = 4;
 		break;
 	default:
+		if (sFbFd >= 0 && (int32)fd == sFbFd)
+			return ioctl_fb(cmd, arg);
 		return -LINUX_ENOTTY;
 	}
 	if (hlen != 0 && arg == NULL)
@@ -4854,10 +5183,12 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR39\n");
+	kser_puts("PR40\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
+	discover_vm_clone_area();
+	discover_vm_map_phys();
 	discover_vm_delete_area();
 	discover_user_delete_area();
 	discover_kern_close();

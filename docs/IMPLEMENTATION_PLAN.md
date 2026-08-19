@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-19 (Day 45: TTY ioctl onto Haiku tty)  
+**Last updated:** 2026-08-19 (Day 46: fbdev onto Haiku VESA)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -39,7 +39,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 42](STANDUP_DAY42.md) (callee-saved on `gs:8`; `false`/`cmp` RC=1) →
 [Day 43](STANDUP_DAY43.md) (`hello_wr` `WRPROBE`; `date` still no `write`) →
 [Day 44](STANDUP_DAY44.md) (`rdx=0` after mark; `date`/`md5sum`/`puts` write) →
-[Day 45](STANDUP_DAY45.md) (TTY ioctl onto Haiku tty; `WINSZ 25x80`).
+[Day 45](STANDUP_DAY45.md) (TTY ioctl onto Haiku tty; `WINSZ 25x80`) →
+[Day 46](STANDUP_DAY46.md) (fbdev `/dev/fb0` onto Haiku VESA; `FBOK`).
 
 ---
 
@@ -80,10 +81,10 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 45):** Linux TTY `ioctl` maps onto Haiku
-`_user_ioctl` (0x99). Guest `hello_tty` on a Terminal fd:
-**`TTY0=0`**, **`LFLAG0=0x5b`**, **`WINSZ r=25 c=80`**, **`PGRP pgid=691`**.
-Redirected FILE* flush (Day 44) still holds. Punch-out:
+**Where we are (Day 46):** Linux `/dev/fb0` maps the Haiku `vesa frame
+buffer` (phys `0xFD000000`) into the Linux team. Guest: **1280x800x32**,
+`mmap` + pixel read, **`FBOK`**. TTY ioctl (Day 45) and FILE* flush
+(Day 44) still hold. Punch-out:
 [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -102,11 +103,10 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** fbdev ioctl onto Haiku graphics (not DRM).
-Do not stub `TCGETS` as 0. Do not pass the fork tramp in `rdx` into
-Linux `_start`. Do not restore callee-saved from the global `gSavedR*`.
-Do not leave a second addon in `/boot/system/non-packaged/`. Do not
-pipe the tty script into `sh`.
+**What needs doing next:** Interactive `busybox sh` on the Haiku
+Terminal. Do not `FBIOPUT` a new video mode under app_server. Do not
+build DRM. Do not pass the fork tramp in `rdx` into Linux `_start`.
+Do not leave a second addon in `/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

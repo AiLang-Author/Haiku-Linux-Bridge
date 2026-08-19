@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 45: real TTY ioctl onto Haiku tty)
+**Updated:** 2026-08-19 (Day 46: fbdev onto Haiku VESA)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -48,12 +48,13 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `nproc` | **`1`** (affinity stub is one CPU; stdout now lands) |
 | `printf` | **`BBPRINTF_OK`** |
 | TTY ioctl | **`TTY0=0`**, **`WINSZ 25x80`**, **`PGRP pgid=691`** (Day 45) |
+| fbdev | **`/dev/fb0` 1280x800x32**, mmap VESA `0xFD000000`, **`FBOK`** (Day 46) |
 
 ## Fragile / wrong (punch these before a toolchain)
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
-| **fbdev ioctl** | not started | Next after TTY: Linux framebuffer onto Haiku graphics, not DRM. |
+| **Other ioctl families** | sockets / DRM still `-ENOTTY` | Not next. |
 | **`sched_getaffinity` one CPU** | `nproc` prints `1` on QEMU `-smp 4` | Fine for CLI; wrong for parallel make later. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
 | **`rt_sigreturn` `-ENOSYS`** | host glibc/busybox traces it | Fine while signals are stubs. |
@@ -99,12 +100,15 @@ but they are not what this busybox set exercises.
   and fill the Linux buffer from the Haiku tty. Guest: **`TTY0=0`**,
   **`WINSZ r=25 c=80`**, **`PGRP pgid=691`**.
 
+## Day 46 trap changes
+
+- `open("/dev/fb0")` + `FBIOGET_*` + `mmap` clone the Haiku `vesa frame
+  buffer` via `vm_map_physical_memory`. Guest: **1280x800x32**, **`FBOK`**.
+
 ## Next
 
-1. fbdev ioctl onto Haiku graphics (not a Linux DRM stack).
-2. Interactive `busybox sh` on the Haiku Terminal (job control already
-   has `TIOCGPGRP`).
-3. Re-prove `echo HI | cat` in a redirect now that FILE* flush works.
+1. Interactive `busybox sh` on the Haiku Terminal.
+2. Re-prove `echo HI | cat` in a redirect now that FILE* flush works.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
 `md5sum` / glibc `puts` are guest-green (Day 44).

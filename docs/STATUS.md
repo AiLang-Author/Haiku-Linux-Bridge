@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY45.md`](STANDUP_DAY45.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY46.md`](STANDUP_DAY46.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 45)
+## What you can expect today (`main`, Day 46)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -61,7 +61,7 @@ than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
 ## What will not work (do not file as new)
 
 - **Dynamic glibc** (`ld-linux.so.2`) — not a supported target yet. Static first.
-- **Linux `ioctl`** — TTY (`TCGETS`/`TIOCGWINSZ`/`TIOCGPGRP`/…) maps onto Haiku tty. Other families `-ENOTTY`. fbdev next.
+- **Linux `ioctl`** — TTY onto Haiku tty. fbdev `/dev/fb0` onto Haiku VESA (1280x800x32, mmap). Other families `-ENOTTY`.
 - **`CLONE_VM` / pthreads** — `clone` without `CLONE_VM` only. A Linux `pthread_create` will `-ENOSYS`.
 - **Real signals** — `rt_sigaction` / `rt_sigprocmask` return 0 and do nothing. `rt_sigreturn` is `-ENOSYS`.
 - **Sockets, epoll, ptrace, namespaces, io_uring, bpf** — not implemented.

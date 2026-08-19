@@ -838,6 +838,12 @@ sys_compat_lstar:
 	je	.Lopen_c
 	cmp	r8d, 0x7379732f		/* "/sys" */
 	je	.Lopen_c
+	cmp	r8d, 0x7665642f		/* "/dev" */
+	jne	1f
+	mov	r8d, dword ptr [rdi + 4]
+	cmp	r8d, 0x3062662f		/* "/fb0" */
+	je	.Lopen_c
+1:
 	mov	r10, rdx
 	mov	rdx, rsi
 	XLAT_OFLAGS
@@ -860,6 +866,12 @@ sys_compat_lstar:
 	je	.Lopenat_c
 	cmp	r8d, 0x7379732f		/* "/sys" */
 	je	.Lopenat_c
+	cmp	r8d, 0x7665642f		/* "/dev" */
+	jne	1f
+	mov	r8d, dword ptr [rsi + 4]
+	cmp	r8d, 0x3062662f		/* "/fb0" */
+	je	.Lopenat_c
+1:
 	XLAT_OFLAGS
 	mov	rax, 0x72
 	jmp	.Llstar
