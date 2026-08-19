@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY46.md`](STANDUP_DAY46.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY47.md`](STANDUP_DAY47.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 46)
+## What you can expect today (`main`, Day 47)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -22,17 +22,19 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 | `clone`/`fork` + `wait4` | `hello_fork` → `FORKOK` |
 | `execve` of another Linux ELF | `hello_exec` → `hello_min`, `EXEC_RC=0` |
 | `futex` WAIT/WAKE | `hello_futex` → `FUTEXOK` |
-| `poll` / `ppoll` / `select` | `POLLOK` / `SELECTOK` |
+| `poll` / `ppoll` / `select` | `SELECTOK`. `poll(nfds!=1)` via `_user_wait_for_objects`. `nfds==1` is a no-copy stub (Day 47) |
 | file `mmap` | `hello_mmapf` → `MMAPFOK` (kernel `vm_map_file`, not `_user_map_file`) |
 | Combined `fork` + `execve` + `poll` | `hello_pipeline` → `PIPELINEOK` |
 | busybox **`sh -c`** (builtin + pipe) | `echo SHOK`; `echo HI \| cat` → `HI`; `true; echo SHDONE`. All RC=0. |
+| Interactive busybox **ash** | Terminal prompt, **`echo SHLIVE`** (Day 47). `poll(nfds=1)` does not copy the pollfd |
 
 `uname` reports `Linux haiku 6.1.0 sys_compat x86_64`. That is the layer talking, not a Linux kernel.
 
 ### In the shop, not a tester target yet
 
-Non-interactive `sh -c` pipelines work. Interactive TTY `sh` still
-needs `ioctl` (deferred). `sendfile` of a regular file still returns
+Interactive ash is guest-green (`echo SHLIVE`). `poll(nfds=1)` is a
+no-copy stub until a safe pollfd copy (copying ash's stdin pollfd
+KDLd). `sendfile` of a regular file still returns
 `-EINVAL` (pipe fallback is enough for `cat`). `munmap` of file maps is
 `vm_delete_area(team)` (not `_user_unmap_memory`). LTP `uname01` is
 **passed 2 / failed 0 / broken 0** and **`UNAME_RC=0`**. A 58-applet
@@ -65,7 +67,7 @@ than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
 - **`CLONE_VM` / pthreads** — `clone` without `CLONE_VM` only. A Linux `pthread_create` will `-ENOSYS`.
 - **Real signals** — `rt_sigaction` / `rt_sigprocmask` return 0 and do nothing. `rt_sigreturn` is `-ENOSYS`.
 - **Sockets, epoll, ptrace, namespaces, io_uring, bpf** — not implemented.
-- **Interactive TTY `sh`** — TTY ioctl is guest-green on a Haiku Terminal fd. Full interactive `busybox sh` is the next try, not a promise.
+- **Interactive TTY `sh`** — busybox ash on a Haiku Terminal: prompt + `echo SHLIVE`. `poll(nfds=1)` is a no-copy stub (copying that pollfd KDLd).
 - **Marking a Haiku shell as Linux** — `echo LINUXABI > /dev/misc/sys_compat` from a Terminal you still want is a Kill Thread. That is expected.
 
 A **Kill Thread** / “Oh no!” dialog on a Linux ELF is a layer bug (or an unmarked team). A **KDL** or silent reboot is a layer bug and a stop-the-line event. Haiku itself staying up is the contract.

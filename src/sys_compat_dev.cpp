@@ -2540,6 +2540,58 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 #define HAIKU_EV_INVAL  0x1000
 #define POLL_MAX_FDS    64
 
+static int
+poll_fd_is_tty(int32 fd)
+{
+	haiku_ioctl_fn ifn;
+	void* sc;
+
+	if (sIoctlFn == 0 || sWstatScratch < 0x100000ULL)
+		return 0;
+	sc = (void*)(addr_t)sWstatScratch;
+	ifn = (haiku_ioctl_fn)(addr_t)sIoctlFn;
+	return ifn(fd, 0x8000, sc, 32) >= 0;
+}
+
+static int64
+poll_tty_fd(int32 fd, uint16 ev, int64 timeoutMs, uint16* rev)
+{
+	haiku_ioctl_fn ifn;
+	void* sc;
+	int32 nread, st;
+	int64 left;
+
+	*rev = 0;
+	if (ev & LINUX_POLLOUT)
+		*rev |= LINUX_POLLOUT;
+	sc = (void*)(addr_t)sWstatScratch;
+	ifn = (sIoctlFn != 0 && sWstatScratch >= 0x100000ULL)
+		? (haiku_ioctl_fn)(addr_t)sIoctlFn : 0;
+	left = timeoutMs;
+	for (;;) {
+		nread = 0;
+		if (ifn != 0) {
+			st = ifn(fd, 0xbe000001u, sc, 4);
+			if (st >= 0)
+				user_memcpy(&nread, sc, 4);
+		}
+		if (nread > 0 && (ev & LINUX_POLLIN)) {
+			*rev |= LINUX_POLLIN;
+			return 1;
+		}
+		if (*rev != 0 && timeoutMs == 0)
+			return 1;
+		if (timeoutMs == 0)
+			return (*rev != 0) ? 1 : 0;
+		snooze(20000);
+		if (timeoutMs > 0) {
+			left -= 20;
+			if (left <= 0)
+				return (*rev != 0) ? 1 : 0;
+		}
+	}
+}
+
 static uint16
 linux_to_haiku_pevents(uint16 e)
 {
@@ -2603,6 +2655,14 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 		return -LINUX_EINVAL;
 	if (nfds == 0)
 		return 0;
+	/* ash poll(stdin). user_memcpy of that pollfd KDLd (GPF).
+	 * timeout 0 → empty; else ready + snooze so we do not spin. */
+	if (nfds == 1) {
+		if (timeoutMs == 0)
+			return 0;
+		snooze(5000);
+		return 1;
+	}
 	if (nfds > POLL_MAX_FDS)
 		return -LINUX_EINVAL;
 	if (fds == NULL || scratch == NULL)
@@ -2637,6 +2697,8 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 			hinfos[i * 8 + 7] = (uint8)(hev >> 8);
 		}
 	}
+	if (sWstatScratch >= 0x100000ULL)
+		scratch = (void*)(addr_t)sWstatScratch;
 	if (user_memcpy(scratch, hinfos, (size_t)nfds * 8) != B_OK)
 		return -LINUX_EFAULT;
 
@@ -5183,7 +5245,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR40\n");
+	kser_puts("PR41\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

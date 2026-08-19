@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 46: fbdev onto Haiku VESA)
+**Updated:** 2026-08-19 (Day 47: interactive busybox ash)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -49,6 +49,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `printf` | **`BBPRINTF_OK`** |
 | TTY ioctl | **`TTY0=0`**, **`WINSZ 25x80`**, **`PGRP pgid=691`** (Day 45) |
 | fbdev | **`/dev/fb0` 1280x800x32**, mmap VESA `0xFD000000`, **`FBOK`** (Day 46) |
+| interactive `sh` | BusyBox ash prompt, **`echo SHLIVE`** (Day 47) |
 
 ## Fragile / wrong (punch these before a toolchain)
 
@@ -105,10 +106,15 @@ but they are not what this busybox set exercises.
 - `open("/dev/fb0")` + `FBIOGET_*` + `mmap` clone the Haiku `vesa frame
   buffer` via `vm_map_physical_memory`. Guest: **1280x800x32**, **`FBOK`**.
 
+## Day 47 trap changes
+
+- `poll(nfds=1)` does not copy the user pollfd (that KDLd). Interactive
+  ash: **`~ # echo SHLIVE`**.
+
 ## Next
 
-1. Interactive `busybox sh` on the Haiku Terminal.
-2. Re-prove `echo HI | cat` in a redirect now that FILE* flush works.
+1. Safe pollfd copy so `hello_poll` / pipe `poll(1)` work again.
+2. Re-prove `echo HI | cat` in a redirect.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
 `md5sum` / glibc `puts` are guest-green (Day 44).

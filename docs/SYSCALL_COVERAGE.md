@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-19 (Day 46: fbdev onto Haiku VESA)
+**Last updated:** 2026-08-19 (Day 47: interactive ash)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -8,8 +8,8 @@ I/O + process/time). The rest is sockets, aio, io_uring, namespaces, bpf,
 and other edges.
 
 This is the hand-off list: if a row is **works**, the layer is ready to
-take unmodified Linux coreutils/busybox-class binaries. **ioctl** stays
-deferred until this table is mostly green.
+take unmodified Linux coreutils/busybox-class binaries. TTY and fbdev
+`ioctl` landed (Day 45–46). Other ioctl families stay `-ENOTTY`.
 
 ## Where the list comes from
 
@@ -129,7 +129,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 22/293 | pipe/pipe2 | **works**. `sh -c 'echo HI \| cat'` `SH_PIPE_RC=0`. Day 31. |
 | 40 | sendfile | **pipe = `-EINVAL`** (Linux: `in_fd` must be mmapable). busybox `cat` then `read`/`write`. Regular-file bounce later. |
-| 7 | poll | **works**. `_user_wait_for_objects` 0x06. `hello_poll` `POLLOK`. Day 24. |
+| 7 | poll | **nfds!=1 works** (`_user_wait_for_objects` 0x06). **nfds==1 is a no-copy stub** (copying ash's stdin pollfd KDLd). Interactive ash `echo SHLIVE` Day 47. `hello_poll` `POLLOK` Day 24 is a known miss until a safe pollfd copy. |
 | 23/270 | select/pselect6 | **works**. fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | 271 | ppoll | **works** (timespec → ms; sigset ignored). |
 
@@ -144,7 +144,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 ### Intentionally later
 
-ioctl (TTY/sockets), socket/connect/bind/listen/accept, clone(CLONE_VM),
+other ioctl families (sockets / DRM), socket/connect/bind/listen/accept, clone(CLONE_VM),
 ptrace, mount, bpf, io_uring, inotify, epoll.
 
 ## Score
@@ -173,11 +173,9 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** interactive TTY
-`sh` (ioctl), then `CLONE_VM` (pthread). `hello_pipeline` is
-guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo HI | cat'` prints
-`HI`, `SH_PIPE_RC=0` (Day 31). Testers should start from
-[STATUS.md](STATUS.md), not this table.
-
-When those plus the wired-but-unproven rows are guest-green, the layer is
-ready for a static Linux toolchain, and only then ioctl.
+**Highest remaining for “coreutils in the wild”:** safe pollfd copy
+so `hello_poll` / pipe `poll(nfds=1)` work without KDL, then
+`CLONE_VM` (pthread). Interactive ash is guest-green (`echo SHLIVE`,
+Day 47). `hello_pipeline` is guest-green (`PIPELINEOK`, Day 26).
+`sh -c 'echo HI | cat'` prints `HI`, `SH_PIPE_RC=0` (Day 31).
+Testers should start from [STATUS.md](STATUS.md), not this table.
