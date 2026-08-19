@@ -1,16 +1,16 @@
-# Status for testers (2026-08-18)
+# Status for testers (2026-08-19)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY39.md`](STANDUP_DAY39.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY40.md`](STANDUP_DAY40.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 39)
+## What you can expect today (`main`, Day 40)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -35,11 +35,17 @@ Non-interactive `sh -c` pipelines work. Interactive TTY `sh` still
 needs `ioctl` (deferred). `sendfile` of a regular file still returns
 `-EINVAL` (pipe fallback is enough for `cat`). `munmap` of file maps is
 `vm_delete_area(team)` (not `_user_unmap_memory`). LTP `uname01` is
-**passed 2 / failed 0 / broken 0** and **`UNAME_RC=0`**. Desktop
-login starts one Terminal via `boot/launch`. One `sys_compat` addon only.
+**passed 2 / failed 0 / broken 0** and **`UNAME_RC=0`**. A 58-applet
+busybox battery runs without KT/KDL. Host `strace` of that set is 55
+Linux syscalls. `id` prints `groups=0(root)`. **`false` still exits 0
+(must be 1).** Redirected `date` / `md5sum` / `nproc` still print
+nothing. Guest scripts fetch and POST with **Haiku curl** (BSD
+sockets) to the host at `10.0.2.2:8083`. Desktop login starts one
+Terminal via `boot/launch`. One `sys_compat` addon only.
 
-Extra single-process applets: `id`, `pwd`, `true`, `printf`,
-`dirname`, `basename`, `od`.
+Extra single-process applets: `id` (groups too), `pwd`, `true`,
+`printf`, `dirname`, `basename`, `od`. Do not trust `$?` from
+`sys_compat_run` yet — teardown still reports 0.
 
 **Do not run `sh` pipes or glibc-static `clone` LTP on a build older
 than Day 27.** A `.Lret` store into the rseq page under CLI KDLed

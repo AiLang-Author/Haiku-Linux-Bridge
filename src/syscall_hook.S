@@ -155,7 +155,10 @@
 	.extern	sys_compat_mprotect
 	.extern	sys_compat_munmap
 	.extern	sys_compat_close
+	.extern	sys_compat_write
 	.extern	sys_compat_exit_team
+	.extern	sys_compat_getgroups
+	.extern	sys_compat_sched_getaffinity
 	.extern	sys_compat_getuid
 	.extern	sys_compat_getgid
 	.extern	sys_compat_setuid
@@ -506,6 +509,14 @@ sys_compat_lstar:
 	je	.Lstatfs
 	cmp	rax, 138		/* Linux fstatfs */
 	je	.Lstatfs
+	cmp	rax, 95			/* umask */
+	je	.Lumask
+	cmp	rax, 115		/* getgroups */
+	je	.Lgetgroups
+	cmp	rax, 162		/* sync */
+	je	.Lok0
+	cmp	rax, 204		/* sched_getaffinity */
+	je	.Lgetaffinity
 	cmp	rax, 96			/* gettimeofday */
 	je	.Lgettimeofday
 	cmp	rax, 201		/* time */
@@ -671,9 +682,21 @@ sys_compat_lstar:
 .Lwrite:
 	/* Linux: rdi=fd rsi=buf rdx=count
 	 * Haiku _kern_write: rdi=fd rsi=pos rdx=buf rcx/r10=count
-	 * Already on gs:8 / kernel GS.
+	 * After ND, identity LSTAR write is poison — C _user_write
+	 * on this kstack so fflush can land.
 	 */
 	KSER	'W'
+	cmp	dword ptr [rip + sExitCloses], 0
+	je	.Lwrite_id
+	push	rcx
+	push	r11
+	sti
+	call	sys_compat_write
+	cli
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+.Lwrite_id:
 	mov	r10, rdx
 	mov	rdx, rsi
 	mov	rsi, -1
@@ -728,10 +751,9 @@ sys_compat_lstar:
 	cli
 	pop	r11
 	pop	rcx
-	/* Host: munmap then exit_group. Returning to glibc after
-	 * ND+close KTs before the next syscall. */
-	xor	rdi, rdi
-	jmp	.Lexit
+	/* Return to userspace so libc fflush/exit_group can run
+	 * with the real status. Do not xor rdi and .Lexit here. */
+	jmp	.Lret
 .Lclose_id:
 	mov	rax, 0x9e
 	jmp	.Llstar
@@ -902,6 +924,12 @@ sys_compat_lstar:
 	KSER	'G'
 .Lok0:
 	xor	rax, rax
+	jmp	.Lret
+
+.Lumask:
+	/* rdi = new mask. Return the previous one. */
+	mov	eax, dword ptr [rip + sUmask]
+	mov	dword ptr [rip + sUmask], edi
 	jmp	.Lret
 
 .Lget1:
@@ -1126,13 +1154,6 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	KSER	'U'
-	/* After ND, returning to glibc KTs (user #PF or next LSTAR).
-	 * Host does munmap then exit_group. Finish that here. */
-	cmp	dword ptr [rip + sExitCloses], 0
-	je	.Lfutex_ret
-	xor	rdi, rdi
-	jmp	.Lexit
-.Lfutex_ret:
 	jmp	.Lret
 
 .Lppoll:
@@ -1521,6 +1542,26 @@ sys_compat_lstar:
 	pop	r11
 	pop	rcx
 	jmp	.Lret
+.Lgetgroups:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_getgroups
+.Lgetaffinity:
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_sched_getaffinity
 .Lgetuid:
 	push	rcx
 	push	r11
@@ -2518,6 +2559,11 @@ sys_compat_lstar:
 	mov	rsp, qword ptr [gs:16]
 	swapgs
 	jmp	[rip + gOrigLstar]
+
+	.data
+	.align	4
+sUmask:
+	.long	0x12			/* 022 */
 
 	.bss
 	.align	8

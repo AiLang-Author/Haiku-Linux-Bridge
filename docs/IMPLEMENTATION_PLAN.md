@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-18 (Day 39: uname01 UNAME_RC=0)  
+**Last updated:** 2026-08-19 (Day 40: applet battery; getgroups green; false/date still open)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -33,7 +33,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 36](STANDUP_DAY36.md) (one addon; `munmap` no-op; teardown after `Nn`) →
 [Day 37](STANDUP_DAY37.md) (real `delete_area` munmap; exit_prep; still 149) →
 [Day 38](STANDUP_DAY38.md) (PR22 `vm_delete_area` `ND`; C close after `ND`; still 149) →
-[Day 39](STANDUP_DAY39.md) (`UNAME_RC=0`; exit-window `thread_exit` after `ND`).
+[Day 39](STANDUP_DAY39.md) (`UNAME_RC=0`; exit-window `thread_exit` after `ND`) →
+[Day 40](STANDUP_DAY40.md) (applet punch-out; `getgroups` green; `false` still 0).
 
 ---
 
@@ -73,13 +74,15 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 39):** One `sys_compat` addon (user tree only).
-`munmap` of `linux_mmap` is `vm_delete_area(team)` (`VD`/`ND`). After
-`ND`, close skips `_user_close` (`cS`) and `.Lexit` calls
-`_user_exit_team` + `thread_exit` (not LSTAR `0x29`). LTP `uname01`
-is **passed 2 / failed 0 / broken 0**, **`UNAME_RC=0`**. Pipe / wstat /
-mmap green (`WSTAT_RC=0`, `MMAPF_RC=0`, `PIPE_RC=0`). Official
-`UserBootscript` `launch/` starts one Terminal.
+**Where we are (Day 40):** Day 39 `UNAME_RC=0` plus a 58-applet busybox
+battery (no KT/KDL). Host `strace` of that set is **55 unique Linux
+syscalls**. PR32: after `ND`, close returns (`cS`); write is
+`_user_write` on `gs:8`; `getgroups` / `umask` / `sync` /
+`sched_getaffinity` wired. Guest `id` prints `groups=0(root)`.
+`false` is still `FALSE_RC=0` (host `exit_group(1)`). Redirected
+`date` / `md5sum` / `nproc` still silent. Guest curl POST of the
+status capture returned `OK` (Haiku curl, BSD sockets). Punch-out:
+[CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
 Kill Thread, `UNAME_RC=149`. No `e`/`E`.
@@ -97,10 +100,12 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** ioctl / TTY for interactive `sh`. Keep
-widening the CLI 90% set. Do not set `sExitCloses` on
-`set_robust_list(NULL)` (that hung the pipe). Do not wrap every
-close. Do not leave a second addon in `/boot/system/non-packaged/`.
+**What needs doing next:** Why identity `_kern_exit_team` (`0x29`)
+waits as 0 when `false` did `exit_group(1)` (no `ND` on that path).
+Why a COM1 `W` from `date` does not appear in a Haiku redirect.
+Then TTY / fbdev / ioctl onto Haiku drivers. Do not set
+`sExitCloses` on `set_robust_list(NULL)`. Do not `.Lexit` from close.
+Do not leave a second addon in `/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

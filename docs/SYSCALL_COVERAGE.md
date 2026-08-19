@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-18 (Day 39: uname01 UNAME_RC=0)
+**Last updated:** 2026-08-19 (Day 40: 55-syscall applet catalog; status+flush)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -59,17 +59,17 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
-| 231/60 | exit_group/exit | **works**. After `ND`, `_user_exit_team` + `thread_exit` (not LSTAR `0x29`). `UNAME_RC=0`. Day 39. |
+| 231/60 | exit_group/exit | **works for 0**. After `ND`, `_user_exit_team` + `thread_exit` (not LSTAR `0x29`). `UNAME_RC=0`. Day 39. **Non-zero still lost:** guest `false` → `FALSE_RC=0` (host `exit_group(1)`). Day 40. |
 
 ### File I/O (coreutils hot path)
 
 | # | name | status |
 |---|---|---|
 | 0 | read | works |
-| 1 | write | works |
+| 1 | write | works (identity `_kern_write` 0x97). After `ND`, C `_user_write` on `gs:8`. Redirected `date` still silent. Day 40. |
 | 2 | open | works (`/proc/meminfo` materialized; other `/proc`/`/sys` `-ENOENT`) |
 | 257 | openat | works (same) |
-| 3 | close | works (identity `_kern_close` 0x9e). After `ND`, skip `_user_close` (`cS`) and `.Lexit`. Day 39. |
+| 3 | close | works (identity `_kern_close` 0x9e). After `ND`, skip `_user_close` (`cS`) and **return** (`.Lret`, not `.Lexit`). Day 40. |
 | 8 | lseek | works |
 | 5 | fstat | works |
 | 4/6 | stat/lstat | works |
@@ -91,7 +91,11 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 74/75 | fsync/fdatasync | works |
 | 280 | utimensat | works |
 | 32/33/292 | dup/dup2/dup3 | works |
-| 16 | ioctl | stub `-ENOTTY` |
+| 16 | ioctl | stub `-ENOTTY`. TTY/fbdev next. |
+| 95 | umask | **wired** (in-hook, default 022). Day 40. Not in the status script. |
+| 115 | getgroups | **works**. Guest `id` → `groups=0(root)`. Day 40. |
+| 162 | sync | stub (0). Day 40. |
+| 204 | sched_getaffinity | **wired** (one CPU bit). Guest `nproc` still silent. Day 40. |
 | 72 | fcntl | **works** (`_kern_fcntl` 0x76; F_DUPFD/GETFD/SETFD/GETFL/SETFL/DUPFD_CLOEXEC; flag xlat) |
 | 332 | statx | **works** (`_kern_read_stat` → 256-byte `statx`; BASIC\|BTIME) |
 | 221 | fadvise64 | **works** (hint, return 0) |
@@ -146,11 +150,15 @@ ptrace, mount, bpf, io_uring, inotify, epoll.
 ## Score
 
 Approximate unique Linux numbers we **dispatch to something other than
-ENOSYS**: ~90 (including stubs).
+ENOSYS**: ~95 (including stubs). Host `strace` of the Day 40 busybox
+applet battery is **55 unique names** — that is the measured CLI
+surface, not the earlier ~90 guess.
 
-**Guest-proven useful**: ~78. Unmodified busybox CLI that works as a
-**single process** (no shell spawn): echo, uname, cat, ls, cp, mv,
-ln -s, readlink, touch, rm, date, **grep, wc, sed, head, sort, cut**.
+**Guest-proven useful**: ~80. Unmodified busybox CLI (Day 40 battery):
+echo, uname, cat, ls, cp, mv, ln, touch, rm, awk, head, sort, uniq,
+tee, dd, expr, seq, sh -c loops/redirects, plus the older grep/sed/wc
+set, plus `id` groups. `date`/`md5sum`/`nproc`/`find` still silent in
+a redirected capture after PR32. `false` still exits 0.
 
 `clone`/`fork`/`wait4`/`exit` from a **marked** Linux team: `hello_fork`
 prints `FORKOK`, `FORK_RC=0` (Day 20–21). Both parent and child IRETQ
@@ -172,4 +180,4 @@ guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo HI | cat'` prints
 [STATUS.md](STATUS.md), not this table.
 
 When those plus the wired-but-unproven rows are guest-green, the layer is
-ready to try an Ailang-built Linux compiler/toolchain and only then ioctl.
+ready for a static Linux toolchain, and only then ioctl.

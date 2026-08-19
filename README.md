@@ -26,9 +26,24 @@ Unlike heavy virtualization or userspace emulation, `Haiku-Linux-Bridge` operate
 
 ---
 
+## Announcement (2026-08-19)
+
+This repo is **C++ and x86_64 assembler** in the public domain (CC0). It is an out-of-tree Linux ABI for Haiku — a kernel add-on plus a loader — so unmodified 64-bit Linux ELFs can run without patching the binary and without a Linux kernel. That is the whole product. If you want to grind on the trap, fork it and send patches. That is why it is public commons.
+
+**Where it is today**
+
+- Static Linux ELFs launch with `sys_compat_run`. LTP `uname01` **exits 0**.
+- A 58-applet busybox battery ran with **no Kill Thread and no KDL**.
+- Host `strace` of that set is **55 unique Linux syscalls** (the old “~90” figure was a guess).
+- Guest **curl** is Haiku’s own curl on BSD sockets. Fetch and POST to the host HTTP helper work (`--max-time` so a stuck POST cannot hang the script).
+- `id` now prints `groups=0(root)` (`getgroups` guest-green).
+- Still open: **`false` still exits 0** (must be 1). Fully-buffered stdout (`date`, `md5sum`, `nproc`) still does not show in a redirected capture. Next layer after those two is TTY / fbdev / `ioctl` **onto Haiku drivers**, not a Linux display stack.
+
+Pickup: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [`docs/STATUS.md`](docs/STATUS.md). Punch-out list: [`docs/CLI_APPLET_PUNCHOUT.md`](docs/CLI_APPLET_PUNCHOUT.md).
+
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY37.md`](docs/STANDUP_DAY37.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY40.md`](docs/STANDUP_DAY40.md).
 
 **Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 
@@ -66,8 +81,9 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | busybox `sh -c` (builtin + pipe) | **Works** — `SHOK`, `echo HI \| cat` → `HI` `SH_PIPE_RC=0`, `SHDONE`. See Day 31. |
 | more busybox (`id` `pwd` `printf` `dirname` `basename` `od`) | **Works** — Day 27. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
-| LTP first-wave | **uname01** passed 2 / broken 0 (Day 35–36). Teardown still Kill Thread (149) after unlink/munmap/`set_robust_list`/close. |
-| Linux `ioctl` | Deferred on purpose |
+| LTP first-wave | **uname01** passed 2 / failed 0 / broken 0, **`UNAME_RC=0`** (Day 39). |
+| busybox applet battery | 58 invocations, no KT/KDL (Day 40). `id` prints groups. `false` still RC=0; redirected `date`/`md5sum` still silent. |
+| Linux `ioctl` | Stub `-ENOTTY`. TTY/fbdev next. |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 
 Older C files under `src/sys_*.cpp` are a prior table of handlers. The live trap is `src/syscall_hook.S` + `src/sys_compat_dev.cpp`.

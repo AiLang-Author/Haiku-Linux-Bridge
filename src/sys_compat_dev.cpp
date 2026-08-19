@@ -418,6 +418,9 @@ extern "C" {
 	int64 sys_compat_mprotect(void* addr, uint64 len, int64 prot);
 	int64 sys_compat_munmap(void* addr, uint64 len);
 	int64 sys_compat_close(int64 fd);
+	int64 sys_compat_write(int64 fd, void* buf, uint64 n);
+	int64 sys_compat_getgroups(int64 size, void* list);
+	int64 sys_compat_sched_getaffinity(int64 pid, uint64 len, void* mask);
 	void sys_compat_exit_team(int64 status);
 	int64 sys_compat_getuid(void);
 	int64 sys_compat_getgid(void);
@@ -3281,6 +3284,70 @@ sys_compat_close(int64 fd)
 }
 
 extern "C" int64
+sys_compat_write(int64 fd, void* buf, uint64 n)
+{
+	haiku_rw_fn fn;
+	int64 st;
+
+	if (n == 0)
+		return 0;
+	if (!linux_user_ok(buf, n))
+		return -LINUX_EFAULT;
+	if (sWriteFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_rw_fn)(addr_t)sWriteFn;
+	st = fn((int32)fd, (int64)-1, buf, n);
+	if (st < 0)
+		return haiku_status_to_linux(st);
+	return st;
+}
+
+extern "C" int64
+sys_compat_getgroups(int64 size, void* list)
+{
+	uint32 gid;
+	int64 ng;
+
+	ng = 1;
+	if (size == 0)
+		return ng;
+	if (size < 0)
+		return -LINUX_EINVAL;
+	if (!linux_user_ok(list, 4))
+		return -LINUX_EFAULT;
+	gid = (uint32)sys_compat_getgid();
+	if (user_memcpy(list, &gid, 4) != B_OK)
+		return -LINUX_EFAULT;
+	return ng;
+}
+
+extern "C" int64
+sys_compat_sched_getaffinity(int64 pid, uint64 len, void* mask)
+{
+	uint8 bits[8];
+
+	(void)pid;
+	if (len == 0 || mask == NULL)
+		return -LINUX_EINVAL;
+	if (!linux_user_ok(mask, len))
+		return -LINUX_EFAULT;
+	/* One CPU. Linux copies min(len, kernel cpuset). */
+	bits[0] = 1;
+	bits[1] = 0;
+	bits[2] = 0;
+	bits[3] = 0;
+	bits[4] = 0;
+	bits[5] = 0;
+	bits[6] = 0;
+	bits[7] = 0;
+	if (len > 8)
+		len = 8;
+	if (user_memcpy(mask, bits, len) != B_OK)
+		return -LINUX_EFAULT;
+	return (int64)len;
+}
+
+extern "C" int64
 sys_compat_getuid(void)
 {
 	team_info info;
@@ -4445,7 +4512,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR31\n");
+	kser_puts("PR32\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
