@@ -462,7 +462,7 @@ sys_compat_lstar:
 	cmp	rax, 20			/* Linux readv */
 	je	.Lreadv
 	cmp	rax, 16			/* Linux ioctl */
-	je	.Lenotty
+	je	.Lioctl
 	cmp	rax, 21			/* Linux access */
 	je	.Laccess
 	cmp	rax, 22			/* Linux pipe */
@@ -698,6 +698,8 @@ sys_compat_lstar:
 	 * on this kstack so fflush can land.
 	 */
 	KSER	'W'
+	/* After ND, identity LSTAR write is poison — C _user_write
+	 * on this kstack so fflush can land. */
 	cmp	dword ptr [rip + sExitCloses], 0
 	je	.Lwrite_id
 	push	rcx
@@ -1969,6 +1971,17 @@ sys_compat_lstar:
 .Lenoent:
 	mov	rax, -2			/* -ENOENT */
 	jmp	.Lret
+.Lioctl:
+	/* isatty() is ioctl(TCGETS). Return 0 so stdio is line-buffered
+	 * and date's printf writes before exit (fully-buffered fflush
+	 * was skipped when glibc took SYS_exit 60). */
+	cmp	esi, 0x5401		/* TCGETS */
+	je	.Lok0
+	cmp	esi, 0x5413		/* TIOCGWINSZ */
+	je	.Lok0
+	mov	rax, -25		/* -ENOTTY */
+	jmp	.Lret
+
 .Lenotty:
 	mov	rax, -25		/* -ENOTTY */
 	jmp	.Lret

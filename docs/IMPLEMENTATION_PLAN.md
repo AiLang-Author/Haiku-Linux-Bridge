@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-19 (Day 42: false/cmp RC=1; date still silent)  
+**Last updated:** 2026-08-19 (Day 43: WRPROBE in redirect; date still no write)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -36,7 +36,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 39](STANDUP_DAY39.md) (`UNAME_RC=0`; exit-window `thread_exit` after `ND`) →
 [Day 40](STANDUP_DAY40.md) (applet punch-out; `getgroups` green; `false` still 0) →
 [Day 41](STANDUP_DAY41.md) (`hello_exit` RC=42; busybox `false` still `exit_group(0)`) →
-[Day 42](STANDUP_DAY42.md) (callee-saved on `gs:8`; `false`/`cmp` RC=1).
+[Day 42](STANDUP_DAY42.md) (callee-saved on `gs:8`; `false`/`cmp` RC=1) →
+[Day 43](STANDUP_DAY43.md) (`hello_wr` `WRPROBE`; `date` still no `write`).
 
 ---
 
@@ -76,11 +77,9 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 42):** PR34 pushes callee-saved on `gs:8` and
-pops at `.Lret` (glibc `exit()` keeps status in `r14`). Guest
-`hello_ret1` / `exit(1)` / busybox **`false` → RC=1**, differing
-**`cmp` → RC=1**. Tiny `hello_exit` still **42**. Redirected `date`
-still silent. Punch-out:
+**Where we are (Day 43):** `fsync` on exit; `ioctl` `TCGETS`/`TIOCGWINSZ`
+return 0. Guest `hello_wr` prints **`WRPROBE`** in a redirect. busybox
+`date` still never `write`s (COM1 `mQbet`, last `ax=0x3c`). Punch-out:
 [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -99,11 +98,11 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Redirected fully-buffered stdout (`date`,
-`md5sum`). Then TTY / fbdev / ioctl onto Haiku drivers. Do not restore
-callee-saved from the global `gSavedR*` (race). Do not jmp identity
-`0x29` from `.Lexit`. Do not leave a second addon in
-`/boot/system/non-packaged/`.
+**What needs doing next:** Why busybox `date` never `write`s on a
+redirected fd (raw `hello_wr` does). Then real TTY/fbdev onto Haiku
+drivers. Do not treat `TCGETS` as filled termios. Do not restore
+callee-saved from the global `gSavedR*`. Do not leave a second addon
+in `/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

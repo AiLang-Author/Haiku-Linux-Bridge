@@ -3498,7 +3498,17 @@ sys_compat_exit_team(int64 status)
 	kser_hex((uint64)(uint32)status);
 	kser_puts(" r14=");
 	kser_hex(sExitR14);
+	kser_puts(" ax=");
+	kser_hex(gLastLinuxRax);
 	kser_putc('\n');
+	/* Commit stdout/stderr before SIGKILL. A last _kern_write then
+	 * team teardown dropped date's line from a Haiku redirect. */
+	if (sFsyncFn != 0) {
+		haiku_fsync_fn ffn;
+		ffn = (haiku_fsync_fn)(addr_t)sFsyncFn;
+		ffn(1, 0);
+		ffn(2, 0);
+	}
 	if (sUserExitTeam != 0)
 		sUserExitTeam((int32)status);
 	kser_puts("EXR\n");
@@ -4519,7 +4529,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR34\n");
+	kser_puts("PR37\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

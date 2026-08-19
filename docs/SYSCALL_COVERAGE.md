@@ -91,7 +91,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 74/75 | fsync/fdatasync | works |
 | 280 | utimensat | works |
 | 32/33/292 | dup/dup2/dup3 | works |
-| 16 | ioctl | stub `-ENOTTY`. TTY/fbdev next. |
+| 16 | ioctl | `TCGETS`/`TIOCGWINSZ` return 0 (isatty). Else `-ENOTTY`. Day 43. |
 | 95 | umask | **wired** (in-hook, default 022). Day 40. Not in the status script. |
 | 115 | getgroups | **works**. Guest `id` → `groups=0(root)`. Day 40. |
 | 162 | sync | stub (0). Day 40. |

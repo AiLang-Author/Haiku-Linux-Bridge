@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 42: `false`/`cmp` RC=1; date still silent)
+**Updated:** 2026-08-19 (Day 43: `WRPROBE` in redirect; `date` still no write)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -50,7 +50,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
-| **Redirected stdout still missing** | `date`, `md5sum`, `nproc` printed nothing in the capture. `date` RC is now 0 (real). Interactive `date` has printed a UTC line on earlier days. | Last writes of a compile step can vanish if they sat in libc `FILE*` buffers. |
+| **Redirected busybox stdio still missing** | Raw `hello_wr` prints **`WRPROBE`** then exits. `date`/`md5sum` never `write` (COM1 no `W`, last `ax=0x3c`). Host of the same `date` does `write` then `exit_group`. | Last compile-step lines that sat in `FILE*` never leave. |
 | **Redirected stdout still missing** | `date`, `md5sum`, `nproc` printed nothing in the capture. `date` serial is `mQbWet` (a `write` then exit). `md5sum` is `mQbcet` (close, no write). Interactive `date` has printed a UTC line on earlier days. | Last writes of a compile step can vanish if they sat in libc `FILE*` buffers. |
 | **`sched_getaffinity` unproven** | `nproc` silent, no write on COM1 | Host strace shows it. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
@@ -87,8 +87,8 @@ but they are not what this busybox set exercises.
 
 ## Next
 
-1. Why `write(1, …)` after glibc `fflush` does not appear in a Haiku redirect (`date` still silent).
-2. TTY / fbdev / ioctl onto Haiku drivers (not a Linux display stack).
+1. Why busybox `date` never `write`s on a redirected fd (`hello_wr` does).
+2. Real TTY/fbdev ioctl onto Haiku drivers (not a Linux display stack). `TCGETS` is only `isatty`=true.
 3. Do not expand into distro packages or pthreads until 1 is green.
 
 `false` / `cmp` `$?` is guest-green (Day 42).
