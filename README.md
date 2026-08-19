@@ -37,14 +37,14 @@ This repo is **C++ and x86_64 assembler** in the public domain (CC0). It is an o
 - Host `strace` of that set is **55 unique Linux syscalls** (the old “~90” figure was a guess).
 - Guest **curl** is Haiku’s own curl on BSD sockets. Fetch and POST to the host HTTP helper work (`--max-time` so a stuck POST cannot hang the script).
 - `id` now prints `groups=0(root)` (`getgroups` guest-green).
-- Tiny `hello_exit` (`exit_group(42)`) is **`EXIT42_RC=42`**. The trap now delivers a non-zero Linux status to Haiku wait.
-- Still open: busybox `false` / differing `cmp` still `exit_group(0)` even with a correct argv. Redirected `date` / `md5sum` / `nproc` still silent. Then TTY / fbdev / `ioctl` onto Haiku drivers.
+- Tiny `hello_exit` (`exit_group(42)`) is **`EXIT42_RC=42`**. glibc `return 1` / `exit(1)` and busybox **`false` / differing `cmp` now exit 1**.
+- Still open: redirected `date` / `md5sum` / `nproc` still silent. Then TTY / fbdev / `ioctl` onto Haiku drivers.
 
 Pickup: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [`docs/STATUS.md`](docs/STATUS.md). Punch-out list: [`docs/CLI_APPLET_PUNCHOUT.md`](docs/CLI_APPLET_PUNCHOUT.md).
 
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY41.md`](docs/STANDUP_DAY41.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY42.md`](docs/STANDUP_DAY42.md).
 
 **Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 
@@ -83,7 +83,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | more busybox (`id` `pwd` `printf` `dirname` `basename` `od`) | **Works** — Day 27. |
 | Core 90% syscall map | `docs/SYSCALL_COVERAGE.md` |
 | LTP first-wave | **uname01** passed 2 / failed 0 / broken 0, **`UNAME_RC=0`** (Day 39). |
-| busybox applet battery | 58 invocations, no KT/KDL. `id` prints groups. `hello_exit` **RC=42**. busybox `false` still RC=0. |
+| busybox applet battery | 58 invocations, no KT/KDL. `id` prints groups. `hello_exit` **RC=42**. busybox **`false`/`cmp` RC=1**. Redirected `date` still silent. |
 | Linux `ioctl` | Stub `-ENOTTY`. TTY/fbdev next. |
 | LTP subset | Built on the Linux host; run after busybox applets work |
 

@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-19 (Day 41: hello_exit RC=42; busybox false still 0)  
+**Last updated:** 2026-08-19 (Day 42: false/cmp RC=1; date still silent)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -35,7 +35,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 38](STANDUP_DAY38.md) (PR22 `vm_delete_area` `ND`; C close after `ND`; still 149) →
 [Day 39](STANDUP_DAY39.md) (`UNAME_RC=0`; exit-window `thread_exit` after `ND`) →
 [Day 40](STANDUP_DAY40.md) (applet punch-out; `getgroups` green; `false` still 0) →
-[Day 41](STANDUP_DAY41.md) (`hello_exit` RC=42; busybox `false` still `exit_group(0)`).
+[Day 41](STANDUP_DAY41.md) (`hello_exit` RC=42; busybox `false` still `exit_group(0)`) →
+[Day 42](STANDUP_DAY42.md) (callee-saved on `gs:8`; `false`/`cmp` RC=1).
 
 ---
 
@@ -75,12 +76,11 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 41):** PR33 always `_user_exit_team(status)` +
-`thread_exit` from `.Lexit` (no identity `0x29`). Tiny
-`hello_exit` is **`EXIT42_RC=42`** (`EX 0x2a`). `sys_compat_run`
-Linux argv is the ELF plus extras. busybox `false` still
-`exit_group(0)` (`EX 0x0`) with argv `[busybox] [false]`. Redirected
-`date` / `md5sum` / `nproc` still silent. Punch-out:
+**Where we are (Day 42):** PR34 pushes callee-saved on `gs:8` and
+pops at `.Lret` (glibc `exit()` keeps status in `r14`). Guest
+`hello_ret1` / `exit(1)` / busybox **`false` → RC=1**, differing
+**`cmp` → RC=1**. Tiny `hello_exit` still **42**. Redirected `date`
+still silent. Punch-out:
 [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -99,12 +99,11 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Why glibc-static busybox `false` still
-`exit_group(0)` on the guest (host `exit_group(1)`). The trap is
-cleared — `hello_exit` is 42. Then redirected stdout. Then TTY /
-fbdev / ioctl onto Haiku drivers. Do not jmp identity `0x29` from
-`.Lexit`. Do not store status in `gTmpR8`. Do not leave a second
-addon in `/boot/system/non-packaged/`.
+**What needs doing next:** Redirected fully-buffered stdout (`date`,
+`md5sum`). Then TTY / fbdev / ioctl onto Haiku drivers. Do not restore
+callee-saved from the global `gSavedR*` (race). Do not jmp identity
+`0x29` from `.Lexit`. Do not leave a second addon in
+`/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 41: `hello_exit` RC=42; busybox `false` still 0)
+**Updated:** 2026-08-19 (Day 42: `false`/`cmp` RC=1; date still silent)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -39,7 +39,8 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `sh -c 'echo hi > f && cat f'` | `hi` (and a second `sys_compat_run` for `cat`) |
 | `test -f` | RC=0 (true) |
 | `sleep 0` `true` `printf` `dirname` `basename` `pwd` | RC=0 |
-| `cmp` (stderr) | `cmp: EOF on …` — compared correctly |
+| `false` | **`FALSE_RC=1`** (Day 42) |
+| `cmp` (stderr) | `cmp: EOF on …`, **`CMP_RC=1`** (Day 42) |
 | `id` | **PR32:** `uid=0(user) gid=0(root) groups=0(root)` |
 
 `PIPE_RC` / `SHPIPE_RC` is 0. `HI` did not show in the redirected log
@@ -49,7 +50,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
-| **busybox still `exit_group(0)`** | Trap is cleared: `hello_exit` → **`EXIT42_RC=42`**, COM1 `EX 0x2a`. `false` / differing `cmp` still `EX 0x0` with argv `[busybox] [false]`. Host of the same ELF is `exit_group(1)`. | A compiler that runs `as`/`ld` and checks `$?` will treat busybox-style fails as success. |
+| **Redirected stdout still missing** | `date`, `md5sum`, `nproc` printed nothing in the capture. `date` RC is now 0 (real). Interactive `date` has printed a UTC line on earlier days. | Last writes of a compile step can vanish if they sat in libc `FILE*` buffers. |
 | **Redirected stdout still missing** | `date`, `md5sum`, `nproc` printed nothing in the capture. `date` serial is `mQbWet` (a `write` then exit). `md5sum` is `mQbcet` (close, no write). Interactive `date` has printed a UTC line on earlier days. | Last writes of a compile step can vanish if they sat in libc `FILE*` buffers. |
 | **`sched_getaffinity` unproven** | `nproc` silent, no write on COM1 | Host strace shows it. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
@@ -86,11 +87,11 @@ but they are not what this busybox set exercises.
 
 ## Next
 
-1. Why glibc-static busybox `false` / `cmp` issue `exit_group(0)` on
-   the guest (host `exit_group(1)`). `hello_exit` proves the trap.
-2. Why `write(1, …)` after glibc `fflush` does not appear in a Haiku redirect.
-3. TTY / fbdev / ioctl onto Haiku drivers (not a Linux display stack).
-4. Do not expand into distro packages or pthreads until 1 is green.
+1. Why `write(1, …)` after glibc `fflush` does not appear in a Haiku redirect (`date` still silent).
+2. TTY / fbdev / ioctl onto Haiku drivers (not a Linux display stack).
+3. Do not expand into distro packages or pthreads until 1 is green.
+
+`false` / `cmp` `$?` is guest-green (Day 42).
 
 Scripts: `scripts/catalog_applet_syscalls.sh` (host),
 `scripts/guest_run_applets.sh` (guest battery),

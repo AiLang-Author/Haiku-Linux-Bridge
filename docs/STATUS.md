@@ -4,13 +4,13 @@
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY41.md`](STANDUP_DAY41.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY42.md`](STANDUP_DAY42.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 41)
+## What you can expect today (`main`, Day 42)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -38,17 +38,16 @@ needs `ioctl` (deferred). `sendfile` of a regular file still returns
 **passed 2 / failed 0 / broken 0** and **`UNAME_RC=0`**. A 58-applet
 busybox battery runs without KT/KDL. Host `strace` of that set is 55
 Linux syscalls. `id` prints `groups=0(root)`. Tiny `hello_exit` is
-**`EXIT42_RC=42`**. **busybox `false` still exits 0** (must be 1) —
-that is now a busybox/glibc `exit_group(0)`, not the trap eating
-`rdi`. Redirected `date` / `md5sum` / `nproc` still print nothing.
-Guest scripts fetch and POST with **Haiku curl** (BSD sockets) to
-the host at `10.0.2.2:8083`. Desktop login starts one Terminal via
-`boot/launch`. One `sys_compat` addon only.
+**`EXIT42_RC=42`**. busybox **`false` exits 1**, differing **`cmp`
+exits 1**. Redirected `date` / `md5sum` / `nproc` still print
+nothing. Guest scripts fetch and POST with **Haiku curl** (BSD
+sockets) to the host at `10.0.2.2:8083`. Desktop login starts one
+Terminal via `boot/launch`. One `sys_compat` addon only.
 
 Extra single-process applets: `id` (groups too), `pwd`, `true`,
 `printf`, `dirname`, `basename`, `od`. `sys_compat_run` `$?` is
-real for a raw `exit_group` (`hello_exit` → 42). Do not trust
-busybox `false` / `cmp` `$?` yet.
+real for `hello_exit` (42), glibc `return 1`, and busybox `false` /
+`cmp`. Redirected `date` stdout is still missing.
 
 **Do not run `sh` pipes or glibc-static `clone` LTP on a build older
 than Day 27.** A `.Lret` store into the rseq page under CLI KDLed

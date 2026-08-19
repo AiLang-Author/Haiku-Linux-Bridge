@@ -191,6 +191,8 @@
 	.hidden	sChildDone
 	.globl	sExitCloses
 	.hidden	sExitCloses
+	.globl	sExitR14
+	.hidden	sExitR14
 	.globl	sRobustList
 	.hidden	sRobustList
 	.globl	sRobustLen
@@ -405,7 +407,17 @@ sys_compat_lstar:
 .Llinux_go:
 	/* Snapshot callee-saved before any dispatch/C. clone plants
 	 * these; do not store them in gFork* here — the child reuses
-	 * this path during the parent hold and would smash the plant. */
+	 * this path during the parent hold and would smash the plant.
+	 * Also push them on THIS thread's gs:8. Linux SYSCALL must
+	 * keep rbx/rbp/r12-r15; glibc exit() parks the status in r14.
+	 * Identity .Llstar abandons this kstack (next SYSCALL resets
+	 * rsp to gs:8). .Lret pops. */
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
 	mov	qword ptr [rip + gSavedRbx], rbx
 	mov	qword ptr [rip + gSavedRbp], rbp
 	mov	qword ptr [rip + gSavedR12], r12
@@ -854,6 +866,19 @@ sys_compat_lstar:
 	 * rdi is the exit status. gTmpR8 is clobbered by every
 	 * Linux syscall — park status in sExitStatus. */
 	mov	qword ptr [rip + sExitStatus], rdi
+	mov	qword ptr [rip + sExitR14], r14
+	/* glibc exit() does mov %r14d,%edi; _exit. A prior syscall
+	 * that clobbered r14 made that _exit(0). Prefer r14 if rdi
+	 * is 0 and r14 looks like a wait status. */
+	test	rdi, rdi
+	jnz	.Lexit_have
+	mov	rax, r14
+	cmp	rax, 256
+	jae	.Lexit_have
+	test	rax, rax
+	jz	.Lexit_have
+	mov	qword ptr [rip + sExitStatus], rax
+.Lexit_have:
 	mov	rsp, qword ptr [gs:8]
 	sub	rsp, 0xA00
 	and	rsp, -16
@@ -2537,6 +2562,12 @@ sys_compat_lstar:
 	 * Register/unregister already wrote cpu_id.
 	 * Do not apply_fs here — every-sysret WRMSR/ULS write KTd
 	 * the pipe parent after wait4 (PR11 first guest). */
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
 .Lsysret:
 	mov	rsp, qword ptr [gs:16]
 	swapgs
@@ -2566,6 +2597,8 @@ sUmask:
 	.bss
 	.align	8
 sExitStatus:
+	.quad	0
+sExitR14:
 	.quad	0
 gOrigLstar:
 	.quad	0

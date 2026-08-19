@@ -59,7 +59,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
-| 231/60 | exit_group/exit | **works**. Always `_user_exit_team(status)` + `thread_exit`. `hello_exit` **`EXIT42_RC=42`**. Day 41. busybox `false` still issues `exit_group(0)` (`EX 0x0`). |
+| 231/60 | exit_group/exit | **works**. Always `_user_exit_team(status)` + `thread_exit`. Callee-saved kept on `gs:8` (glibc `exit()` uses `r14`). `hello_exit` **42**, `return 1` **1**, busybox **`false`/`cmp` 1**. Day 42. |
 
 ### File I/O (coreutils hot path)
 
