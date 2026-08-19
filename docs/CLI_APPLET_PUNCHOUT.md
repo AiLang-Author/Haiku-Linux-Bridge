@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 40 PR32 guest: `getgroups` green; exit/flush still open)
+**Updated:** 2026-08-19 (Day 41: `hello_exit` RC=42; busybox `false` still 0)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -49,7 +49,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
-| **Exit status still 0** | PR32 `false` → `FALSE_RC=0` (must be 1). `cmp` differed and still 0. Host of the same ELF is `exit_group(1)`. Close no longer `xor rdi,rdi` / `.Lexit`; `false` never `ND`s — it takes identity `_kern_exit_team` (`0x29`). Status is lost somewhere on that path. | A compiler that runs `as`/`ld` and checks `$?` will treat every fail as success. |
+| **busybox still `exit_group(0)`** | Trap is cleared: `hello_exit` → **`EXIT42_RC=42`**, COM1 `EX 0x2a`. `false` / differing `cmp` still `EX 0x0` with argv `[busybox] [false]`. Host of the same ELF is `exit_group(1)`. | A compiler that runs `as`/`ld` and checks `$?` will treat busybox-style fails as success. |
 | **Redirected stdout still missing** | `date`, `md5sum`, `nproc` printed nothing in the capture. `date` serial is `mQbWet` (a `write` then exit). `md5sum` is `mQbcet` (close, no write). Interactive `date` has printed a UTC line on earlier days. | Last writes of a compile step can vanish if they sat in libc `FILE*` buffers. |
 | **`sched_getaffinity` unproven** | `nproc` silent, no write on COM1 | Host strace shows it. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
@@ -86,7 +86,8 @@ but they are not what this busybox set exercises.
 
 ## Next
 
-1. Why identity `0x29` waits as 0 when rdi was 1.
+1. Why glibc-static busybox `false` / `cmp` issue `exit_group(0)` on
+   the guest (host `exit_group(1)`). `hello_exit` proves the trap.
 2. Why `write(1, …)` after glibc `fflush` does not appear in a Haiku redirect.
 3. TTY / fbdev / ioctl onto Haiku drivers (not a Linux display stack).
 4. Do not expand into distro packages or pthreads until 1 is green.

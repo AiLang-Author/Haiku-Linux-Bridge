@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-19 (Day 40: applet battery; getgroups green; false/date still open)  
+**Last updated:** 2026-08-19 (Day 41: hello_exit RC=42; busybox false still 0)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -34,7 +34,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 37](STANDUP_DAY37.md) (real `delete_area` munmap; exit_prep; still 149) →
 [Day 38](STANDUP_DAY38.md) (PR22 `vm_delete_area` `ND`; C close after `ND`; still 149) →
 [Day 39](STANDUP_DAY39.md) (`UNAME_RC=0`; exit-window `thread_exit` after `ND`) →
-[Day 40](STANDUP_DAY40.md) (applet punch-out; `getgroups` green; `false` still 0).
+[Day 40](STANDUP_DAY40.md) (applet punch-out; `getgroups` green; `false` still 0) →
+[Day 41](STANDUP_DAY41.md) (`hello_exit` RC=42; busybox `false` still `exit_group(0)`).
 
 ---
 
@@ -74,14 +75,12 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 40):** Day 39 `UNAME_RC=0` plus a 58-applet busybox
-battery (no KT/KDL). Host `strace` of that set is **55 unique Linux
-syscalls**. PR32: after `ND`, close returns (`cS`); write is
-`_user_write` on `gs:8`; `getgroups` / `umask` / `sync` /
-`sched_getaffinity` wired. Guest `id` prints `groups=0(root)`.
-`false` is still `FALSE_RC=0` (host `exit_group(1)`). Redirected
-`date` / `md5sum` / `nproc` still silent. Guest curl POST of the
-status capture returned `OK` (Haiku curl, BSD sockets). Punch-out:
+**Where we are (Day 41):** PR33 always `_user_exit_team(status)` +
+`thread_exit` from `.Lexit` (no identity `0x29`). Tiny
+`hello_exit` is **`EXIT42_RC=42`** (`EX 0x2a`). `sys_compat_run`
+Linux argv is the ELF plus extras. busybox `false` still
+`exit_group(0)` (`EX 0x0`) with argv `[busybox] [false]`. Redirected
+`date` / `md5sum` / `nproc` still silent. Punch-out:
 [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -100,12 +99,12 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Why identity `_kern_exit_team` (`0x29`)
-waits as 0 when `false` did `exit_group(1)` (no `ND` on that path).
-Why a COM1 `W` from `date` does not appear in a Haiku redirect.
-Then TTY / fbdev / ioctl onto Haiku drivers. Do not set
-`sExitCloses` on `set_robust_list(NULL)`. Do not `.Lexit` from close.
-Do not leave a second addon in `/boot/system/non-packaged/`.
+**What needs doing next:** Why glibc-static busybox `false` still
+`exit_group(0)` on the guest (host `exit_group(1)`). The trap is
+cleared — `hello_exit` is 42. Then redirected stdout. Then TTY /
+fbdev / ioctl onto Haiku drivers. Do not jmp identity `0x29` from
+`.Lexit`. Do not store status in `gTmpR8`. Do not leave a second
+addon in `/boot/system/non-packaged/`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

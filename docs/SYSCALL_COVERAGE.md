@@ -59,7 +59,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
-| 231/60 | exit_group/exit | **works for 0**. After `ND`, `_user_exit_team` + `thread_exit` (not LSTAR `0x29`). `UNAME_RC=0`. Day 39. **Non-zero still lost:** guest `false` → `FALSE_RC=0` (host `exit_group(1)`). Day 40. |
+| 231/60 | exit_group/exit | **works**. Always `_user_exit_team(status)` + `thread_exit`. `hello_exit` **`EXIT42_RC=42`**. Day 41. busybox `false` still issues `exit_group(0)` (`EX 0x0`). |
 
 ### File I/O (coreutils hot path)
 

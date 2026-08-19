@@ -3489,9 +3489,12 @@ sys_compat_exit_prep(void)
 extern "C" void
 sys_compat_exit_team(int64 status)
 {
-	/* After ND, jmp LSTAR 0x29 KTs. _user_exit_team sets
-	 * CLD_EXITED then stops the thread — no official LSTAR. */
-	kser_puts("EX\n");
+	/* _user_exit_team sets CLD_EXITED + team->exit.status, then
+	 * posts SIGKILL. thread_exit tears the thread down. Identity
+	 * LSTAR 0x29 after .Lexit's stack switch lost non-zero rdi. */
+	kser_puts("EX ");
+	kser_hex((uint64)(uint32)status);
+	kser_putc('\n');
 	if (sUserExitTeam != 0)
 		sUserExitTeam((int32)status);
 	kser_puts("EXR\n");
@@ -4512,7 +4515,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR32\n");
+	kser_puts("PR33\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

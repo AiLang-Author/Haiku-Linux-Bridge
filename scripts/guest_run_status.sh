@@ -9,7 +9,14 @@ RUN=/boot/home/sys_compat_run
 BB=/boot/home/busybox
 printf 'hello world\nfoo bar\nhello linux\nzzz\n' > /tmp/sa.txt
 printf 'hello world\nfoo bar\n' > /tmp/sb.txt
+if [ ! -x /boot/home/hello_exit ]; then
+	curl -s -o /boot/home/hello_exit "$HOST/payload/tests/hello_exit" || true
+	chmod 755 /boot/home/hello_exit 2>/dev/null || true
+fi
 {
+	echo "=== hello_exit ==="
+	$RUN /boot/home/hello_exit
+	echo EXIT42_RC=$?
 	echo "=== false ==="
 	$RUN $BB false
 	echo FALSE_RC=$?

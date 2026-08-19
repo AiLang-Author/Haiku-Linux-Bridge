@@ -851,15 +851,16 @@ sys_compat_lstar:
 .Lexit:
 	KSER	'e'
 	/* Linux mm_release on this thread's kstack, not gKstack.
-	 * rdi is the exit status — park it, restore after C. */
-	mov	qword ptr [rip + gTmpR8], rdi
+	 * rdi is the exit status. gTmpR8 is clobbered by every
+	 * Linux syscall — park status in sExitStatus. */
+	mov	qword ptr [rip + sExitStatus], rdi
 	mov	rsp, qword ptr [gs:8]
 	sub	rsp, 0xA00
 	and	rsp, -16
 	sti
 	call	sys_compat_exit_prep
 	cli
-	mov	rdi, qword ptr [rip + gTmpR8]
+	mov	rdi, qword ptr [rip + sExitStatus]
 	/* Drop this CR3 only. A live child must stay marked. */
 	push	r8
 	push	r9
@@ -895,12 +896,12 @@ sys_compat_lstar:
 .Lexit_keepfs:
 	mov	dword ptr [rip + sChildDone], 1
 	KSER	'E'
-	/* After ND, official 0x29 KTs. Call _user_exit_team on
-	 * this kstack. Named label — KSER uses 1:/2:. */
-	cmp	dword ptr [rip + sExitCloses], 0
-	je	.Lexit_lstar
+	/* Always _user_exit_team(status) + thread_exit. Identity
+	 * LSTAR 0x29 after this stack dance delivered status 0
+	 * (false → FALSE_RC=0, host exit_group(1)). Named label
+	 * — KSER uses 1:/2:. */
 	mov	dword ptr [rip + sExitCloses], 0
-	mov	rdi, qword ptr [rip + gTmpR8]
+	mov	rdi, qword ptr [rip + sExitStatus]
 	sti
 	call	sys_compat_exit_team
 	/* _user_exit_team posts SIGKILL and returns. Do not sysret
@@ -909,9 +910,6 @@ sys_compat_lstar:
 	sti
 	hlt
 	jmp	.Lexit_wait
-.Lexit_lstar:
-	mov	rax, 0x29
-	jmp	.Llstar
 
 .Lkill:
 	/* LTP heartbeat is kill(ppid, SIGUSR1). Do not deliver.
@@ -2567,6 +2565,8 @@ sUmask:
 
 	.bss
 	.align	8
+sExitStatus:
+	.quad	0
 gOrigLstar:
 	.quad	0
 gLinuxCR3:

@@ -216,19 +216,15 @@ int main(int argc, char** argv)
     sp = (uint64_t*)((uintptr_t)sp & ~0xFULL);
 
     /*
-     * argv[1] is the ELF to map. argv[2..] is the Linux argv.
-     * A lone `sys_compat_run ./hello_min` still presents argv[1]
-     * as Linux argv[0]. busybox sh execs /proc/self/exe as ["cat"].
+     * execve shape: Linux argv is the ELF path plus extra args.
+     *   sys_compat_run busybox false  →  ["…/busybox", "false"]
+     * Dropping the ELF (old argc>=3 path) made that ["false"].
+     * Guest then exit_group(0) — busybox no-applet / usage, not false.
+     * sh execve(["cat"]) still works: execve flattens to
+     *   sys_compat_run <busybox> cat  →  ["…/busybox", "cat"].
      */
-    int linux_argc;
-    char** linux_argv;
-    if (argc >= 3) {
-        linux_argc = argc - 2;
-        linux_argv = &argv[2];
-    } else {
-        linux_argc = argc - 1;
-        linux_argv = &argv[1];
-    }
+    int linux_argc = argc - 1;
+    char** linux_argv = &argv[1];
 
     /*
      * SysV stack, high → low: extra strings, auxv, envp, argv, argc.
@@ -316,6 +312,13 @@ int main(int argc, char** argv)
 
     printf("[+] System V ABI Stack prepared at RSP=0x%lx (argc=%d)...\n",
            (unsigned long)(uintptr_t)sp, linux_argc);
+    {
+        int ai;
+        printf("[+] linux argv:");
+        for (ai = 0; ai < linux_argc; ai++)
+            printf(" [%s]", linux_argv[ai] ? linux_argv[ai] : "(null)");
+        printf("\n");
+    }
     printf("[+] Transferring execution to Linux entry point 0x%lx...\n",
            (unsigned long)ehdr.e_entry);
 
