@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-19 (Day 44: rdx=0 after mark; date/md5sum/puts write)  
+**Last updated:** 2026-08-19 (Day 45: TTY ioctl onto Haiku tty)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -38,7 +38,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 41](STANDUP_DAY41.md) (`hello_exit` RC=42; busybox `false` still `exit_group(0)`) →
 [Day 42](STANDUP_DAY42.md) (callee-saved on `gs:8`; `false`/`cmp` RC=1) →
 [Day 43](STANDUP_DAY43.md) (`hello_wr` `WRPROBE`; `date` still no `write`) →
-[Day 44](STANDUP_DAY44.md) (`rdx=0` after mark; `date`/`md5sum`/`puts` write).
+[Day 44](STANDUP_DAY44.md) (`rdx=0` after mark; `date`/`md5sum`/`puts` write) →
+[Day 45](STANDUP_DAY45.md) (TTY ioctl onto Haiku tty; `WINSZ 25x80`).
 
 ---
 
@@ -55,7 +56,7 @@ narrower layer. The completed app is the tip. Keep feature creep down.
 | Kernel must stay up | Kill Thread is OK; KDL / silent reboot is not |
 | Mark (syscall `0x1337`) is the last Haiku action before `jmp` | Any libc after mark is treated as Linux and dies |
 | After mark, `rdx` must be 0 into Linux `_start` | `_start` saves `rdx` as `rtld_fini`. The fork tramp is xor-edi / `SYS_exit` 60 and skips `fflush` |
-| No ioctl unless a CLI path is blocked without it | Deferred on purpose |
+| TTY ioctl maps onto Haiku tty; fbdev later | Do not build a Linux DRM/display stack |
 | Adopt-on-every-CR3-miss stays **off** | That killed Terminal / KDL |
 | Do not call libroot `real_time_clock_usecs` / `system_time` from the driver | KDL on this image |
 | Confirm Haiku syscall numbers on the **guest** (`payload/ltp/dump_sc.c`) | They shift between Haiku revisions |
@@ -79,12 +80,10 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 44):** Linux `_start` takes `rdx` as `rtld_fini`.
-Mark used to leave the fork tramp there (xor-edi / `SYS_exit` 60), so
-glibc `exit()` skipped `fflush`. Loader now `xor %edx,%edx` after mark;
-hook mark-sysret zeros `rdx` too. Guest: **`PRINTF_OK`**, `date -u`
-prints a UTC line, `md5sum` digest matches the host, `nproc` prints
-`1`, `false`/`cmp` still 1. Punch-out:
+**Where we are (Day 45):** Linux TTY `ioctl` maps onto Haiku
+`_user_ioctl` (0x99). Guest `hello_tty` on a Terminal fd:
+**`TTY0=0`**, **`LFLAG0=0x5b`**, **`WINSZ r=25 c=80`**, **`PGRP pgid=691`**.
+Redirected FILE* flush (Day 44) still holds. Punch-out:
 [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -103,10 +102,11 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Real TTY/fbdev ioctl onto Haiku drivers.
-Do not treat `TCGETS` as filled termios. Do not pass the fork tramp in
-`rdx` into Linux `_start`. Do not restore callee-saved from the global
-`gSavedR*`. Do not leave a second addon in `/boot/system/non-packaged/`.
+**What needs doing next:** fbdev ioctl onto Haiku graphics (not DRM).
+Do not stub `TCGETS` as 0. Do not pass the fork tramp in `rdx` into
+Linux `_start`. Do not restore callee-saved from the global `gSavedR*`.
+Do not leave a second addon in `/boot/system/non-packaged/`. Do not
+pipe the tty script into `sh`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.

@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-19 (Day 44: redirected FILE* fflush via rdx=0)
+**Last updated:** 2026-08-19 (Day 45: TTY ioctl onto Haiku tty)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -91,7 +91,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 74/75 | fsync/fdatasync | works |
 | 280 | utimensat | works |
 | 32/33/292 | dup/dup2/dup3 | works |
-| 16 | ioctl | `TCGETS`/`TIOCGWINSZ` return 0 (isatty). Else `-ENOTTY`. Day 43. |
+| 16 | ioctl | **TTY works.** `TCGETS` fills Linux termios from Haiku `TCGETA`. `TIOCGWINSZ` **25x80**. `TIOCGPGRP` pgid. Else `-ENOTTY`. Day 45. |
 | 95 | umask | **wired** (in-hook, default 022). Day 40. Not in the status script. |
 | 115 | getgroups | **works**. Guest `id` → `groups=0(root)`. Day 40. |
 | 162 | sync | stub (0). Day 40. |

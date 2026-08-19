@@ -183,6 +183,7 @@
 	.extern	sys_compat_pipe2
 	.extern	sys_compat_nanosleep
 	.extern	sys_compat_fcntl
+	.extern	sys_compat_ioctl
 	.extern	sys_compat_statx
 	.extern	sys_compat_try_fork
 	.extern	sys_compat_exit_prep
@@ -1976,15 +1977,18 @@ sys_compat_lstar:
 	mov	rax, -2			/* -ENOENT */
 	jmp	.Lret
 .Lioctl:
-	/* isatty() is ioctl(TCGETS). Return 0 (success, empty termios).
-	 * Redirected FILE* flush is rdx=0 after mark (rtld_fini), not
-	 * this. Do not treat the buffer as real termios. */
-	cmp	esi, 0x5401		/* TCGETS */
-	je	.Lok0
-	cmp	esi, 0x5413		/* TIOCGWINSZ */
-	je	.Lok0
-	mov	rax, -25		/* -ENOTTY */
-	jmp	.Lret
+	/* Linux ioctl → C. TTY maps onto Haiku tty.
+	 * Unknown cmds return -ENOTTY. Do not stub TCGETS as 0. */
+	KSER	'I'
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	CALL_C	sys_compat_ioctl
 
 .Lenotty:
 	mov	rax, -25		/* -ENOTTY */

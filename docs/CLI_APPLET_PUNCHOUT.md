@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 44: redirected `date`/`md5sum`/`puts` write)
+**Updated:** 2026-08-19 (Day 45: real TTY ioctl onto Haiku tty)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -47,12 +47,13 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `md5sum` | **`56b119667b17e283b4c3535154b59aa7`** host match (Day 44) |
 | `nproc` | **`1`** (affinity stub is one CPU; stdout now lands) |
 | `printf` | **`BBPRINTF_OK`** |
+| TTY ioctl | **`TTY0=0`**, **`WINSZ 25x80`**, **`PGRP pgid=691`** (Day 45) |
 
 ## Fragile / wrong (punch these before a toolchain)
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
-| **`ioctl` still `-ENOTTY`** (except `TCGETS`/`TIOCGWINSZ` = 0) | not blocking redirected CLI stdout | Next slice: real TTY / fbdev onto Haiku drivers. |
+| **fbdev ioctl** | not started | Next after TTY: Linux framebuffer onto Haiku graphics, not DRM. |
 | **`sched_getaffinity` one CPU** | `nproc` prints `1` on QEMU `-smp 4` | Fine for CLI; wrong for parallel make later. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
 | **`rt_sigreturn` `-ENOSYS`** | host glibc/busybox traces it | Fine while signals are stubs. |
@@ -92,11 +93,18 @@ but they are not what this busybox set exercises.
 - Mark sysret also zeros `rdx`. Guest-proven with loader xor only
   (hook still PR37 until reboot).
 
+## Day 45 trap changes
+
+- `.Lioctl` calls C. TTY cmds map to Haiku `TCGETA` / `TIOCGWINSZ` / …
+  and fill the Linux buffer from the Haiku tty. Guest: **`TTY0=0`**,
+  **`WINSZ r=25 c=80`**, **`PGRP pgid=691`**.
+
 ## Next
 
-1. Real TTY/fbdev ioctl onto Haiku drivers (not a Linux display stack). `TCGETS` is only `isatty`=true.
-2. Re-prove `echo HI | cat` in a redirect now that FILE* flush works.
-3. Do not expand into distro packages or pthreads until TTY is green enough for interactive `sh`.
+1. fbdev ioctl onto Haiku graphics (not a Linux DRM stack).
+2. Interactive `busybox sh` on the Haiku Terminal (job control already
+   has `TIOCGPGRP`).
+3. Re-prove `echo HI | cat` in a redirect now that FILE* flush works.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
 `md5sum` / glibc `puts` are guest-green (Day 44).

@@ -4,8 +4,8 @@
  * Fundamentals only: mark a team as Linux ABI via syscall 0x1337
  * (or write(LINUXABI)), trap its syscall instructions, implement a
  * tiny Linux syscall set.
- * Everything else returns -ENOSYS. No Linux ioctl. A bad Linux call
- * must not panic Haiku.
+ * Everything else returns -ENOSYS. Linux ioctl TTY maps onto Haiku
+ * tty (not a stub isatty). A bad Linux call must not panic Haiku.
  *
  * License: Public Domain / CC0 1.0 Universal
  */
@@ -48,6 +48,7 @@
 #define LINUX_EINVAL       22
 #define LINUX_ENAMETOOLONG 36
 #define LINUX_ENOSYS       38
+#define LINUX_ENOTTY       25
 #define LINUX_E2BIG         7
 #define LINUX_ETIMEDOUT   110
 
@@ -105,6 +106,7 @@
 #define HAIKU_PIPE       0x83
 #define HAIKU_GET_CLOCK  0xc0	/* guest dump; counted 0xc1 in later trees */
 #define HAIKU_FCNTL      0x76	/* between open_dir 0x74 and fsync 0x77 */
+#define HAIKU_SYS_IOCTL  0x99
 #define HAIKU_CLOCK_REALTIME  ((int32)-1)
 #define HAIKU_CLOCK_MONOTONIC ((int32)0)
 
@@ -262,6 +264,7 @@ typedef int32 (*haiku_fsync_fn)(int32 fd, int32 dataOnly);
 typedef int32 (*haiku_getclock_fn)(int32 clockid, void* timePtr);
 typedef int32 (*haiku_pipe_fn)(void* fds, int32 flags);
 typedef int32 (*haiku_fcntl_fn)(int32 fd, int32 op, uint64 argument);
+typedef int32 (*haiku_ioctl_fn)(int32 fd, uint32 cmd, void* data, uint64 length);
 typedef int32 (*haiku_fork_fn)(void);
 typedef int32 (*haiku_exec_fn)(const void* path, const void* flatArgs,
 	uint64 flatSize, int32 argCount, int32 envCount, int32 umask);
@@ -311,6 +314,7 @@ static uint64 sFsyncFn;
 static uint64 sGetClockFn;
 static uint64 sPipeFn;
 static uint64 sFcntlFn;
+static uint64 sIoctlFn;
 static uint64 sForkFn;
 static uint64 sWaitObjFn;
 static uint64 sMapFileFn;
@@ -482,6 +486,7 @@ extern "C" {
 	int64 sys_compat_pipe2(void* fds, int64 flags);
 	int64 sys_compat_nanosleep(const void* req, void* rem);
 	int64 sys_compat_fcntl(int64 fd, int64 cmd, int64 arg);
+	int64 sys_compat_ioctl(int64 fd, int64 cmd, void* arg);
 	int64 sys_compat_statx(int64 fd, const void* path, int64 flags,
 		uint32 mask, void* buf);
 	int64 sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags);
@@ -1024,6 +1029,8 @@ discover_syscall_table(void)
 					sSyscallInfos[HAIKU_PIPE].function;
 				sFcntlFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_FCNTL].function;
+				sIoctlFn = (uint64)(addr_t)
+					sSyscallInfos[HAIKU_SYS_IOCTL].function;
 				sForkFn = (uint64)(addr_t)
 					sSyscallInfos[HAIKU_FORK].function;
 				sExecFn = (uint64)(addr_t)
@@ -1056,6 +1063,9 @@ discover_syscall_table(void)
 			kser_putc('\n');
 			kser_puts("OPENfn=");
 			kser_hex(sOpenFn);
+			kser_putc('\n');
+			kser_puts("IOCTLfn=");
+			kser_hex(sIoctlFn);
 			kser_putc('\n');
 			discover_return_to_userland();
 			return;
@@ -3977,6 +3987,316 @@ sys_compat_fcntl(int64 fd, int64 cmd, int64 arg)
 	return (int64)st;
 }
 
+/*
+ * Linux TTY ioctl onto Haiku tty. termios layouts differ;
+ * winsize/pgrp/FION* share the user buffer.
+ * Linux TCGETS is kernel struct termios (36 B, NCCS=19), not glibc 60 B.
+ */
+#define LINUX_TCGETS     0x5401
+#define LINUX_TCSETS     0x5402
+#define LINUX_TCSETSW    0x5403
+#define LINUX_TCSETSF    0x5404
+#define LINUX_TIOCSCTTY  0x540E
+#define LINUX_TIOCGPGRP  0x540F
+#define LINUX_TIOCSPGRP  0x5410
+#define LINUX_TIOCGWINSZ 0x5413
+#define LINUX_TIOCSWINSZ 0x5414
+#define LINUX_FIONREAD   0x541B
+#define LINUX_FIONBIO    0x5421
+
+#define HAIKU_TCGETA     0x8000
+#define HAIKU_TCSETA     0x8001
+#define HAIKU_TCSETAF    0x8002
+#define HAIKU_TCSETAW    0x8003
+#define HAIKU_TIOCGWINSZ 0x800C
+#define HAIKU_TIOCSWINSZ 0x800D
+#define HAIKU_TIOCGPGRP  0x800F
+#define HAIKU_TIOCSPGRP  0x8010
+#define HAIKU_TIOCSCTTY  0x8011
+#define HAIKU_FIONBIO    0xbe000000u
+#define HAIKU_FIONREAD   0xbe000001u
+
+#define HAIKU_NCCS 11
+#define LINUX_NCCS 19
+#define HAIKU_TERMIOS_LEN 32
+#define LINUX_TERMIOS_LEN 36
+
+struct haiku_termios {
+	uint16 c_iflag;
+	uint16 c_ispeed;
+	uint16 c_oflag;
+	uint16 c_ospeed;
+	uint16 c_cflag;
+	uint16 c_ispeed_high;
+	uint16 c_lflag;
+	uint16 c_ospeed_high;
+	uint8  c_line;
+	uint8  pad1;
+	uint8  pad2;
+	uint8  c_cc[HAIKU_NCCS];
+};
+
+struct linux_ktermios {
+	uint32 c_iflag;
+	uint32 c_oflag;
+	uint32 c_cflag;
+	uint32 c_lflag;
+	uint8  c_line;
+	uint8  c_cc[LINUX_NCCS];
+};
+
+static int64
+ioctl_status_to_linux(int64 st)
+{
+	uint32 code;
+
+	if (st >= 0)
+		return 0;
+	if (st > -4096) {
+		if (st == -LINUX_EBADF)
+			return st;
+		return -LINUX_ENOTTY;
+	}
+	code = (uint32)(int32)st;
+	if (code == 0x80006000)	/* B_FILE_ERROR */
+		return -LINUX_EBADF;
+	return -LINUX_ENOTTY;
+}
+
+static uint32
+baud_haiku_to_linux(uint16 hb)
+{
+	if (hb <= 0x0F)
+		return (uint32)hb;
+	switch (hb) {
+	case 0x10: return 0x1001;	/* B57600 */
+	case 0x11: return 0x1002;	/* B115200 */
+	case 0x12: return 0x1003;	/* B230400 */
+	default:   return 0x000F;	/* B38400 */
+	}
+}
+
+static uint16
+baud_linux_to_haiku(uint32 lb)
+{
+	uint32 b = lb & 0x100F;
+
+	if ((b & 0x1000) == 0)
+		return (uint16)(b & 0x0F);
+	switch (b) {
+	case 0x1001: return 0x10;
+	case 0x1002: return 0x11;
+	case 0x1003: return 0x12;
+	default:     return 0x0F;
+	}
+}
+
+static uint32
+lflag_haiku_to_linux(uint16 h)
+{
+	uint32 l = (uint32)(h & 0x01FF);
+
+	if (h & 0x0200) l |= 0x8000;	/* IEXTEN */
+	if (h & 0x0400) l |= 0x0200;	/* ECHOCTL */
+	if (h & 0x0800) l |= 0x0400;	/* ECHOPRT */
+	if (h & 0x1000) l |= 0x0800;	/* ECHOKE */
+	if (h & 0x2000) l |= 0x1000;	/* FLUSHO */
+	if (h & 0x4000) l |= 0x4000;	/* PENDIN */
+	return l;
+}
+
+static uint16
+lflag_linux_to_haiku(uint32 l)
+{
+	uint16 h = (uint16)(l & 0x01FF);
+
+	if (l & 0x8000) h |= 0x0200;
+	if (l & 0x0200) h |= 0x0400;
+	if (l & 0x0400) h |= 0x0800;
+	if (l & 0x0800) h |= 0x1000;
+	if (l & 0x1000) h |= 0x2000;
+	if (l & 0x4000) h |= 0x4000;
+	return h;
+}
+
+static uint32
+cflag_haiku_to_linux(uint16 h, uint16 ospeed)
+{
+	uint32 l = 0;
+
+	if (h & 0x20) l |= 0x30;	/* CS8 */
+	else l |= 0x20;			/* CS7 */
+	l |= (uint32)(h & 0xFC0);	/* CSTOPB..CLOCAL */
+	if (h & 0x6000) l |= 0x80000000u;	/* CRTSCTS */
+	l |= baud_haiku_to_linux(ospeed != 0 ? ospeed : (uint16)(h & 0x1F));
+	return l;
+}
+
+static uint16
+cflag_linux_to_haiku(uint32 l, uint16* ospeed)
+{
+	uint16 h = 0;
+
+	if ((l & 0x30) == 0x30)
+		h |= 0x20;		/* CS8 */
+	h |= (uint16)(l & 0xFC0);
+	if (l & 0x80000000u)
+		h |= 0x6000;
+	*ospeed = baud_linux_to_haiku(l);
+	h = (uint16)((h & ~0x1F) | (*ospeed & 0x1F));
+	return h;
+}
+
+static void
+haiku_termios_to_linux(const struct haiku_termios* h, struct linux_ktermios* l)
+{
+	int i;
+
+	l->c_iflag = h->c_iflag;	/* POSIX input bits match */
+	l->c_oflag = h->c_oflag;
+	l->c_cflag = cflag_haiku_to_linux(h->c_cflag, h->c_ospeed);
+	l->c_lflag = lflag_haiku_to_linux(h->c_lflag);
+	l->c_line = h->c_line;
+	for (i = 0; i < LINUX_NCCS; i++)
+		l->c_cc[i] = 0;
+	l->c_cc[0] = h->c_cc[0];	/* VINTR */
+	l->c_cc[1] = h->c_cc[1];	/* VQUIT */
+	l->c_cc[2] = h->c_cc[2];	/* VERASE */
+	l->c_cc[3] = h->c_cc[3];	/* VKILL */
+	l->c_cc[4] = h->c_cc[4];	/* VEOF */
+	l->c_cc[5] = h->c_cc[5];	/* VTIME / Haiku VEOL */
+	l->c_cc[6] = h->c_cc[4];	/* VMIN / Haiku VMIN=VEOF */
+	l->c_cc[8] = h->c_cc[8];	/* VSTART */
+	l->c_cc[9] = h->c_cc[9];	/* VSTOP */
+	l->c_cc[10] = h->c_cc[10];	/* VSUSP */
+	l->c_cc[11] = h->c_cc[5];	/* VEOL */
+	l->c_cc[16] = h->c_cc[6];	/* VEOL2 */
+}
+
+static void
+linux_termios_to_haiku(const struct linux_ktermios* l, struct haiku_termios* h)
+{
+	uint16 spd = 0;
+
+	h->c_iflag = (uint16)(l->c_iflag & 0x1FFF);
+	h->c_oflag = (uint16)(l->c_oflag & 0xFFFF);
+	h->c_cflag = cflag_linux_to_haiku(l->c_cflag, &spd);
+	h->c_ospeed = spd;
+	h->c_ispeed = spd;
+	h->c_ospeed_high = 0;
+	h->c_ispeed_high = 0;
+	h->c_lflag = lflag_linux_to_haiku(l->c_lflag);
+	h->c_line = l->c_line;
+	h->pad1 = 0;
+	h->pad2 = 0;
+	h->c_cc[0] = l->c_cc[0];
+	h->c_cc[1] = l->c_cc[1];
+	h->c_cc[2] = l->c_cc[2];
+	h->c_cc[3] = l->c_cc[3];
+	h->c_cc[4] = l->c_cc[4];	/* VEOF/VMIN */
+	h->c_cc[5] = l->c_cc[5];	/* VTIME/VEOL */
+	h->c_cc[6] = l->c_cc[16];	/* VEOL2 */
+	h->c_cc[7] = 0;
+	h->c_cc[8] = l->c_cc[8];
+	h->c_cc[9] = l->c_cc[9];
+	h->c_cc[10] = l->c_cc[10];
+}
+
+static int64
+ioctl_termios(int64 fd, uint32 hcmd, void* userArg, int set)
+{
+	haiku_ioctl_fn fn;
+	struct haiku_termios ht;
+	struct linux_ktermios lt;
+	int32 st;
+	void* scratch;
+	int i;
+
+	if (userArg == NULL)
+		return -LINUX_EFAULT;
+	if (sWstatScratch < 0x100000ULL || sIoctlFn == 0)
+		return -LINUX_ENOSYS;
+	scratch = (void*)(addr_t)sWstatScratch;
+	fn = (haiku_ioctl_fn)(addr_t)sIoctlFn;
+	if (set) {
+		for (i = 0; i < (int)sizeof(lt); i++)
+			((uint8*)&lt)[i] = 0;
+		if (user_memcpy(&lt, userArg, sizeof(lt)) != B_OK)
+			return -LINUX_EFAULT;
+		linux_termios_to_haiku(&lt, &ht);
+		if (user_memcpy(scratch, &ht, sizeof(ht)) != B_OK)
+			return -LINUX_EFAULT;
+		st = fn((int32)fd, hcmd, scratch, HAIKU_TERMIOS_LEN);
+		return ioctl_status_to_linux((int64)st);
+	}
+	st = fn((int32)fd, hcmd, scratch, HAIKU_TERMIOS_LEN);
+	if (st < 0)
+		return ioctl_status_to_linux((int64)st);
+	if (user_memcpy(&ht, scratch, sizeof(ht)) != B_OK)
+		return -LINUX_EFAULT;
+	haiku_termios_to_linux(&ht, &lt);
+	if (user_memcpy(userArg, &lt, sizeof(lt)) != B_OK)
+		return -LINUX_EFAULT;
+	return 0;
+}
+
+extern "C" int64
+sys_compat_ioctl(int64 fd, int64 cmd, void* arg)
+{
+	haiku_ioctl_fn fn;
+	int32 st;
+	uint32 hcmd;
+	uint64 hlen;
+
+	if (sIoctlFn == 0)
+		return -LINUX_ENOSYS;
+	fn = (haiku_ioctl_fn)(addr_t)sIoctlFn;
+	switch ((uint32)cmd) {
+	case LINUX_TCGETS:
+		return ioctl_termios(fd, HAIKU_TCGETA, arg, 0);
+	case LINUX_TCSETS:
+		return ioctl_termios(fd, HAIKU_TCSETA, arg, 1);
+	case LINUX_TCSETSW:
+		return ioctl_termios(fd, HAIKU_TCSETAW, arg, 1);
+	case LINUX_TCSETSF:
+		return ioctl_termios(fd, HAIKU_TCSETAF, arg, 1);
+	case LINUX_TIOCGWINSZ:
+		hcmd = HAIKU_TIOCGWINSZ;
+		hlen = 8;
+		break;
+	case LINUX_TIOCSWINSZ:
+		hcmd = HAIKU_TIOCSWINSZ;
+		hlen = 8;
+		break;
+	case LINUX_TIOCGPGRP:
+		hcmd = HAIKU_TIOCGPGRP;
+		hlen = 4;
+		break;
+	case LINUX_TIOCSPGRP:
+		hcmd = HAIKU_TIOCSPGRP;
+		hlen = 4;
+		break;
+	case LINUX_TIOCSCTTY:
+		hcmd = HAIKU_TIOCSCTTY;
+		hlen = 0;
+		break;
+	case LINUX_FIONREAD:
+		hcmd = HAIKU_FIONREAD;
+		hlen = 4;
+		break;
+	case LINUX_FIONBIO:
+		hcmd = HAIKU_FIONBIO;
+		hlen = 4;
+		break;
+	default:
+		return -LINUX_ENOTTY;
+	}
+	if (hlen != 0 && arg == NULL)
+		return -LINUX_EFAULT;
+	st = fn((int32)fd, hcmd, arg, hlen);
+	return ioctl_status_to_linux((int64)st);
+}
+
 static void
 put_u16(uint8* p, uint16 v)
 {
@@ -4369,6 +4689,11 @@ dev_read(void* /*cookie*/, off_t pos, void* buf, size_t* len)
 		PUT("fcntl="); PUT(hf); PUT(" clock="); PUT(hg); PUT("\n");
 	}
 	{
+		char hi[20];
+		fmt_hex(hi, sIoctlFn);
+		PUT("ioctl="); PUT(hi); PUT("\n");
+	}
+	{
 		char fg0[20], fg8[20], fk[20], fl[20];
 		fmt_hex(fg0, sForkGs0);
 		fmt_hex(fg8, sForkGs8);
@@ -4529,7 +4854,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR38\n");
+	kser_puts("PR39\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
