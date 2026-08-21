@@ -1,16 +1,16 @@
-# Status for testers (2026-08-21, Day 49)
+# Status for testers (2026-08-21, Day 50)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY49.md`](STANDUP_DAY49.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY50.md`](STANDUP_DAY50.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 49)
+## What you can expect today (`main`, Day 50)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -22,7 +22,7 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 | `clone`/`fork` + `wait4` | `hello_fork` → `FORKOK` |
 | `execve` of another Linux ELF | `hello_exec` → `hello_min`, `EXEC_RC=0` |
 | `futex` WAIT/WAKE | `hello_futex` → `FUTEXOK` |
-| `poll` / `ppoll` / `select` | `SELECTOK`. ELF `poll(nfds==1)` `hello_poll` **`POLLOK`** (Day 48). Ash `nfds==1` still a no-copy stub |
+| `poll` / `ppoll` / `select` | `SELECTOK`. ELF `poll(nfds==1)` `hello_poll` **`POLLOK`**. Blocking ELF `poll(-1)` `hello_pollblk` **`POLLBLKOK`** (Day 50). Ash `nfds==1` still a no-copy stub |
 | file `mmap` | `hello_mmapf` → `MMAPFOK` (kernel `vm_map_file`, not `_user_map_file`) |
 | Combined `fork` + `execve` + `poll` | `hello_pipeline` → `PIPELINEOK` |
 | busybox **`sh -c`** (builtin + pipe) | `echo SHOK`; `echo HI \| cat` → `HI` (`SH_PIPE_RC=0`); same in a Haiku redirect (`HI` in the file, Day 49); `true; echo SHDONE`. All RC=0. |
@@ -33,8 +33,9 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 ### In the shop, not a tester target yet
 
 Interactive ash is guest-green (`echo SHLIVE`). ELF `hello_poll`
-is **`POLLOK`** (Day 48: kernel `wait_for_objects_etc`, timeout 0
-via a write flag). Ash `poll(nfds=1)` is still a no-copy stub.
+is **`POLLOK`**. Blocking ELF `poll(-1)` is **`POLLBLKOK`** (Day 50:
+write flag + snooze after poll starts). Do not `_user_wait_for_objects`
+from C (KDL). Ash `poll(nfds=1)` is still a no-copy stub.
 `sendfile` of a regular file still returns
 `-EINVAL` (pipe fallback is enough for `cat`). `munmap` of file maps is
 `vm_delete_area(team)` (not `_user_unmap_memory`). LTP `uname01` is
@@ -68,7 +69,7 @@ than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
 - **`CLONE_VM` / pthreads** — `clone` without `CLONE_VM` only. A Linux `pthread_create` will `-ENOSYS`.
 - **Real signals** — `rt_sigaction` / `rt_sigprocmask` return 0 and do nothing. `rt_sigreturn` is `-ENOSYS`.
 - **Sockets, epoll, ptrace, namespaces, io_uring, bpf** — not implemented.
-- **Interactive TTY `sh`** — busybox ash on a Haiku Terminal: prompt + `echo SHLIVE`. Ash `poll(nfds=1)` still does not copy the pollfd (that KDLd). ELF pipe `poll(nfds=1)` is `POLLOK`.
+- **Interactive TTY `sh`** — busybox ash on a Haiku Terminal: prompt + `echo SHLIVE`. Ash `poll(nfds=1)` still does not copy the pollfd (that KDLd). ELF pipe `poll(nfds=1)` is `POLLOK`; blocking ELF `poll(-1)` is `POLLBLKOK`.
 - **Marking a Haiku shell as Linux** — `echo LINUXABI > /dev/misc/sys_compat` from a Terminal you still want is a Kill Thread. That is expected.
 
 A **Kill Thread** / “Oh no!” dialog on a Linux ELF is a layer bug (or an unmarked team). A **KDL** or silent reboot is a layer bug and a stop-the-line event. Haiku itself staying up is the contract.

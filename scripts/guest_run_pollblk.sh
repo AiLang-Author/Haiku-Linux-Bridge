@@ -1,9 +1,9 @@
 #!/bin/sh
-# Run Linux pipe2+poll probe. Expect POLLOK.
+# Run timeout-0 hello_poll then blocking hello_pollblk.
 # License: Public Domain / CC0 1.0 Universal
 set -x
 HOST="http://10.0.2.2:8083"
-OUT=/tmp/poll.out
+OUT=/tmp/pollblk.out
 {
 	echo "=== status ==="
 	cat /dev/misc/sys_compat 2>&1
@@ -16,7 +16,7 @@ OUT=/tmp/poll.out
 	echo "=== status after ==="
 	cat /dev/misc/sys_compat 2>&1
 } > "$OUT" 2>&1
-echo "=== poll.out ==="
+echo "=== pollblk.out ==="
 cat "$OUT"
-curl -s --max-time 8 -X POST --data-binary @"$OUT" "$HOST/results/poll_out.txt" || true
-echo RUN_POLL_DONE
+curl -s --max-time 8 -X POST --data-binary @"$OUT" "$HOST/results/pollblk_out.txt" || true
+echo RUN_POLLBLK_DONE

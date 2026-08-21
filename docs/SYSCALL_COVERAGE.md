@@ -129,7 +129,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 22/293 | pipe/pipe2 | **works**. `sh -c 'echo HI \| cat'` `SH_PIPE_RC=0`. Day 31. |
 | 40 | sendfile | **pipe = `-EINVAL`** (Linux: `in_fd` must be mmapable). busybox `cat` then `read`/`write`. Regular-file bounce later. |
-| 7 | poll | **ELF nfds==1 `POLLOK`** (Day 48): hook copy + kernel `wait_for_objects_etc`; timeout 0 via write flag. Ash `nfds==1` still a no-copy stub. Do not `_user_wait_for_objects` from C (KDL). |
+| 7 | poll | **ELF nfds==1 `POLLOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`** (Day 50): write flag + snooze after poll starts. Ash `nfds==1` still a no-copy stub. Do not `_user_wait_for_objects` from C (KDL even with ELF `0x403020`). |
 | 23/270 | select/pselect6 | **works**. fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | 271 | ppoll | **works** (timespec → ms; sigset ignored). |
 
@@ -171,10 +171,12 @@ Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
 child's exit through. Rare/deprecated syscalls wait for a filed issue.
 
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
-getppid, nanosleep.
+getppid.
 
 **Highest remaining for “coreutils in the wild”:** `CLONE_VM`
-(pthread). `hello_poll` is **`POLLOK`** (Day 48). `echo HI | cat`
-prints **`HI`** in a Haiku redirect (Day 49). Interactive ash is
-guest-green (`echo SHLIVE`, Day 47). Testers should start from
+(pthread). `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
+**`POLLBLKOK`** (Day 50). `nanosleep` snoozes (used by that probe).
+`echo HI | cat` prints **`HI`** in a Haiku redirect (Day 49).
+Interactive ash is guest-green (`echo SHLIVE`, Day 47). Testers
+should start from
 [STATUS.md](STATUS.md), not this table.

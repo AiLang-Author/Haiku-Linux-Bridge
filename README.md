@@ -38,13 +38,13 @@ This repo is **C++ and x86_64 assembler** in the public domain (CC0). It is an o
 - Guest **curl** is Haiku’s own curl on BSD sockets. Fetch and POST to the host HTTP helper work (`--max-time` so a stuck POST cannot hang the script).
 - `id` now prints `groups=0(root)` (`getgroups` guest-green).
 - Tiny `hello_exit` (`exit_group(42)`) is **`EXIT42_RC=42`**. glibc `return 1` / `exit(1)` and busybox **`false` / differing `cmp` now exit 1**.
-- Raw `write` then exit lands in a redirect (`hello_wr` prints `WRPROBE`). glibc `puts` prints **`PRINTF_OK`**. busybox **`date` / `md5sum` / `nproc` write** on a redirected fd. Linux **TTY ioctl** maps onto Haiku tty (`WINSZ 25x80`). Linux **`/dev/fb0`** is Haiku VESA (**1280x800x32**). Interactive **busybox ash** on the Terminal: **`echo SHLIVE`**. ELF **`hello_poll` `POLLOK`**. **`echo HI \| cat`** prints **`HI`** in a Haiku redirect.
+- Raw `write` then exit lands in a redirect (`hello_wr` prints `WRPROBE`). glibc `puts` prints **`PRINTF_OK`**. busybox **`date` / `md5sum` / `nproc` write** on a redirected fd. Linux **TTY ioctl** maps onto Haiku tty (`WINSZ 25x80`). Linux **`/dev/fb0`** is Haiku VESA (**1280x800x32**). Interactive **busybox ash** on the Terminal: **`echo SHLIVE`**. ELF **`hello_poll` `POLLOK`**. Blocking ELF **`poll(-1)` `POLLBLKOK`**. **`echo HI \| cat`** prints **`HI`** in a Haiku redirect.
 
 Pickup: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [`docs/STATUS.md`](docs/STATUS.md). Punch-out list: [`docs/CLI_APPLET_PUNCHOUT.md`](docs/CLI_APPLET_PUNCHOUT.md).
 
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY49.md`](docs/STANDUP_DAY49.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY50.md`](docs/STANDUP_DAY50.md).
 
 **Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 
@@ -75,7 +75,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `clone` / `wait4` / `exit` | **`hello_fork` `FORKOK`, RC=0.** Child IRETQ to `0x40101c`. Stamp RIP-guarded. See Day 21. |
 | Linux `execve` | **Works** — `hello_exec` replaced itself with `hello_min` via `_user_exec` of `sys_compat_run`. `EXEC_RC=0`. See Day 22. |
 | Linux `futex` | **Works** — WAIT/WAKE on per-thread kstack. `hello_futex` / `FUTEXOK`. See Day 23. |
-| Linux `poll` / `ppoll` | **Partial** — ELF `nfds==1` **`POLLOK`** (kernel `wait_for_objects_etc`; timeout 0 via write flag). Ash `nfds==1` still a no-copy stub. Day 48. |
+| Linux `poll` / `ppoll` | **Partial** — ELF `nfds==1` **`POLLOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`** (write flag + snooze). Ash `nfds==1` still a no-copy stub. Day 50. |
 | Linux `select` / `pselect6` | **Works** — fd_set → poll. `hello_select` / `SELECTOK`. See Day 25. |
 | Linux file `mmap` | **Works** — kernel `vm_map_file` / `_vm_map_file(..., false)`. `hello_mmapf` / `MMAPFOK`. See Day 32. |
 | `fork`+`execve`+`poll` | **Works** — `hello_pipeline` / `PIPELINEOK`. Mark keeps sibling CR3 slots. See Day 26. |

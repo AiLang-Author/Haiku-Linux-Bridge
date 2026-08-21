@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-21 (Day 49: echo HI \| cat in a redirect)
+**Updated:** 2026-08-21 (Day 50: blocking ELF poll(-1) POLLBLKOK)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -52,6 +52,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | interactive `sh` | BusyBox ash prompt, **`echo SHLIVE`** (Day 47) |
 | `hello_poll` | **`POLLOK`** `POLL_RC=0` (Day 48) |
 | `echo HI \| cat` redirect | **`HI`** in the file, **`SH_PIPE_REDIR_RC=0`** (Day 49) |
+| `hello_pollblk` | **`POLLBLKOK`** `POLLBLK_RC=0` (Day 50): `poll(-1)` waits for a child write |
 
 ## Fragile / wrong (punch these before a toolchain)
 

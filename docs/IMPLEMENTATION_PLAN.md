@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-21 (Day 49: echo HI \| cat in a redirect)  
+**Last updated:** 2026-08-21 (Day 50: blocking ELF poll(-1) POLLBLKOK)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -43,7 +43,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 46](STANDUP_DAY46.md) (fbdev `/dev/fb0` onto Haiku VESA; `FBOK`) →
 [Day 47](STANDUP_DAY47.md) (interactive busybox ash; `echo SHLIVE`) →
 [Day 48](STANDUP_DAY48.md) (`hello_poll` `POLLOK`; kernel `wait_for_objects_etc`) →
-[Day 49](STANDUP_DAY49.md) (`echo HI \| cat` in a redirect; `HI` in the file).
+[Day 49](STANDUP_DAY49.md) (`echo HI \| cat` in a redirect; `HI` in the file) →
+[Day 50](STANDUP_DAY50.md) (blocking ELF `poll(-1)`; `POLLBLKOK`).
 
 ---
 
@@ -84,9 +85,10 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 49):** `sh -c 'echo HI | cat'` prints **`HI`**,
-**`SH_PIPE_RC=0`**, and the same **`HI`** lands in a Haiku redirect.
-Day 48 `hello_poll` **`POLLOK`** and ash **`echo SHLIVE`** still hold.
+**Where we are (Day 50):** blocking ELF `poll(..., -1)` is
+**`POLLBLKOK`**. Timeout 0 `hello_poll` **`POLLOK`**. `nanosleep` is
+`snooze`. Ash **`echo SHLIVE`** and `echo HI | cat` in a redirect still
+hold.
 Punch-out: [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -105,11 +107,11 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Blocking ELF `poll(..., -1)` is
-`wait_for_objects_etc`; ash `nfds==1` still stubs. Do not
-`_user_wait_for_objects` from C (KDL). Do not `user_memcpy` ash's
-stdin pollfd. Do not `FBIOPUT` a new video mode. Do not build DRM.
-Do not pass the fork tramp in `rdx` into Linux `_start`.
+**What needs doing next:** `CLONE_VM` later. Ash `nfds==1` still
+stubs. Do not `_user_wait_for_objects` from C (KDL even with an ELF
+pollfd). Do not `user_memcpy` ash's stdin pollfd. Do not `FBIOPUT` a
+new video mode. Do not build DRM. Do not pass the fork tramp in `rdx`
+into Linux `_start`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -188,7 +190,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK` RC=0. Child IRETQ to `0x40101c`. Stamp RIP-guarded. Day 20–21. |
 | Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
 | Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
-| Linux `poll`/`ppoll` (7/271) | **Partial** | ELF `nfds==1`: hook copy + kernel `wait_for_objects_etc`; timeout 0 via write flag. `hello_poll` **`POLLOK`** Day 48. Ash `nfds==1` still no-copy stub. Do not `_user_wait_for_objects` from C. |
+| Linux `poll`/`ppoll` (7/271) | **Partial** | ELF `nfds==1`: hook copy. timeout 0 + blocking via Linux `write()` flag + snooze. `hello_poll` **`POLLOK`**. `hello_pollblk` **`POLLBLKOK`** Day 50. Ash `nfds==1` still no-copy stub. Do not `_user_wait_for_objects` from C. |
 | Linux `select`/`pselect6` (23/270) | **Works** | fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | Linux file `mmap` (9) | **Works** | kernel `vm_map_file` + `_vm_map_file(..., false)`. ANON still arena-carve. `hello_mmapf` `MMAPFOK`. Day 32. |
 | Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
@@ -292,10 +294,9 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. Blocking ELF `poll(..., -1)` is `wait_for_objects_etc`; ash
-   `nfds==1` still stubs.
-2. `CLONE_VM` later. Rare/deprecated numbers wait for a filed
-   issue. Do not `FBIOPUT` under app_server. Do not DRM.
+1. `CLONE_VM` later. Ash `nfds==1` still stubs.
+2. Rare/deprecated numbers wait for a filed issue. Do not
+   `FBIOPUT` under app_server. Do not DRM.
 
 ---
 
@@ -350,17 +351,20 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_exec.s` | Linux `execve("/boot/home/hello_min")`; `EXEC_RC=0` Day 22 |
 | `tests/hello_futex.s` | futex WAIT EAGAIN / WAKE 0 / WAIT timeout; `FUTEXOK` Day 23 |
 | `scripts/guest_run_futex.sh` | Guest: futex probe; POST `futex_out.txt` |
-| `tests/hello_poll.s` | pipe2 + poll empty/ready; `POLLOK` Day 24 |
-| `scripts/guest_run_poll.sh` | Guest: poll probe; POST `poll_out.txt` |
+| `tests/hello_poll.s` | pipe2 + poll empty/ready; `POLLOK` Day 24/48 |
+| `tests/hello_pollblk.s` | clone + nanosleep + `poll(-1)`; `POLLBLKOK` Day 50 |
+| `scripts/guest_run_poll.sh` | Guest: poll + pollblk probes |
+| `scripts/guest_run_pollblk.sh` | Guest: `POLLOK` then `POLLBLKOK`; POST `pollblk_out.txt` |
 | `tests/hello_select.s` | pipe2 + select empty/ready; `SELECTOK` Day 25 |
 | `tests/hello_mmapf.s` | file mmap ELF magic; `MMAPFOK` Day 25 |
 | `tests/hello_pipeline.s` | clone+poll+execve hello_min; `PIPELINEOK` Day 26 |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
 | `scripts/guest_go_sh.sh` | Guest: rebuild poll stub; then `busybox sh` on Terminal |
-| `scripts/guest_go_poll.sh` | Guest: rebuild PR45 poll; `hello_poll` |
+| `scripts/guest_go_poll.sh` | Guest: rebuild poll trap; `hello_poll` + `hello_pollblk` |
 | `docs/STANDUP_DAY47.md` | Day 47 wrap: interactive ash; `echo SHLIVE` |
 | `docs/STANDUP_DAY48.md` | Day 48 wrap: `hello_poll` `POLLOK` |
 | `docs/STANDUP_DAY49.md` | Day 49 wrap: `echo HI \| cat` in a redirect |
+| `docs/STANDUP_DAY50.md` | Day 50 wrap: blocking ELF `poll(-1)` `POLLBLKOK` |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
 | `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
 | `scripts/guest_term.py` | Host: open Haiku Terminal via Tracker + type |

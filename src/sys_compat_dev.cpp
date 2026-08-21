@@ -2726,15 +2726,10 @@ pollfd_in_elf(const void* fds, int64 nfds)
 extern "C" int64
 sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 {
-	haiku_waitobj_fn fn;
-	uint8 kfds[POLL_MAX_FDS * 8];
-	uint8 hinfos[POLL_MAX_FDS * 8];
-	int32 i, n, ready;
-	int32 fd;
-	uint16 ev, rev;
-	uint32 flags;
-	int64 tout;
-	int32 st;
+	uint8 kfds[8];
+	int32 ready;
+	uint16 ev;
+	int64 left;
 	uint64 snap;
 
 	(void)scratch;
@@ -2743,10 +2738,14 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	if (nfds == 0)
 		return 0;
 	/*
-	 * _user_wait_for_objects user_memcpy GPFd (src 0x7fffffcfff01)
-	 * after the ELF pollfd was already in hand (P0x403018). Use
-	 * kernel wait_for_objects_etc with a kernel infos pointer.
 	 * Hook copied ELF nfds==1 pollfd into gPollSnap (user GS).
+	 * Do not _user_wait_for_objects from C: even with the ELF
+	 * pollfd at 0x403020, user_memcpy GPFd (src=0x7fffffcfff01).
+	 * Do not kernel wait_for_objects_etc: kernel=true waits on
+	 * the kernel io context (READ on an empty pipe).
+	 * POLLIN is the Linux write() flag (sPollWrote). timeout 0
+	 * is one check; timeout != 0 snoozes until the flag or the
+	 * deadline. Ash nfds==1 still the no-copy stub.
 	 */
 	if (!pollfd_in_elf(fds, nfds)) {
 		if (nfds == 1) {
@@ -2759,8 +2758,6 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	}
 	if (nfds != 1)
 		return -LINUX_EINVAL;
-	if (sWaitObjKern == 0)
-		return -LINUX_ENOSYS;
 	snap = gPollSnap;
 	kfds[0] = (uint8)snap;
 	kfds[1] = (uint8)(snap >> 8);
@@ -2770,91 +2767,38 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	kfds[5] = (uint8)(snap >> 40);
 	kfds[6] = 0;
 	kfds[7] = 0;
-
-	for (i = 0; i < (int32)nfds; i++) {
-		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
-			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
-		ev = (uint16)(kfds[i * 8 + 4] | (kfds[i * 8 + 5] << 8));
-		/* Haiku object_wait_info: object, type, events */
-		hinfos[i * 8 + 0] = (uint8)fd;
-		hinfos[i * 8 + 1] = (uint8)(fd >> 8);
-		hinfos[i * 8 + 2] = (uint8)(fd >> 16);
-		hinfos[i * 8 + 3] = (uint8)(fd >> 24);
-		if (fd < 0) {
-			hinfos[i * 8 + 4] = 0;
-			hinfos[i * 8 + 5] = 0;
-			hinfos[i * 8 + 6] = 0;
-			hinfos[i * 8 + 7] = 0;
-		} else {
-			uint16 hev = linux_to_haiku_pevents(ev);
-			hinfos[i * 8 + 4] = 0; /* B_OBJECT_TYPE_FD */
-			hinfos[i * 8 + 5] = 0;
-			hinfos[i * 8 + 6] = (uint8)hev;
-			hinfos[i * 8 + 7] = (uint8)(hev >> 8);
-		}
-	}
-	/* timeout 0: wait_for_objects_etc reports READ on an empty
-	 * pipe (HE=1). Track Linux write() instead. */
+	ev = (uint16)(kfds[4] | (kfds[5] << 8));
+	ready = 0;
+	/* timeout 0: one shot on the write flag. A prior team's
+	 * stdout write must not wake poll(-1) on a new empty pipe. */
 	if (timeoutMs == 0) {
-		ready = 0;
-		kfds[6] = 0;
-		kfds[7] = 0;
-		if (sPollWrote != 0 && (kfds[4] & LINUX_POLLIN) != 0) {
+		if (sPollWrote != 0 && (ev & LINUX_POLLIN) != 0) {
 			sPollWrote = 0;
 			kfds[6] = LINUX_POLLIN;
 			ready = 1;
 		}
 		goto poll_snap;
 	}
-	if (timeoutMs < 0) {
-		flags = 0;
-		tout = 0x7fffffffffffffffLL;
-	} else {
-		flags = 8; /* B_RELATIVE_TIMEOUT */
-		if (timeoutMs > 0x7fffffffLL / 1000)
-			tout = 0x7fffffffLL;
-		else
-			tout = timeoutMs * 1000;
-	}
-	fn = (haiku_waitobj_fn)(addr_t)sWaitObjKern;
-	kser_puts("WK\n");
-	st = fn(hinfos, (int32)nfds, flags, tout);
-	kser_puts("WS");
-	kser_hex((uint64)(int64)st);
-	kser_putc('\n');
-	if (st < 0) {
-		if ((uint32)(int32)st == 0x80000009
-			|| (uint32)(int32)st == 0x8000000b)
-			return 0;
-		return haiku_status_to_linux((int64)st);
-	}
-
-	ready = 0;
-	for (i = 0; i < (int32)nfds; i++) {
-		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
-			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
-		ev = (uint16)(kfds[i * 8 + 4] | (kfds[i * 8 + 5] << 8));
-		rev = 0;
-		if (fd < 0)
-			rev = 0;
-		else {
-			uint16 hev = (uint16)(hinfos[i * 8 + 6]
-				| (hinfos[i * 8 + 7] << 8));
-			kser_puts("HE");
-			kser_hex((uint64)hev);
-			kser_putc('\n');
-			/* Only requested events. HUP/ERR on an empty
-			 * pipe must not make timeout-0 poll return 1. */
-			rev = haiku_to_linux_pevents(hev);
-			rev &= (uint16)(ev | LINUX_POLLERR);
-			if (timeoutMs == 0)
-				rev &= LINUX_POLLIN | LINUX_POLLOUT;
+	sPollWrote = 0;
+	kser_puts("PW\n");
+	left = timeoutMs;
+	for (;;) {
+		if (sPollWrote != 0 && (ev & LINUX_POLLIN) != 0) {
+			sPollWrote = 0;
+			kfds[6] = LINUX_POLLIN;
+			ready = 1;
+			break;
 		}
-		kfds[i * 8 + 6] = (uint8)rev;
-		kfds[i * 8 + 7] = (uint8)(rev >> 8);
-		if (rev != 0)
-			ready++;
+		if (left == 0)
+			break;
+		snooze(5000);
+		if (left > 0) {
+			if (left <= 5)
+				break;
+			left -= 5;
+		}
 	}
+	kser_puts("PE\n");
 poll_snap:
 	gPollSnap = (uint64)kfds[0]
 		| ((uint64)kfds[1] << 8)
@@ -2864,7 +2808,6 @@ poll_snap:
 		| ((uint64)kfds[5] << 40)
 		| ((uint64)kfds[6] << 48)
 		| ((uint64)kfds[7] << 56);
-	(void)n;
 	return (int64)ready;
 }
 
@@ -4418,9 +4361,17 @@ sys_compat_nanosleep(const void* req, void* rem)
 	}
 	if ((int64)sec < 0 || nsec >= 1000000000ULL)
 		return -LINUX_EINVAL;
-	/* No snooze number proven yet. Zero-duration is enough for CLI. */
 	if (sec == 0 && nsec == 0)
 		return 0;
+	{
+		uint64 us;
+		if (sec > 2000ULL)
+			sec = 2000ULL;
+		us = sec * 1000000ULL + nsec / 1000ULL;
+		if (us == 0)
+			us = 1;
+		snooze((bigtime_t)us);
+	}
 	return 0;
 }
 
@@ -5367,7 +5318,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR45e\n");
+	kser_puts("PR46c\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
