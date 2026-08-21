@@ -59,7 +59,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 | 110 | getppid | wired |
 | 111 | getpgrp | stub (pid) |
 | 121 | getpgid | stub (pid) |
-| 231/60 | exit_group/exit | **works**. Always `_user_exit_team(status)` + `thread_exit`. Callee-saved kept on `gs:8` (glibc `exit()` uses `r14`). After mark, `rdx=0` so glibc `exit()` fflush runs (`rtld_fini` is not the fork tramp). `hello_exit` **42**, `return 1` **1**, busybox **`false`/`cmp` 1**. Redirected `date`/`md5sum`/`puts` write. Day 42/44. |
+| 231/60 | exit_group/exit | **works**. `exit_group`(231) is `_user_exit_team` + `thread_exit`. `exit`(60) is `thread_exit` when `thread_count > 1` (CLONE_VM child, Day 52); last thread still team-kills. Callee-saved on `gs:8`. After mark, `rdx=0` so glibc `exit()` fflush runs. `hello_exit` **42**, `return 1` **1**, busybox **`false`/`cmp` 1**. Day 42/44/52. |
 
 ### File I/O (coreutils hot path)
 
@@ -167,8 +167,9 @@ to Linux `0x40101c`. Stamp-on-fork is RIP-guarded (ELF/tramp only).
 `hello_min` (`EXEC_RC=0`, Day 22). Flatten + `_user_exec` of
 `sys_compat_run`; unmark first so the loader is Haiku.
 Single-process grep/sed/wc do **not** need spawn. Pipelines and shells do.
-Linux `exit`=60 is Haiku `_kern_cancel_thread` — do not pass an unmarked
-child's exit through. Rare/deprecated syscalls wait for a filed issue.
+Linux `exit`(60) on the last thread of a team is still team teardown.
+A CLONE_VM extra thread uses Haiku `thread_exit` and keeps the CR3.
+Rare/deprecated syscalls wait for a filed issue.
 
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid.
