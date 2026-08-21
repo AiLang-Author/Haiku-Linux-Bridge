@@ -23,7 +23,7 @@ flag:
 
 .section .rodata
 msg_ok:
-	.ascii "CLONEVMOK\n"
+	.ascii "CLONEEXOK\n"
 	msg_ok_len = . - msg_ok
 msg_fail:
 	.ascii "CLONEVMFAIL\n"
@@ -49,7 +49,7 @@ _start:
 	mov	r12, 200
 .Lwait:
 	cmp	dword ptr [flag], 1
-	je	.Lok
+	je	.Lseen
 	/* nanosleep 5ms */
 	mov	qword ptr [ts], 0
 	mov	qword ptr [ts + 8], 5000000
@@ -62,6 +62,17 @@ _start:
 	dec	r12
 	jnz	.Lwait
 	jmp	.Lfail
+
+.Lseen:
+	/* Child should have thread-exited. Pause then print. */
+	mov	qword ptr [ts], 0
+	mov	qword ptr [ts + 8], 20000000
+	lea	rdi, [ts]
+	xor	rsi, rsi
+	.att_syntax prefix
+	movq	$35, %rax
+	.intel_syntax noprefix
+	syscall
 
 .Lok:
 	.att_syntax prefix
@@ -81,6 +92,12 @@ _start:
 
 .Lchild:
 	mov	dword ptr [flag], 1
+	/* Linux exit(60): extra thread, not exit_group. */
+	.att_syntax prefix
+	movq	$60, %rax
+	xorq	%rdi, %rdi
+	.intel_syntax noprefix
+	syscall
 .Lhang:
 	jmp	.Lhang
 

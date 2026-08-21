@@ -188,6 +188,7 @@
 	.extern	sys_compat_try_fork
 	.extern	sys_compat_clone_vm
 	.extern	sys_compat_exit_prep
+	.extern	sys_compat_exit60
 	.extern	sys_compat_fork_parent_dump
 	.globl	sChildDone
 	.hidden	sChildDone
@@ -640,8 +641,8 @@ sys_compat_lstar:
 	je	.Lrseq
 	cmp	rax, 63			/* Linux uname */
 	je	.Luname
-	cmp	rax, 60			/* Linux exit */
-	je	.Lexit
+	cmp	rax, 60			/* Linux exit — thread if not last */
+	je	.Lexit60
 	cmp	rax, 231		/* Linux exit_group */
 	je	.Lexit
 	cmp	rax, 62			/* kill — heartbeat / teardown */
@@ -884,6 +885,31 @@ sys_compat_lstar:
 .Lopenat_dir:
 	mov	rax, 0x74		/* _kern_open_dir(dirfd, path) */
 	jmp	.Llstar
+
+.Lexit60:
+	/* clone(CLONE_VM) extra thread: Haiku thread_exit, keep CR3.
+	 * Last thread of the team: same as exit_group. */
+	KSER	'x'
+	mov	qword ptr [rip + sExitStatus], rdi
+	mov	qword ptr [rip + sExitR14], r14
+	test	rdi, rdi
+	jnz	.Lexit60_have
+	mov	rax, r14
+	cmp	rax, 256
+	jae	.Lexit60_have
+	test	rax, rax
+	jz	.Lexit60_have
+	mov	qword ptr [rip + sExitStatus], rax
+.Lexit60_have:
+	mov	rsp, qword ptr [gs:8]
+	sub	rsp, 0xA00
+	and	rsp, -16
+	mov	rdi, qword ptr [rip + sExitStatus]
+	sti
+	call	sys_compat_exit60
+	cli
+	/* Last thread: C returned. Team teardown. */
+	jmp	.Lexit_have
 
 .Lexit:
 	KSER	'e'

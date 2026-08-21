@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-21 (Day 51: clone(CLONE_VM) CLONEVMOK)
+**Updated:** 2026-08-21 (Day 52: CLONE_VM child exit(60) CLONEEXOK)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -53,7 +53,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `hello_poll` | **`POLLOK`** `POLL_RC=0` (Day 48) |
 | `echo HI \| cat` redirect | **`HI`** in the file, **`SH_PIPE_REDIR_RC=0`** (Day 49) |
 | `hello_pollblk` | **`POLLBLKOK`** `POLLBLK_RC=0` (Day 50): `poll(-1)` waits for a child write |
-| `hello_clonevm` | **`CLONEVMOK`** `CLONEVM_RC=0` (Day 51): `clone(CLONE_VM)` shared flag |
+| `hello_clonevm` | **`CLONEEXOK`** `CLONEVM_RC=0` (Day 52): `clone(CLONE_VM)` + child `exit`(60) |
 
 ## Fragile / wrong (punch these before a toolchain)
 
@@ -129,7 +129,7 @@ but they are not what this busybox set exercises.
 ## Next
 
 1. Blocking ELF `poll(..., -1)` is `wait_for_objects_etc`; ash stubs.
-2. Thread `exit`(60) vs `exit_group`. SETTLS / CLEARTID.
+2. `CLONE_SETTLS` / `CLONE_CHILD_CLEARTID`.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
 `md5sum` / glibc `puts` are guest-green (Day 44).

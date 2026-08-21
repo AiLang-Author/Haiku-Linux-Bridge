@@ -448,6 +448,7 @@ extern "C" {
 	int64 sys_compat_getgroups(int64 size, void* list);
 	int64 sys_compat_sched_getaffinity(int64 pid, uint64 len, void* mask);
 	void sys_compat_exit_team(int64 status);
+	int64 sys_compat_exit60(int64 status);
 	int64 sys_compat_getuid(void);
 	int64 sys_compat_getgid(void);
 	int64 sys_compat_setuid(int64 uid);
@@ -4105,6 +4106,25 @@ sys_compat_exit_prep(void)
 
 extern "C" uint64 sExitR14;
 
+extern "C" int64
+sys_compat_exit60(int64 status)
+{
+	team_info info;
+
+	(void)status;
+	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK
+		&& info.thread_count > 1) {
+		kser_puts("XT n=");
+		kser_hex((uint64)(uint32)info.thread_count);
+		kser_putc('\n');
+		if (sThreadExit != 0)
+			sThreadExit();
+		kser_puts("XTR\n");
+		return 1;
+	}
+	return 0;
+}
+
 extern "C" void
 sys_compat_exit_team(int64 status)
 {
@@ -5471,7 +5491,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR47\n");
+	kser_puts("PR48\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

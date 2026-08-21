@@ -118,7 +118,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. `CLONE_VM` **`CLONEVMOK`** (Day 51): same-team `_user_spawn_thread`. SETTLS / CLEARTID / thread exit later. |
+| 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. `CLONE_VM` + child `exit`(60) **`CLONEEXOK`** (Day 52). SETTLS / CLEARTID later. |
 | 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
 | 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
 | 202 | futex | **works** (WAIT/WAKE/BITSET; REQUEUE-as-wake). `hello_futex` `FUTEXOK`. Day 23. |
@@ -174,8 +174,8 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 getppid.
 
 **Highest remaining for “coreutils in the wild”:** pthread
-(`CLONE_SETTLS` / thread `exit`). `clone(CLONE_VM)` is **`CLONEVMOK`**
-(Day 51). `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
+(`CLONE_SETTLS` / CLEARTID). `clone(CLONE_VM)` + child `exit`(60) is
+**`CLONEEXOK`** (Day 52). `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
 **`POLLBLKOK`** (Day 50). `nanosleep` snoozes (used by that probe).
 `echo HI | cat` prints **`HI`** in a Haiku redirect (Day 49).
 Interactive ash is guest-green (`echo SHLIVE`, Day 47). Testers
