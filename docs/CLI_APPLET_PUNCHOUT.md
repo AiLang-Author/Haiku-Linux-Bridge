@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-19 (Day 47: interactive busybox ash)
+**Updated:** 2026-08-21 (Day 48: hello_poll POLLOK)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -50,6 +50,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | TTY ioctl | **`TTY0=0`**, **`WINSZ 25x80`**, **`PGRP pgid=691`** (Day 45) |
 | fbdev | **`/dev/fb0` 1280x800x32**, mmap VESA `0xFD000000`, **`FBOK`** (Day 46) |
 | interactive `sh` | BusyBox ash prompt, **`echo SHLIVE`** (Day 47) |
+| `hello_poll` | **`POLLOK`** `POLL_RC=0` (Day 48) |
 
 ## Fragile / wrong (punch these before a toolchain)
 
@@ -111,10 +112,16 @@ but they are not what this busybox set exercises.
 - `poll(nfds=1)` does not copy the user pollfd (that KDLd). Interactive
   ash: **`~ # echo SHLIVE`**.
 
+## Day 48 trap changes
+
+- ELF `poll(nfds==1)`: hook copies the pollfd (user GS). Kernel
+  `wait_for_objects_etc` (not `_user_`). Timeout 0 via a Linux
+  `write()` flag. Guest: **`POLLOK`**. Ash still stubs `nfds==1`.
+
 ## Next
 
-1. Safe pollfd copy so `hello_poll` / pipe `poll(1)` work again.
-2. Re-prove `echo HI | cat` in a redirect.
+1. Re-prove `echo HI | cat` in a redirect.
+2. Blocking ELF `poll(..., -1)` is `wait_for_objects_etc`.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
 `md5sum` / glibc `puts` are guest-green (Day 44).

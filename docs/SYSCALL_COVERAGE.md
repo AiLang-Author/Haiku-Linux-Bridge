@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-19 (Day 47: interactive ash)
+**Last updated:** 2026-08-21 (Day 48: hello_poll POLLOK)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -129,7 +129,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 22/293 | pipe/pipe2 | **works**. `sh -c 'echo HI \| cat'` `SH_PIPE_RC=0`. Day 31. |
 | 40 | sendfile | **pipe = `-EINVAL`** (Linux: `in_fd` must be mmapable). busybox `cat` then `read`/`write`. Regular-file bounce later. |
-| 7 | poll | **nfds!=1 works** (`_user_wait_for_objects` 0x06). **nfds==1 is a no-copy stub** (copying ash's stdin pollfd KDLd). Interactive ash `echo SHLIVE` Day 47. `hello_poll` `POLLOK` Day 24 is a known miss until a safe pollfd copy. |
+| 7 | poll | **ELF nfds==1 `POLLOK`** (Day 48): hook copy + kernel `wait_for_objects_etc`; timeout 0 via write flag. Ash `nfds==1` still a no-copy stub. Do not `_user_wait_for_objects` from C (KDL). |
 | 23/270 | select/pselect6 | **works**. fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | 271 | ppoll | **works** (timespec → ms; sigset ignored). |
 
@@ -173,9 +173,10 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** safe pollfd copy
-so `hello_poll` / pipe `poll(nfds=1)` work without KDL, then
-`CLONE_VM` (pthread). Interactive ash is guest-green (`echo SHLIVE`,
-Day 47). `hello_pipeline` is guest-green (`PIPELINEOK`, Day 26).
-`sh -c 'echo HI | cat'` prints `HI`, `SH_PIPE_RC=0` (Day 31).
-Testers should start from [STATUS.md](STATUS.md), not this table.
+**Highest remaining for “coreutils in the wild”:** re-prove
+`echo HI | cat` in a redirect, then `CLONE_VM` (pthread).
+`hello_poll` is **`POLLOK`** (Day 48). Interactive ash is
+guest-green (`echo SHLIVE`, Day 47). `hello_pipeline` is
+guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo HI | cat'`
+prints `HI`, `SH_PIPE_RC=0` (Day 31). Testers should start from
+[STATUS.md](STATUS.md), not this table.

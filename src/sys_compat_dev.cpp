@@ -324,6 +324,7 @@ static uint64 sFcntlFn;
 static uint64 sIoctlFn;
 static uint64 sForkFn;
 static uint64 sWaitObjFn;
+static uint64 sWaitObjKern;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
@@ -357,6 +358,8 @@ static uint64 sFbPhys;
 static uint64 sKernWriteStatFn;
 static char sWstatPath[1024];
 extern "C" uint64 sWstatScratch;
+extern "C" uint64 gPollSnap;
+extern "C" uint8 sPollWrote;
 static uint64 sReadFn;
 static uint64 sWriteFn;
 static uint64 sOpenFn;
@@ -842,6 +845,43 @@ discover_vm_delete_area(void)
 		}
 	}
 	kser_puts("VDno\n");
+}
+
+static void
+discover_wait_for_objects_etc(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"wait_for_objects_etc",
+		"_Z20wait_for_objects_etcP16object_wait_infoijl",
+		"_Z20wait_for_objects_etcP16object_wait_infoijx",
+		"_Z20wait_for_objects_etcP16object_wait_infojim",
+		"wait_for_objects",
+		"_Z17wait_for_objectsP16object_wait_infoi",
+		NULL
+	};
+
+	sWaitObjKern = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sWaitObjKern = (uint64)(addr_t)p;
+				kser_puts("WOKfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("WOKno\n");
 }
 
 static void
@@ -2638,6 +2678,51 @@ haiku_to_linux_pevents(uint16 e)
  * Linux poll/ppoll → _user_wait_for_objects. infos must be a user
  * address (scratch). Block on the official kstack, not gKstack.
  */
+/* Haiku FIONREAD. _user_ioctl writes to sWstatScratch; load with
+ * user GS (kernel GS load of user VA GPFd). */
+static int32
+fionread_fd(int32 fd)
+{
+	haiku_ioctl_fn ifn;
+	void* sc;
+	int32 nread, st;
+
+	if (sIoctlFn == 0 || sWstatScratch < 0x100000ULL)
+		return 0;
+	sc = (void*)(addr_t)sWstatScratch;
+	ifn = (haiku_ioctl_fn)(addr_t)sIoctlFn;
+	st = ifn(fd, 0xbe000001u, sc, 4);
+	if (st < 0)
+		return 0;
+	nread = 0;
+	__asm__ __volatile__(
+		"swapgs\n\t"
+		"movl (%1), %0\n\t"
+		"swapgs"
+		: "=r"(nread) : "r"(sc) : "memory");
+	return nread;
+}
+
+/* hello_poll pfd is .align 8 in ELF .data (~0x40xxxx). ash's stdin
+ * pollfd was 0x7fffffcfff01. Never copy that. */
+static int
+pollfd_in_elf(const void* fds, int64 nfds)
+{
+	uint64 a = (uint64)(addr_t)fds;
+	uint64 n;
+
+	if (nfds <= 0)
+		return 0;
+	n = (uint64)nfds * 8;
+	if ((a & 7) != 0)
+		return 0;
+	if (a < 0x400000ULL || a >= 0x1000000ULL)
+		return 0;
+	if (a + n > 0x1000000ULL)
+		return 0;
+	return 1;
+}
+
 extern "C" int64
 sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 {
@@ -2650,30 +2735,41 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	uint32 flags;
 	int64 tout;
 	int32 st;
+	uint64 snap;
 
+	(void)scratch;
 	if (nfds < 0)
 		return -LINUX_EINVAL;
 	if (nfds == 0)
 		return 0;
-	/* ash poll(stdin). user_memcpy of that pollfd KDLd (GPF).
-	 * timeout 0 → empty; else ready + snooze so we do not spin. */
-	if (nfds == 1) {
-		if (timeoutMs == 0)
-			return 0;
-		snooze(5000);
-		return 1;
+	/*
+	 * _user_wait_for_objects user_memcpy GPFd (src 0x7fffffcfff01)
+	 * after the ELF pollfd was already in hand (P0x403018). Use
+	 * kernel wait_for_objects_etc with a kernel infos pointer.
+	 * Hook copied ELF nfds==1 pollfd into gPollSnap (user GS).
+	 */
+	if (!pollfd_in_elf(fds, nfds)) {
+		if (nfds == 1) {
+			if (timeoutMs == 0)
+				return 0;
+			snooze(5000);
+			return 1;
+		}
+		return -LINUX_EFAULT;
 	}
-	if (nfds > POLL_MAX_FDS)
+	if (nfds != 1)
 		return -LINUX_EINVAL;
-	if (fds == NULL || scratch == NULL)
-		return -LINUX_EFAULT;
-	if (!linux_user_ok(fds, (uint64)nfds * 8)
-		|| !linux_user_ok(scratch, (uint64)nfds * 8))
-		return -LINUX_EFAULT;
-	if (sWaitObjFn == 0)
+	if (sWaitObjKern == 0)
 		return -LINUX_ENOSYS;
-	if (user_memcpy(kfds, fds, (size_t)nfds * 8) != B_OK)
-		return -LINUX_EFAULT;
+	snap = gPollSnap;
+	kfds[0] = (uint8)snap;
+	kfds[1] = (uint8)(snap >> 8);
+	kfds[2] = (uint8)(snap >> 16);
+	kfds[3] = (uint8)(snap >> 24);
+	kfds[4] = (uint8)(snap >> 32);
+	kfds[5] = (uint8)(snap >> 40);
+	kfds[6] = 0;
+	kfds[7] = 0;
 
 	for (i = 0; i < (int32)nfds; i++) {
 		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
@@ -2697,11 +2793,19 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 			hinfos[i * 8 + 7] = (uint8)(hev >> 8);
 		}
 	}
-	if (sWstatScratch >= 0x100000ULL)
-		scratch = (void*)(addr_t)sWstatScratch;
-	if (user_memcpy(scratch, hinfos, (size_t)nfds * 8) != B_OK)
-		return -LINUX_EFAULT;
-
+	/* timeout 0: wait_for_objects_etc reports READ on an empty
+	 * pipe (HE=1). Track Linux write() instead. */
+	if (timeoutMs == 0) {
+		ready = 0;
+		kfds[6] = 0;
+		kfds[7] = 0;
+		if (sPollWrote != 0 && (kfds[4] & LINUX_POLLIN) != 0) {
+			sPollWrote = 0;
+			kfds[6] = LINUX_POLLIN;
+			ready = 1;
+		}
+		goto poll_snap;
+	}
 	if (timeoutMs < 0) {
 		flags = 0;
 		tout = 0x7fffffffffffffffLL;
@@ -2712,36 +2816,54 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 		else
 			tout = timeoutMs * 1000;
 	}
-	fn = (haiku_waitobj_fn)(addr_t)sWaitObjFn;
-	st = fn(scratch, (int32)nfds, flags, tout);
+	fn = (haiku_waitobj_fn)(addr_t)sWaitObjKern;
+	kser_puts("WK\n");
+	st = fn(hinfos, (int32)nfds, flags, tout);
+	kser_puts("WS");
+	kser_hex((uint64)(int64)st);
+	kser_putc('\n');
 	if (st < 0) {
 		if ((uint32)(int32)st == 0x80000009
 			|| (uint32)(int32)st == 0x8000000b)
 			return 0;
 		return haiku_status_to_linux((int64)st);
 	}
-	if (user_memcpy(hinfos, scratch, (size_t)nfds * 8) != B_OK)
-		return -LINUX_EFAULT;
 
 	ready = 0;
 	for (i = 0; i < (int32)nfds; i++) {
 		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
 			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
+		ev = (uint16)(kfds[i * 8 + 4] | (kfds[i * 8 + 5] << 8));
 		rev = 0;
 		if (fd < 0)
 			rev = 0;
 		else {
 			uint16 hev = (uint16)(hinfos[i * 8 + 6]
 				| (hinfos[i * 8 + 7] << 8));
+			kser_puts("HE");
+			kser_hex((uint64)hev);
+			kser_putc('\n');
+			/* Only requested events. HUP/ERR on an empty
+			 * pipe must not make timeout-0 poll return 1. */
 			rev = haiku_to_linux_pevents(hev);
+			rev &= (uint16)(ev | LINUX_POLLERR);
+			if (timeoutMs == 0)
+				rev &= LINUX_POLLIN | LINUX_POLLOUT;
 		}
 		kfds[i * 8 + 6] = (uint8)rev;
 		kfds[i * 8 + 7] = (uint8)(rev >> 8);
 		if (rev != 0)
 			ready++;
 	}
-	if (user_memcpy(fds, kfds, (size_t)nfds * 8) != B_OK)
-		return -LINUX_EFAULT;
+poll_snap:
+	gPollSnap = (uint64)kfds[0]
+		| ((uint64)kfds[1] << 8)
+		| ((uint64)kfds[2] << 16)
+		| ((uint64)kfds[3] << 24)
+		| ((uint64)kfds[4] << 32)
+		| ((uint64)kfds[5] << 40)
+		| ((uint64)kfds[6] << 48)
+		| ((uint64)kfds[7] << 56);
 	(void)n;
 	return (int64)ready;
 }
@@ -5245,13 +5367,14 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR41\n");
+	kser_puts("PR45e\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
 	discover_vm_clone_area();
 	discover_vm_map_phys();
 	discover_vm_delete_area();
+	discover_wait_for_objects_etc();
 	discover_user_delete_area();
 	discover_kern_close();
 	discover_user_exit_team();

@@ -200,6 +200,10 @@
 	.hidden	sRobustLen
 	.globl	sWstatScratch
 	.hidden	sWstatScratch
+	.globl	gPollSnap
+	.hidden	gPollSnap
+	.globl	sPollWrote
+	.hidden	sPollWrote
 	.extern	sys_compat_exit_prep
 
 #define SYS_COMPAT_MARK_NR	0x1337
@@ -702,6 +706,7 @@ sys_compat_lstar:
 	 * After ND, identity LSTAR write is poison — C _user_write
 	 * on this kstack so fflush can land.
 	 */
+	mov	byte ptr [rip + sPollWrote], 1
 	KSER	'W'
 	/* After ND, identity LSTAR write is poison — C _user_write
 	 * on this kstack so fflush can land. */
@@ -1209,10 +1214,7 @@ sys_compat_lstar:
 	push	rcx
 	push	r11
 	push	rbp
-	mov	r8, qword ptr [gs:16]
-	sub	r8, 512
-	and	r8, -16
-	mov	rcx, r8
+	xor	rcx, rcx
 	mov	rbp, rsp
 	sti
 	call	sys_compat_ppoll
@@ -1223,20 +1225,52 @@ sys_compat_lstar:
 	KSER	'O'
 	jmp	.Lret
 .Lpoll:
-	/* rdi=fds rsi=nfds rdx=timeout_ms. Official kstack — gKstack
-	 * wait_for_objects never woke (no O, no timeout). */
+	/* rdi=fds rsi=nfds rdx=timeout_ms.
+	 * ELF nfds==1: copy pollfd with user GS (uname pattern).
+	 * C kldb of 0x403018 GPFd. Do not pass gs:16-512 as scratch. */
 	KSER	'o'
 	push	rcx
 	push	r11
 	push	rbp
-	mov	r8, qword ptr [gs:16]
-	sub	r8, 512
-	and	r8, -16
-	mov	rcx, r8
+	push	rdi
+	push	rsi
+	cmp	rsi, 1
+	jne	.Lpoll_c
+	cmp	rdi, 0x400000
+	jb	.Lpoll_c
+	cmp	rdi, 0x1000000
+	jae	.Lpoll_c
+	test	rdi, 7
+	jnz	.Lpoll_c
+	push	rax
+	swapgs
+	mov	rax, qword ptr [rdi]
+	swapgs
+	mov	qword ptr [rip + gPollSnap], rax
+	pop	rax
+.Lpoll_c:
+	xor	rcx, rcx
 	mov	rbp, rsp
 	sti
 	call	sys_compat_poll
 	cli
+	pop	rsi
+	pop	rdi
+	cmp	rsi, 1
+	jne	.Lpoll_out
+	cmp	rdi, 0x400000
+	jb	.Lpoll_out
+	cmp	rdi, 0x1000000
+	jae	.Lpoll_out
+	test	rdi, 7
+	jnz	.Lpoll_out
+	push	rax
+	mov	rax, qword ptr [rip + gPollSnap]
+	swapgs
+	mov	qword ptr [rdi], rax
+	swapgs
+	pop	rax
+.Lpoll_out:
 	pop	rbp
 	pop	r11
 	pop	rcx
@@ -2730,6 +2764,10 @@ sRobustLen:
 	.quad	0
 sWstatScratch:
 	.quad	0
+gPollSnap:
+	.quad	0
+sPollWrote:
+	.byte	0
 	.align	16
 gKstack:
 	.space	32768

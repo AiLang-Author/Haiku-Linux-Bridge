@@ -15,5 +15,5 @@ OUT=/tmp/poll.out
 } > "$OUT" 2>&1
 echo "=== poll.out ==="
 cat "$OUT"
-curl -s -X POST --data-binary @"$OUT" "$HOST/results/poll_out.txt" || true
+curl -s --max-time 8 -X POST --data-binary @"$OUT" "$HOST/results/poll_out.txt" || true
 echo RUN_POLL_DONE

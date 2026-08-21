@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-19 (Day 47: interactive busybox ash)  
+**Last updated:** 2026-08-21 (Day 48: hello_poll POLLOK)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -41,7 +41,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 44](STANDUP_DAY44.md) (`rdx=0` after mark; `date`/`md5sum`/`puts` write) →
 [Day 45](STANDUP_DAY45.md) (TTY ioctl onto Haiku tty; `WINSZ 25x80`) →
 [Day 46](STANDUP_DAY46.md) (fbdev `/dev/fb0` onto Haiku VESA; `FBOK`) →
-[Day 47](STANDUP_DAY47.md) (interactive busybox ash; `echo SHLIVE`).
+[Day 47](STANDUP_DAY47.md) (interactive busybox ash; `echo SHLIVE`) →
+[Day 48](STANDUP_DAY48.md) (`hello_poll` `POLLOK`; kernel `wait_for_objects_etc`).
 
 ---
 
@@ -82,9 +83,10 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 47):** Interactive busybox ash on the Haiku
-Terminal: **`~ # echo SHLIVE`**. `poll(nfds=1)` must not
-`user_memcpy` the pollfd (KDL). fbdev/TTY/FILE* still hold. Punch-out:
+**Where we are (Day 48):** ELF `hello_poll` **`POLLOK`**. Kernel
+`wait_for_objects_etc` (not `_user_wait_for_objects`). Timeout 0
+uses a Linux `write()` flag. Ash `poll(nfds=1)` still a no-copy
+stub. **`echo SHLIVE`** still holds. Punch-out:
 [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -103,10 +105,10 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** Copy ash's stdin pollfd without KDL so
-`hello_poll` works. Do not `user_memcpy` that pollfd until then. Do
-not `FBIOPUT` a new video mode. Do not build DRM. Do not pass the
-fork tramp in `rdx` into Linux `_start`.
+**What needs doing next:** Re-prove `echo HI | cat` in a redirect.
+Do not `_user_wait_for_objects` from C (KDL). Do not `user_memcpy`
+ash's stdin pollfd. Do not `FBIOPUT` a new video mode. Do not build
+DRM. Do not pass the fork tramp in `rdx` into Linux `_start`.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -185,7 +187,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK` RC=0. Child IRETQ to `0x40101c`. Stamp RIP-guarded. Day 20–21. |
 | Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
 | Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
-| Linux `poll`/`ppoll` (7/271) | **Partial** | `nfds!=1`: `_user_wait_for_objects` 0x06. `nfds==1`: no-copy stub (ash stdin pollfd `user_memcpy` KDLd). Interactive ash `echo SHLIVE` Day 47. `hello_poll` `POLLOK` Day 24 is a miss until a safe copy. |
+| Linux `poll`/`ppoll` (7/271) | **Partial** | ELF `nfds==1`: hook copy + kernel `wait_for_objects_etc`; timeout 0 via write flag. `hello_poll` **`POLLOK`** Day 48. Ash `nfds==1` still no-copy stub. Do not `_user_wait_for_objects` from C. |
 | Linux `select`/`pselect6` (23/270) | **Works** | fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | Linux file `mmap` (9) | **Works** | kernel `vm_map_file` + `_vm_map_file(..., false)`. ANON still arena-carve. `hello_mmapf` `MMAPFOK`. Day 32. |
 | Core 90% syscall map | **Written** | `docs/SYSCALL_COVERAGE.md` — remaining holes: `futex`, `poll`, real signals, `CLONE_VM`. ioctl after that. |
@@ -289,10 +291,10 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. **Safe pollfd copy** so `hello_poll` / pipe `poll(nfds=1)` work
-   without KDL. Do not `user_memcpy` ash's stdin pollfd until then.
-2. Re-prove `echo HI | cat` in a redirect. Rare/deprecated numbers
-   wait for a filed issue. Do not `FBIOPUT` under app_server. Do not DRM.
+1. Re-prove `echo HI | cat` in a redirect.
+2. Blocking ELF `poll(..., -1)` is `wait_for_objects_etc`; ash
+   `nfds==1` still stubs. Rare/deprecated numbers wait for a filed
+   issue. Do not `FBIOPUT` under app_server. Do not DRM.
 
 ---
 
@@ -353,8 +355,10 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_mmapf.s` | file mmap ELF magic; `MMAPFOK` Day 25 |
 | `tests/hello_pipeline.s` | clone+poll+execve hello_min; `PIPELINEOK` Day 26 |
 | `scripts/guest_go_fork.sh` | Guest: fetch sources, build driver, no bootscript |
-| `scripts/guest_go_sh.sh` | Guest: rebuild PR41 poll stub; then `busybox sh` on Terminal |
+| `scripts/guest_go_sh.sh` | Guest: rebuild poll stub; then `busybox sh` on Terminal |
+| `scripts/guest_go_poll.sh` | Guest: rebuild PR45 poll; `hello_poll` |
 | `docs/STANDUP_DAY47.md` | Day 47 wrap: interactive ash; `echo SHLIVE` |
+| `docs/STANDUP_DAY48.md` | Day 48 wrap: `hello_poll` `POLLOK` |
 | `scripts/guest_run_fork.sh` | Guest: fork probe only; POST `fork_out.txt` |
 | `scripts/guest_run_exec.sh` | Guest: execve probe; POST `exec_out.txt` |
 | `scripts/guest_term.py` | Host: open Haiku Terminal via Tracker + type |

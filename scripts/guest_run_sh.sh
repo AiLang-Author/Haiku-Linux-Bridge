@@ -31,5 +31,5 @@ fi
 } > "$OUT" 2>&1
 echo "=== sh.out ==="
 cat "$OUT"
-curl -s -X POST --data-binary @"$OUT" "$HOST/results/sh_out.txt" || true
+curl -s --max-time 8 -X POST --data-binary @"$OUT" "$HOST/results/sh_out.txt" || true
 echo RUN_SH_DONE
