@@ -1,16 +1,16 @@
-# Status for testers (2026-08-21)
+# Status for testers (2026-08-21, Day 49)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY48.md`](STANDUP_DAY48.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY49.md`](STANDUP_DAY49.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 48)
+## What you can expect today (`main`, Day 49)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -25,7 +25,7 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 | `poll` / `ppoll` / `select` | `SELECTOK`. ELF `poll(nfds==1)` `hello_poll` **`POLLOK`** (Day 48). Ash `nfds==1` still a no-copy stub |
 | file `mmap` | `hello_mmapf` → `MMAPFOK` (kernel `vm_map_file`, not `_user_map_file`) |
 | Combined `fork` + `execve` + `poll` | `hello_pipeline` → `PIPELINEOK` |
-| busybox **`sh -c`** (builtin + pipe) | `echo SHOK`; `echo HI \| cat` → `HI`; `true; echo SHDONE`. All RC=0. |
+| busybox **`sh -c`** (builtin + pipe) | `echo SHOK`; `echo HI \| cat` → `HI` (`SH_PIPE_RC=0`); same in a Haiku redirect (`HI` in the file, Day 49); `true; echo SHDONE`. All RC=0. |
 | Interactive busybox **ash** | Terminal prompt, **`echo SHLIVE`** (Day 47–48). Ash `poll(nfds=1)` still a no-copy stub |
 
 `uname` reports `Linux haiku 6.1.0 sys_compat x86_64`. That is the layer talking, not a Linux kernel.

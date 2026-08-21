@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-21 (Day 48: hello_poll POLLOK)
+**Updated:** 2026-08-21 (Day 49: echo HI \| cat in a redirect)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -51,6 +51,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | fbdev | **`/dev/fb0` 1280x800x32**, mmap VESA `0xFD000000`, **`FBOK`** (Day 46) |
 | interactive `sh` | BusyBox ash prompt, **`echo SHLIVE`** (Day 47) |
 | `hello_poll` | **`POLLOK`** `POLL_RC=0` (Day 48) |
+| `echo HI \| cat` redirect | **`HI`** in the file, **`SH_PIPE_REDIR_RC=0`** (Day 49) |
 
 ## Fragile / wrong (punch these before a toolchain)
 
@@ -61,7 +62,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |
 | **`rt_sigreturn` `-ENOSYS`** | host glibc/busybox traces it | Fine while signals are stubs. |
 | **`sendfile` pipe `-EINVAL`** | Linux-correct; `cat` uses read/write | Leave it. |
-| **Pipe child stdout** | `echo HI \| cat` was RC=0 with `HI` missing **before** Day 44. Re-prove after rdx=0. | Do not treat pipelines as fully proven until re-run. |
+| **Pipe child stdout** | Day 49: `HI` in a Haiku redirect, **`SH_PIPE_REDIR_RC=0`**. | Re-proven. |
 
 ## Not a layer bug
 
@@ -118,10 +119,15 @@ but they are not what this busybox set exercises.
   `wait_for_objects_etc` (not `_user_`). Timeout 0 via a Linux
   `write()` flag. Guest: **`POLLOK`**. Ash still stubs `nfds==1`.
 
+## Day 49
+
+- Re-prove `echo HI | cat`: **`HI`**, **`SH_PIPE_RC=0`**, and **`HI`** in a
+  Haiku redirect. No trap change.
+
 ## Next
 
-1. Re-prove `echo HI | cat` in a redirect.
-2. Blocking ELF `poll(..., -1)` is `wait_for_objects_etc`.
+1. Blocking ELF `poll(..., -1)` is `wait_for_objects_etc`; ash stubs.
+2. `CLONE_VM` later.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
 `md5sum` / glibc `puts` are guest-green (Day 44).

@@ -38,13 +38,13 @@ This repo is **C++ and x86_64 assembler** in the public domain (CC0). It is an o
 - Guest **curl** is Haiku’s own curl on BSD sockets. Fetch and POST to the host HTTP helper work (`--max-time` so a stuck POST cannot hang the script).
 - `id` now prints `groups=0(root)` (`getgroups` guest-green).
 - Tiny `hello_exit` (`exit_group(42)`) is **`EXIT42_RC=42`**. glibc `return 1` / `exit(1)` and busybox **`false` / differing `cmp` now exit 1**.
-- Raw `write` then exit lands in a redirect (`hello_wr` prints `WRPROBE`). glibc `puts` prints **`PRINTF_OK`**. busybox **`date` / `md5sum` / `nproc` write** on a redirected fd. Linux **TTY ioctl** maps onto Haiku tty (`WINSZ 25x80`). Linux **`/dev/fb0`** is Haiku VESA (**1280x800x32**). Interactive **busybox ash** on the Terminal: **`echo SHLIVE`**. ELF **`hello_poll` `POLLOK`**.
+- Raw `write` then exit lands in a redirect (`hello_wr` prints `WRPROBE`). glibc `puts` prints **`PRINTF_OK`**. busybox **`date` / `md5sum` / `nproc` write** on a redirected fd. Linux **TTY ioctl** maps onto Haiku tty (`WINSZ 25x80`). Linux **`/dev/fb0`** is Haiku VESA (**1280x800x32**). Interactive **busybox ash** on the Terminal: **`echo SHLIVE`**. ELF **`hello_poll` `POLLOK`**. **`echo HI \| cat`** prints **`HI`** in a Haiku redirect.
 
 Pickup: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [`docs/STATUS.md`](docs/STATUS.md). Punch-out list: [`docs/CLI_APPLET_PUNCHOUT.md`](docs/CLI_APPLET_PUNCHOUT.md).
 
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY48.md`](docs/STANDUP_DAY48.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY49.md`](docs/STANDUP_DAY49.md).
 
 **Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 

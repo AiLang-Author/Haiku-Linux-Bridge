@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-21 (Day 48: hello_poll POLLOK)
+**Last updated:** 2026-08-21 (Day 49: echo HI \| cat in a redirect)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -173,10 +173,8 @@ child's exit through. Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid, nanosleep.
 
-**Highest remaining for “coreutils in the wild”:** re-prove
-`echo HI | cat` in a redirect, then `CLONE_VM` (pthread).
-`hello_poll` is **`POLLOK`** (Day 48). Interactive ash is
-guest-green (`echo SHLIVE`, Day 47). `hello_pipeline` is
-guest-green (`PIPELINEOK`, Day 26). `sh -c 'echo HI | cat'`
-prints `HI`, `SH_PIPE_RC=0` (Day 31). Testers should start from
+**Highest remaining for “coreutils in the wild”:** `CLONE_VM`
+(pthread). `hello_poll` is **`POLLOK`** (Day 48). `echo HI | cat`
+prints **`HI`** in a Haiku redirect (Day 49). Interactive ash is
+guest-green (`echo SHLIVE`, Day 47). Testers should start from
 [STATUS.md](STATUS.md), not this table.

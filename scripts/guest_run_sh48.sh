@@ -1,18 +1,21 @@
 #!/bin/sh
-# Prove busybox sh: builtin, then a pipe (fork+exec /proc/self/exe cat).
+# Prove busybox sh pipe, including Haiku redirect of the whole run.
 # License: Public Domain / CC0 1.0 Universal
 set -x
 HOST="http://10.0.2.2:8083"
-# Haiku crash dialogs are scriptable. Signature lookup can miss;
-# the running team name is debug_server, window title "Crashed program".
 hey -o debug_server quit of Window "Crashed program" 2>/dev/null || true
 hey -o debug_server quit of Window 0 2>/dev/null || true
-OUT=/tmp/sh.out
+OUT=/tmp/sh48.out
 RUN=/boot/home/sys_compat_run
 BB=/boot/home/busybox
 if [ ! -x "$BB" ]; then
 	curl -s -o "$BB" "$HOST/payload/tests/busybox"
 	chmod 755 "$BB"
+fi
+if [ ! -x "$RUN" ]; then
+	curl -s -o "$RUN.c" "$HOST/src/sys_compat_run.c"
+	gcc -O2 "$RUN.c" -o "$RUN"
+	chmod 755 "$RUN"
 fi
 {
 	echo "=== status ==="
@@ -34,7 +37,7 @@ fi
 	echo "=== status after ==="
 	cat /dev/misc/sys_compat 2>&1
 } > "$OUT" 2>&1
-echo "=== sh.out ==="
+echo "=== sh48.out ==="
 cat "$OUT"
-curl -s --max-time 8 -X POST --data-binary @"$OUT" "$HOST/results/sh_out.txt" || true
-echo RUN_SH_DONE
+curl -s --max-time 8 -X POST --data-binary @"$OUT" "$HOST/results/sh48_out.txt" || true
+echo RUN_SH48_DONE
