@@ -323,6 +323,8 @@ static uint64 sPipeFn;
 static uint64 sFcntlFn;
 static uint64 sIoctlFn;
 static uint64 sForkFn;
+static uint64 sSpawnFn;
+static uint64 sResumeFn;
 static uint64 sWaitObjFn;
 static uint64 sWaitObjKern;
 static uint64 sMapFileFn;
@@ -510,6 +512,8 @@ extern "C" {
 	int64 sys_compat_statx(int64 fd, const void* path, int64 flags,
 		uint32 mask, void* buf);
 	int64 sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags);
+	int64 sys_compat_clone_vm(uint64 userRip, uint64 childStack,
+		uint64 cloneFlags);
 	void sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags,
 		int64 retval);
 }
@@ -882,6 +886,70 @@ discover_wait_for_objects_etc(void)
 		}
 	}
 	kser_puts("WOKno\n");
+}
+
+static void
+discover_spawn_thread(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"_user_spawn_thread",
+		"_Z19_user_spawn_threadP26thread_creation_attributes",
+		"_kern_spawn_thread",
+		NULL
+	};
+
+	sSpawnFn = 0;
+	sResumeFn = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sSpawnFn = (uint64)(addr_t)p;
+				kser_puts("SPWfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				goto found_spawn;
+			}
+		}
+	}
+	kser_puts("SPWno\n");
+found_spawn:
+	{
+		static const char* const rnames[] = {
+			"resume_thread",
+			"_Z13resume_threadi",
+			"_Z13resume_threadl",
+			"_user_resume_thread",
+			"_Z19_user_resume_threadi",
+			NULL
+		};
+		cookie = 0;
+		while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+			for (n = 0; rnames[n] != NULL; n++) {
+				p = NULL;
+				if ((get_image_symbol(info.id, rnames[n],
+					B_SYMBOL_TYPE_TEXT, &p) == B_OK
+					|| get_image_symbol(info.id, rnames[n],
+					B_SYMBOL_TYPE_ANY, &p) == B_OK)
+					&& p != NULL) {
+					sResumeFn = (uint64)(addr_t)p;
+					kser_puts("RSMfn=");
+					kser_hex((uint64)(addr_t)p);
+					kser_putc('\n');
+					return;
+				}
+			}
+		}
+	}
+	kser_puts("RSMno\n");
 }
 
 static void
@@ -2084,6 +2152,91 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 		}
 	}
 	return (int64)st;
+}
+
+extern "C" int64
+sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags)
+{
+	typedef int32 (*haiku_spawn_fn)(void* userAttr);
+	typedef int32 (*haiku_resume_fn)(int32 tid);
+	haiku_spawn_fn spawn;
+	haiku_resume_fn resume;
+	uint8 tb[32];
+	uint8 attr[72];
+	uint8 nameb[8];
+	uint64 tramp, entry, nameu, attu;
+	int32 tid, st;
+	int i;
+
+	(void)cloneFlags;
+	kser_puts("TV rip=");
+	kser_hex(userRip);
+	kser_puts(" sp=");
+	kser_hex(childStack);
+	kser_putc('\n');
+	if (sSpawnFn == 0 || sResumeFn == 0 || gForkTramp < 0x100000ULL)
+		return -LINUX_ENOSYS;
+	if (userRip < 0x100000ULL || childStack < 0x100000ULL)
+		return -LINUX_EFAULT;
+	childStack &= ~(uint64)15;
+	tramp = gForkTramp;
+	entry = tramp + 0x80;
+	nameu = tramp + 0x1c0;
+	attu = tramp + 0x200;
+	/* xor %eax,%eax; movabs $stack,%r11; mov %r11,%rsp;
+	 * movabs $rip,%r11; jmp *%r11 */
+	tb[0] = 0x31;
+	tb[1] = 0xc0;
+	tb[2] = 0x49;
+	tb[3] = 0xbb;
+	for (i = 0; i < 8; i++)
+		tb[4 + i] = (uint8)(childStack >> (8 * i));
+	tb[12] = 0x4c;
+	tb[13] = 0x89;
+	tb[14] = 0xdc;
+	tb[15] = 0x49;
+	tb[16] = 0xbb;
+	for (i = 0; i < 8; i++)
+		tb[17 + i] = (uint8)(userRip >> (8 * i));
+	tb[25] = 0x41;
+	tb[26] = 0xff;
+	tb[27] = 0xe3;
+	if (user_memcpy((void*)(addr_t)entry, tb, 28) != B_OK)
+		return -LINUX_EFAULT;
+	nameb[0] = 'l';
+	nameb[1] = 'c';
+	nameb[2] = 'l';
+	nameb[3] = 'o';
+	nameb[4] = 'n';
+	nameb[5] = 'e';
+	nameb[6] = 0;
+	nameb[7] = 0;
+	if (user_memcpy((void*)(addr_t)nameu, nameb, 8) != B_OK)
+		return -LINUX_EFAULT;
+	for (i = 0; i < 72; i++)
+		attr[i] = 0;
+	for (i = 0; i < 8; i++) {
+		attr[i] = (uint8)(entry >> (8 * i));
+		attr[8 + i] = (uint8)(nameu >> (8 * i));
+	}
+	attr[64] = 10; /* B_NORMAL_PRIORITY */
+	if (user_memcpy((void*)(addr_t)attu, attr, 72) != B_OK)
+		return -LINUX_EFAULT;
+	spawn = (haiku_spawn_fn)(addr_t)sSpawnFn;
+	tid = spawn((void*)(addr_t)attu);
+	kser_puts("TS");
+	kser_hex((uint64)(int64)tid);
+	kser_putc('\n');
+	if (tid <= 0)
+		return haiku_status_to_linux((int64)tid);
+	resume = (haiku_resume_fn)(addr_t)sResumeFn;
+	st = resume(tid);
+	kser_puts("TR");
+	kser_hex((uint64)(int64)st);
+	kser_putc('\n');
+	if (st < 0)
+		return haiku_status_to_linux((int64)st);
+	return (int64)(uint32)tid;
 }
 
 extern "C" void
@@ -5318,7 +5471,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR46c\n");
+	kser_puts("PR47\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
@@ -5326,6 +5479,7 @@ init_driver(void)
 	discover_vm_map_phys();
 	discover_vm_delete_area();
 	discover_wait_for_objects_etc();
+	discover_spawn_thread();
 	discover_user_delete_area();
 	discover_kern_close();
 	discover_user_exit_team();

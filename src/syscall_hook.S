@@ -186,6 +186,7 @@
 	.extern	sys_compat_ioctl
 	.extern	sys_compat_statx
 	.extern	sys_compat_try_fork
+	.extern	sys_compat_clone_vm
 	.extern	sys_compat_exit_prep
 	.extern	sys_compat_fork_parent_dump
 	.globl	sChildDone
@@ -1016,10 +1017,15 @@ sys_compat_lstar:
 	jmp	.Ltry_fork
 
 .Lclone:
-	/* Fork-style only: stack==NULL, no CLONE_VM / CLONE_THREAD. */
-	test	rsi, rsi
-	jnz	.Lenosys
+	/* CLONE_VM + child stack: same-team Haiku thread. */
 	test	rdi, 0x100		/* CLONE_VM */
+	jz	.Lclone_fork
+	test	rsi, rsi
+	jz	.Lenosys
+	jmp	.Lclone_vm
+.Lclone_fork:
+	/* Fork-style only: stack==NULL, no CLONE_THREAD. */
+	test	rsi, rsi
 	jnz	.Lenosys
 	test	rdi, 0x10000		/* CLONE_THREAD */
 	jnz	.Lenosys
@@ -1338,6 +1344,21 @@ sys_compat_lstar:
 	pop	rcx
 	jmp	.Lret
 .endm
+
+.Lclone_vm:
+	/* rdi=flags rsi=child_stack rcx=user RIP. Same CR3. */
+	KSER	'T'
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	rdx, rdi
+	mov	rdi, rcx
+	CALL_C	sys_compat_clone_vm
 
 .Lopen_c:
 	push	rcx
