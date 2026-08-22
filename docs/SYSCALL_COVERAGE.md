@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-21 (Day 49: echo HI \| cat in a redirect)
+**Last updated:** 2026-08-22 (Day 53: CLONE_SETTLS + CLEARTID CLONETLSOK)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -118,7 +118,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. `CLONE_VM` + child `exit`(60) **`CLONEEXOK`** (Day 52). SETTLS / CLEARTID later. |
+| 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. `CLONE_VM` + child `exit`(60) **`CLONEEXOK`** (Day 52). SETTLS + PARENT_SETTID + CLEARTID **`CLONETLSOK`** (Day 53). |
 | 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
 | 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
 | 202 | futex | **works** (WAIT/WAKE/BITSET; REQUEUE-as-wake). `hello_futex` `FUTEXOK`. Day 23. |
@@ -144,7 +144,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 ### Intentionally later
 
-other ioctl families (sockets / DRM), socket/connect/bind/listen/accept, CLONE_SETTLS / pthread,
+other ioctl families (sockets / DRM), socket/connect/bind/listen/accept, CLONE_THREAD / pthread wait4,
 ptrace, mount, bpf, io_uring, inotify, epoll.
 
 ## Score
@@ -175,8 +175,9 @@ Rare/deprecated syscalls wait for a filed issue.
 getppid.
 
 **Highest remaining for “coreutils in the wild”:** pthread
-(`CLONE_SETTLS` / CLEARTID). `clone(CLONE_VM)` + child `exit`(60) is
-**`CLONEEXOK`** (Day 52). `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
+(`CLONE_THREAD` / wait4). SETTLS + CLEARTID is **`CLONETLSOK`** (Day 53).
+`clone(CLONE_VM)` + child `exit`(60) is **`CLONEEXOK`** (Day 52).
+`hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
 **`POLLBLKOK`** (Day 50). `nanosleep` snoozes (used by that probe).
 `echo HI | cat` prints **`HI`** in a Haiku redirect (Day 49).
 Interactive ash is guest-green (`echo SHLIVE`, Day 47). Testers

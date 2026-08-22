@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-21 (Day 52: CLONE_VM child exit(60) CLONEEXOK)  
+**Last updated:** 2026-08-22 (Day 53: CLONE_SETTLS + CLEARTID CLONETLSOK)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -46,7 +46,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 49](STANDUP_DAY49.md) (`echo HI \| cat` in a redirect; `HI` in the file) →
 [Day 50](STANDUP_DAY50.md) (blocking ELF `poll(-1)`; `POLLBLKOK`) →
 [Day 51](STANDUP_DAY51.md) (`clone(CLONE_VM)`; `CLONEVMOK`) →
-[Day 52](STANDUP_DAY52.md) (CLONE_VM child `exit`(60); `CLONEEXOK`).
+[Day 52](STANDUP_DAY52.md) (CLONE_VM child `exit`(60); `CLONEEXOK`) →
+[Day 53](STANDUP_DAY53.md) (`CLONE_SETTLS` + CLEARTID; `CLONETLSOK`).
 
 ---
 
@@ -87,9 +88,9 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 52):** a `CLONE_VM` child `exit`(60) is
-**`CLONEEXOK`** (`thread_exit` if `thread_count > 1`). Fork-style
-`hello_fork` **`FORKOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`**.
+**Where we are (Day 53):** `clone(CLONE_VM|SETTLS|PARENT_SETTID|CHILD_CLEARTID)`
+is **`CLONETLSOK`**. Extra-thread `exit`(60) still **`CLONEEXOK`**.
+Fork-style `hello_fork` **`FORKOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`**.
 Ash **`echo SHLIVE`** still holds.
 Punch-out: [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
@@ -109,10 +110,11 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** `CLONE_SETTLS` / `CLONE_CHILD_CLEARTID`.
-Ash `nfds==1` still stubs. Do not unmark CR3 on a CLONE_VM thread
-`exit`(60). Do not `_user_wait_for_objects` from C. Do not `_user_fork`
-for `CLONE_VM`. Do not `FBIOPUT` a new video mode. Do not build DRM.
+**What needs doing next:** ash `nfds==1` still stubs. `CLONE_THREAD`
+wait4 / full `pthread_create` later. Do not unmark CR3 on a CLONE_VM
+thread `exit`(60). Do not futex from extra-thread exit. Do not
+`_user_wait_for_objects` from C. Do not `_user_fork` for `CLONE_VM`.
+Do not `FBIOPUT` a new video mode. Do not build DRM.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -188,7 +190,7 @@ If the team is **not** marked, Linux `write` (`rax=1`) is Haiku `_kern_generic_s
 | Linux `time`/`gettimeofday`/`clock_gettime` (real RTC) | **Works** | `_kern_get_clock` **0xc0** (not libroot `real_time_clock_usecs` — that KDLs). `hello_date` **DATEOK 1786731467**. busybox `date` / `date -u` printed **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** | `_kern_fcntl` **0x76** (guest dump). Linux F_* / O_APPEND / O_NONBLOCK translated. `statx` from `_kern_read_stat` (256 B, size@40 mode@28). `hello_fcntl` **FCNTOK**. `hello_min` + `hello_date` still green. |
 | busybox text CLI (no spawn) | **Works** | Unmodified `grep` `wc` `sed` `head` `sort` `cut` all RC=0 on `/tmp/cli.txt`. `results/ltp/cli_out.txt`. |
-| Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK`. `CLONE_VM` + child `exit`(60) **`CLONEEXOK`** Day 52. SETTLS / CLEARTID later. |
+| Linux `clone` / `wait4` / `exit` | **Works** | `hello_fork` `FORKOK`. `CLONE_VM` + child `exit`(60) **`CLONEEXOK`**. SETTLS+PARENT_SETTID+CLEARTID **`CLONETLSOK`** Day 53. |
 | Linux `execve` (59) | **Works** | `_user_exec` 0x2e of `sys_compat_run <linux_path>`. Unmark first. `hello_exec` → `hello_min` hello line, `EXEC_RC=0`. COM1 `xXEC` / `XGO`. Day 22. |
 | Linux `futex` (202) | **Works** | WAIT/WAKE on per-thread kstack + Haiku sem. `hello_futex` `FUTEXOK`. Day 23. |
 | Linux `poll`/`ppoll` (7/271) | **Partial** | ELF `nfds==1`: hook copy. timeout 0 + blocking via Linux `write()` flag + snooze. `hello_poll` **`POLLOK`**. `hello_pollblk` **`POLLBLKOK`** Day 50. Ash `nfds==1` still no-copy stub. Do not `_user_wait_for_objects` from C. |
@@ -295,9 +297,9 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. `CLONE_SETTLS` / `CLONE_CHILD_CLEARTID`.
-2. Ash `nfds==1` still stubs. Do not `FBIOPUT` under app_server.
+1. Ash `nfds==1` still stubs. Do not `FBIOPUT` under app_server.
    Do not DRM.
+2. `CLONE_THREAD` wait4 / full `pthread_create` flags later.
 
 ---
 
@@ -350,9 +352,12 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/haiku_native_fork.c` | Native Haiku `fork()` smoke (gcc on the guest) |
 | `tests/hello_fork.s` | clone + wait4; `FORKOK` Day 20–21 |
 | `tests/hello_clonevm.s` | `clone(CLONE_VM)` + child `exit`(60); `CLONEEXOK` Day 52 |
+| `tests/hello_clonetls.s` | SETTLS + PARENT_SETTID + CLEARTID; `CLONETLSOK` Day 53 |
 | `scripts/guest_run_clonevm.sh` | Guest: fork + clonevm; POST `clonevm_out.txt` |
+| `scripts/guest_run_clonetls.sh` | Guest: fork + clonevm + clonetls; POST `clonetls_out.txt` |
 | `docs/STANDUP_DAY51.md` | Day 51 wrap: `CLONEVMOK` |
 | `docs/STANDUP_DAY52.md` | Day 52 wrap: CLONE_VM child `exit`(60) |
+| `docs/STANDUP_DAY53.md` | Day 53 wrap: SETTLS + CLEARTID |
 | `tests/hello_exec.s` | Linux `execve("/boot/home/hello_min")`; `EXEC_RC=0` Day 22 |
 | `tests/hello_futex.s` | futex WAIT EAGAIN / WAKE 0 / WAIT timeout; `FUTEXOK` Day 23 |
 | `scripts/guest_run_futex.sh` | Guest: futex probe; POST `futex_out.txt` |

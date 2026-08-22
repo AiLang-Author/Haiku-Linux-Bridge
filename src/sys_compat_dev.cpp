@@ -338,6 +338,8 @@ typedef int32 (*haiku_close_fn)(int32 fd);
 static haiku_close_fn sKernClose;
 typedef void (*haiku_exit_team_fn)(int32 status);
 static haiku_exit_team_fn sUserExitTeam;
+typedef void (*haiku_exit_thread_fn)(int32 status);
+static haiku_exit_thread_fn sUserExitThread;
 typedef void (*haiku_thread_exit_fn)(void);
 static haiku_thread_exit_fn sThreadExit;
 #define LINUX_MAP_SLOTS 16
@@ -381,6 +383,16 @@ static int32 sHaveGid;
 static uint32 sUid;
 static uint32 sGid;
 static uint64 sClearTid;
+#define LINUX_CLONE_SETTLS          0x00080000ULL
+#define LINUX_CLONE_PARENT_SETTID   0x00100000ULL
+#define LINUX_CLONE_CHILD_CLEARTID  0x00200000ULL
+#define LINUX_CLONE_CHILD_SETTID    0x01000000ULL
+#define CLONE_T_SLOTS 8
+struct clone_thr {
+	int32 tid;
+	uint64 cleartid;
+};
+static struct clone_thr sCloneT[CLONE_T_SLOTS];
 extern "C" uint64 sRobustList;
 extern "C" uint64 sRobustLen;
 #define TEAM_R_SLOTS 8
@@ -514,7 +526,8 @@ extern "C" {
 		uint32 mask, void* buf);
 	int64 sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags);
 	int64 sys_compat_clone_vm(uint64 userRip, uint64 childStack,
-		uint64 cloneFlags);
+		uint64 cloneFlags, uint64 parentTid, uint64 childTid,
+		uint64 tls);
 	void sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags,
 		int64 retval);
 }
@@ -1055,6 +1068,40 @@ discover_user_exit_team(void)
 		}
 	}
 	kser_puts("EXno\n");
+}
+
+static void
+discover_user_exit_thread(void)
+{
+	image_info info;
+	int32 cookie;
+	void* p;
+	int n;
+	static const char* const names[] = {
+		"_user_exit_thread",
+		"_Z18_user_exit_threadi",
+		"_Z18_user_exit_threadl",
+		NULL
+	};
+
+	sUserExitThread = 0;
+	cookie = 0;
+	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
+		for (n = 0; names[n] != NULL; n++) {
+			p = NULL;
+			if ((get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_TEXT, &p) == B_OK
+				|| get_image_symbol(info.id, names[n],
+				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
+				sUserExitThread = (haiku_exit_thread_fn)p;
+				kser_puts("XUfn=");
+				kser_hex((uint64)(addr_t)p);
+				kser_putc('\n');
+				return;
+			}
+		}
+	}
+	kser_puts("XUno\n");
 }
 
 static void
@@ -1668,6 +1715,13 @@ linux_clear_all(void)
 	}
 	gLinuxN = 0;
 	{
+		int c;
+		for (c = 0; c < CLONE_T_SLOTS; c++) {
+			sCloneT[c].tid = 0;
+			sCloneT[c].cleartid = 0;
+		}
+	}
+	{
 		int m;
 		for (m = 0; m < LINUX_MAP_SLOTS; m++) {
 			sFileMaps[m].addr = 0;
@@ -2155,21 +2209,58 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	return (int64)st;
 }
 
+static void
+clone_t_set(int32 tid, uint64 cleartid)
+{
+	int i, empty;
+
+	empty = -1;
+	for (i = 0; i < CLONE_T_SLOTS; i++) {
+		if (sCloneT[i].tid == tid) {
+			sCloneT[i].cleartid = cleartid;
+			return;
+		}
+		if (empty < 0 && sCloneT[i].tid == 0)
+			empty = i;
+	}
+	if (empty < 0)
+		empty = 0;
+	sCloneT[empty].tid = tid;
+	sCloneT[empty].cleartid = cleartid;
+}
+
+static uint64
+clone_t_take(int32 tid)
+{
+	int i;
+	uint64 ctid;
+
+	for (i = 0; i < CLONE_T_SLOTS; i++) {
+		if (sCloneT[i].tid == tid) {
+			ctid = sCloneT[i].cleartid;
+			sCloneT[i].tid = 0;
+			sCloneT[i].cleartid = 0;
+			return ctid;
+		}
+	}
+	return 0;
+}
+
 extern "C" int64
-sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags)
+sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
+	uint64 parentTid, uint64 childTid, uint64 tls)
 {
 	typedef int32 (*haiku_spawn_fn)(void* userAttr);
 	typedef int32 (*haiku_resume_fn)(int32 tid);
 	haiku_spawn_fn spawn;
 	haiku_resume_fn resume;
-	uint8 tb[32];
+	uint8 tb[64];
 	uint8 attr[72];
 	uint8 nameb[8];
 	uint64 tramp, entry, nameu, attu;
-	int32 tid, st;
-	int i;
+	int32 tid, st, t32;
+	int i, n;
 
-	(void)cloneFlags;
 	kser_puts("TV rip=");
 	kser_hex(userRip);
 	kser_puts(" sp=");
@@ -2184,25 +2275,49 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags)
 	entry = tramp + 0x80;
 	nameu = tramp + 0x1c0;
 	attu = tramp + 0x200;
+	n = 0;
+	if ((cloneFlags & LINUX_CLONE_SETTLS) != 0 && tls >= 0x100000ULL) {
+		/* mov $ARCH_SET_FS,%rdi; movabs $tls,%rsi; mov $158,%rax; syscall */
+		tb[n++] = 0x48;
+		tb[n++] = 0xc7;
+		tb[n++] = 0xc7;
+		tb[n++] = 0x02;
+		tb[n++] = 0x10;
+		tb[n++] = 0x00;
+		tb[n++] = 0x00;
+		tb[n++] = 0x48;
+		tb[n++] = 0xbe;
+		for (i = 0; i < 8; i++)
+			tb[n++] = (uint8)(tls >> (8 * i));
+		tb[n++] = 0x48;
+		tb[n++] = 0xc7;
+		tb[n++] = 0xc0;
+		tb[n++] = 0x9e;
+		tb[n++] = 0x00;
+		tb[n++] = 0x00;
+		tb[n++] = 0x00;
+		tb[n++] = 0x0f;
+		tb[n++] = 0x05;
+	}
 	/* xor %eax,%eax; movabs $stack,%r11; mov %r11,%rsp;
 	 * movabs $rip,%r11; jmp *%r11 */
-	tb[0] = 0x31;
-	tb[1] = 0xc0;
-	tb[2] = 0x49;
-	tb[3] = 0xbb;
+	tb[n++] = 0x31;
+	tb[n++] = 0xc0;
+	tb[n++] = 0x49;
+	tb[n++] = 0xbb;
 	for (i = 0; i < 8; i++)
-		tb[4 + i] = (uint8)(childStack >> (8 * i));
-	tb[12] = 0x4c;
-	tb[13] = 0x89;
-	tb[14] = 0xdc;
-	tb[15] = 0x49;
-	tb[16] = 0xbb;
+		tb[n++] = (uint8)(childStack >> (8 * i));
+	tb[n++] = 0x4c;
+	tb[n++] = 0x89;
+	tb[n++] = 0xdc;
+	tb[n++] = 0x49;
+	tb[n++] = 0xbb;
 	for (i = 0; i < 8; i++)
-		tb[17 + i] = (uint8)(userRip >> (8 * i));
-	tb[25] = 0x41;
-	tb[26] = 0xff;
-	tb[27] = 0xe3;
-	if (user_memcpy((void*)(addr_t)entry, tb, 28) != B_OK)
+		tb[n++] = (uint8)(userRip >> (8 * i));
+	tb[n++] = 0x41;
+	tb[n++] = 0xff;
+	tb[n++] = 0xe3;
+	if (user_memcpy((void*)(addr_t)entry, tb, (size_t)n) != B_OK)
 		return -LINUX_EFAULT;
 	nameb[0] = 'l';
 	nameb[1] = 'c';
@@ -2230,6 +2345,23 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags)
 	kser_putc('\n');
 	if (tid <= 0)
 		return haiku_status_to_linux((int64)tid);
+	t32 = tid;
+	if ((cloneFlags & LINUX_CLONE_PARENT_SETTID) != 0
+		&& linux_user_ok((void*)(addr_t)parentTid, 4))
+		user_memcpy((void*)(addr_t)parentTid, &t32, 4);
+	if ((cloneFlags & LINUX_CLONE_CHILD_SETTID) != 0
+		&& linux_user_ok((void*)(addr_t)childTid, 4))
+		user_memcpy((void*)(addr_t)childTid, &t32, 4);
+	kser_puts("PT=");
+	kser_hex(parentTid);
+	kser_puts(" CT=");
+	kser_hex(childTid);
+	kser_puts(" TL=");
+	kser_hex(tls);
+	kser_putc('\n');
+	if ((cloneFlags & LINUX_CLONE_CHILD_CLEARTID) != 0
+		&& linux_user_ok((void*)(addr_t)childTid, 4))
+		clone_t_set(tid, childTid);
 	resume = (haiku_resume_fn)(addr_t)sResumeFn;
 	st = resume(tid);
 	kser_puts("TR");
@@ -4110,16 +4242,49 @@ extern "C" int64
 sys_compat_exit60(int64 status)
 {
 	team_info info;
+	int32 tid;
+	uint64 ctid;
+	int32 zero;
 
 	(void)status;
 	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK
 		&& info.thread_count > 1) {
+		tid = find_thread(NULL);
+		ctid = clone_t_take(tid);
 		kser_puts("XT n=");
 		kser_hex((uint64)(uint32)info.thread_count);
 		kser_putc('\n');
-		if (sThreadExit != 0)
+		if (ctid >= 0x100000ULL && linux_user_ok((void*)(addr_t)ctid, 4)) {
+			zero = 0;
+			kser_puts("CK=");
+			kser_hex(ctid);
+			kser_putc('\n');
+			__asm__ __volatile__(
+				"swapgs\n\t"
+				"movl %1, (%0)\n\t"
+				"swapgs"
+				:
+				: "r"(ctid), "r"(zero)
+				: "memory");
+			kser_puts("TC\n");
+		}
+		/* OS.h exit_thread() is a no-op from this driver. kill_thread
+		 * posts SIGKILLTHR but delivery waits for user return — we
+		 * never sysret. _user_exit_thread + thread_exit matches the
+		 * last-thread path without _user_exit_team. CLONE_SETTLS
+		 * left IA32_FS_BASE on the Linux TLS; thread_exit then KT. */
+		wrmsr(IA32_FS_BASE, 0);
+		kser_puts("FS0\n");
+		if (sUserExitThread != 0) {
+			kser_puts("XU\n");
+			sUserExitThread((int32)status);
+			kser_puts("XUR\n");
+		}
+		if (sThreadExit != 0) {
+			kser_puts("XTX\n");
 			sThreadExit();
-		kser_puts("XTR\n");
+			kser_puts("XTXR\n");
+		}
 		return 1;
 	}
 	return 0;
@@ -5491,7 +5656,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR48\n");
+	kser_puts("PR49g\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
@@ -5503,6 +5668,7 @@ init_driver(void)
 	discover_user_delete_area();
 	discover_kern_close();
 	discover_user_exit_team();
+	discover_user_exit_thread();
 	discover_thread_exit();
 	discover_kern_write_stat();
 	if (sFutexMu < 0)

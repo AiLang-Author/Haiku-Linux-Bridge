@@ -908,8 +908,14 @@ sys_compat_lstar:
 	sti
 	call	sys_compat_exit60
 	cli
-	/* Last thread: C returned. Team teardown. */
-	jmp	.Lexit_have
+	test	rax, rax
+	jz	.Lexit_have
+	/* Extra thread: CR3 stays. Wait for SIGKILLTHR. */
+	KSER	'X'
+.Lexit60_wait:
+	sti
+	hlt
+	jmp	.Lexit60_wait
 
 .Lexit:
 	KSER	'e'
@@ -1372,7 +1378,7 @@ sys_compat_lstar:
 .endm
 
 .Lclone_vm:
-	/* rdi=flags rsi=child_stack rcx=user RIP. Same CR3. */
+	/* rdi=flags rsi=stack rdx=ptid r10=ctid r8=tls rcx=RIP. */
 	KSER	'T'
 	push	rcx
 	push	r11
@@ -1382,8 +1388,11 @@ sys_compat_lstar:
 	push	r8
 	push	r9
 	push	r10
+	mov	r9, r8
+	mov	r8, r10
+	mov	rcx, rdx
 	mov	rdx, rdi
-	mov	rdi, rcx
+	mov	rdi, qword ptr [rsp + 56]
 	CALL_C	sys_compat_clone_vm
 
 .Lopen_c:
