@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-23 (Day 56: pthread_create flags CLONEPTOK)
+**Last updated:** 2026-08-23 (Day 57: clone3; glibc pthread still KT)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -118,7 +118,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **works**. `hello_fork` `FORKOK`. `CLONEEXOK`. SETTLS **`CLONETLSOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**. pthread_create flags **`CLONEPTOK`** (Day 56). `THREAD` without `SIGHAND` is `-EINVAL`. |
+| 56/57/58 | clone/fork/vfork | **works**. `CLONEPTOK`. `clone3` (435) wired Day 57. glibc `pthread_create` reaches `start_thread` then KT. |
+| 435 | clone3 | **partial**. Same-team spawn + SETTLS + fn/arg trampoline. Not `PTHREADOK`. |
 | 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
 | 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
 | 202 | futex | **works** (WAIT/WAKE/BITSET; REQUEUE-as-wake). `hello_futex` `FUTEXOK`. Day 23. |

@@ -44,7 +44,7 @@ Pickup: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [
 
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY56.md`](docs/STANDUP_DAY56.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY57.md`](docs/STANDUP_DAY57.md).
 
 **Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
 
@@ -72,7 +72,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** — `_kern_fcntl` 0x76, `statx` from `read_stat`. `hello_fcntl` / `FCNTOK`. |
 | busybox grep / sed / wc / head / sort / cut | **Works** — single-process, no fork. All RC=0. |
-| Linux `clone` / `wait4` / `exit` | **`hello_fork` `FORKOK`.** `CLONEEXOK`. SETTLS **`CLONETLSOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**. pthread_create flags **`CLONEPTOK`**. See Day 21 / 51–56. |
+| Linux `clone` / `wait4` / `exit` | **`CLONEPTOK`**. `clone3` (435) Day 57. glibc-static `pthread_create` not `PTHREADOK` yet. |
 | Linux `execve` | **Works** — `hello_exec` replaced itself with `hello_min` via `_user_exec` of `sys_compat_run`. `EXEC_RC=0`. See Day 22. |
 | Linux `futex` | **Works** — WAIT/WAKE on per-thread kstack. `hello_futex` / `FUTEXOK`. See Day 23. |
 | Linux `poll` / `ppoll` | **Partial** — ELF `nfds==1` **`POLLOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`**. Stack pollfd **`POLLSTKOK`**. Ash fd 0 blocking still a tty stub. Day 54. |

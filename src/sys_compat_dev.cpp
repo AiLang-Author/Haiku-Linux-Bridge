@@ -393,6 +393,8 @@ static uint64 sClearTid;
 #define LINUX_CLONE_PARENT_SETTID   0x00100000ULL
 #define LINUX_CLONE_CHILD_CLEARTID  0x00200000ULL
 #define LINUX_CLONE_CHILD_SETTID    0x01000000ULL
+static uint64 sCloneFn;
+static uint64 sCloneArg;
 #define CLONE_T_SLOTS 8
 struct clone_thr {
 	int32 tid;
@@ -534,6 +536,8 @@ extern "C" {
 	int64 sys_compat_clone_vm(uint64 userRip, uint64 childStack,
 		uint64 cloneFlags, uint64 parentTid, uint64 childTid,
 		uint64 tls);
+	int64 sys_compat_clone3(void* uargs, uint64 usize, uint64 userRip,
+		uint64 fn, uint64 arg);
 	void sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags,
 		int64 retval);
 }
@@ -2273,7 +2277,7 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
 	typedef int32 (*haiku_resume_fn)(int32 tid);
 	haiku_spawn_fn spawn;
 	haiku_resume_fn resume;
-	uint8 tb[64];
+	uint8 tb[128];
 	uint8 attr[72];
 	uint8 nameb[8];
 	uint64 tramp, entry, nameu, attu;
@@ -2327,6 +2331,20 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
 		tb[n++] = 0x0f;
 		tb[n++] = 0x05;
 	}
+	kser_puts(" FN=");
+	kser_hex(sCloneFn);
+	kser_puts(" AR=");
+	kser_hex(sCloneArg);
+	kser_putc('\n');
+	/* movabs $fn,%rdx; movabs $arg,%r8 — glibc __clone3 */
+	tb[n++] = 0x48;
+	tb[n++] = 0xba;
+	for (i = 0; i < 8; i++)
+		tb[n++] = (uint8)(sCloneFn >> (8 * i));
+	tb[n++] = 0x49;
+	tb[n++] = 0xb8;
+	for (i = 0; i < 8; i++)
+		tb[n++] = (uint8)(sCloneArg >> (8 * i));
 	/* xor %eax,%eax; movabs $stack,%r11; mov %r11,%rsp;
 	 * movabs $rip,%r11; jmp *%r11 */
 	tb[n++] = 0x31;
@@ -2400,6 +2418,58 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
 	if (st < 0)
 		return haiku_status_to_linux((int64)st);
 	return (int64)(uint32)tid;
+}
+
+struct linux_clone_args {
+	uint64 flags;
+	uint64 pidfd;
+	uint64 child_tid;
+	uint64 parent_tid;
+	uint64 exit_signal;
+	uint64 stack;
+	uint64 stack_size;
+	uint64 tls;
+};
+
+extern "C" int64
+sys_compat_clone3(void* uargs, uint64 usize, uint64 userRip,
+	uint64 fn, uint64 arg)
+{
+	struct linux_clone_args a;
+	uint64 n, childStack;
+	int64 tid;
+
+	kser_puts("C3 sz=");
+	kser_hex(usize);
+	kser_puts(" fn=");
+	kser_hex(fn);
+	kser_puts(" ar=");
+	kser_hex(arg);
+	kser_putc('\n');
+	if (usize < 64 || usize > 256)
+		return -LINUX_EINVAL;
+	if (!linux_user_ok(uargs, usize))
+		return -LINUX_EFAULT;
+	for (n = 0; n < sizeof(a); n++)
+		((uint8*)&a)[n] = 0;
+	n = usize;
+	if (n > sizeof(a))
+		n = sizeof(a);
+	if (user_memcpy(&a, uargs, (size_t)n) != B_OK)
+		return -LINUX_EFAULT;
+	if ((a.flags & LINUX_CLONE_VM) == 0 || a.stack < 0x100000ULL
+		|| a.stack_size < 4096)
+		return -LINUX_ENOSYS;
+	if (a.stack_size >= (1ULL << 40))
+		return -LINUX_EINVAL;
+	sCloneFn = fn;
+	sCloneArg = arg;
+	childStack = a.stack + a.stack_size;
+	tid = sys_compat_clone_vm(userRip, childStack, a.flags,
+		a.parent_tid, a.child_tid, a.tls);
+	sCloneFn = 0;
+	sCloneArg = 0;
+	return tid;
 }
 
 extern "C" void
@@ -2829,8 +2899,15 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 		timed = 1;
 	}
 
-	if (user_memcpy(&cur, uaddr, 4) != B_OK)
+	/* user_memcpy of Linux TLS/stack futex words GPFs
+	 * (src=0x7fffffcfff01). Load with user GS. */
+	if (!linux_user_ok(uaddr, 4))
 		return -LINUX_EFAULT;
+	__asm__ __volatile__(
+		"swapgs\n\t"
+		"movl (%1), %0\n\t"
+		"swapgs"
+		: "=r"(cur) : "r"(uaddr) : "memory");
 	if (cur != (int32)val)
 		return -LINUX_EAGAIN;
 	if (timed && relative && usec == 0)
@@ -2841,11 +2918,11 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 		return -LINUX_ENOMEM;
 
 	acquire_sem(sFutexMu);
-	if (user_memcpy(&cur, uaddr, 4) != B_OK) {
-		release_sem(sFutexMu);
-		delete_sem(waitSem);
-		return -LINUX_EFAULT;
-	}
+	__asm__ __volatile__(
+		"swapgs\n\t"
+		"movl (%1), %0\n\t"
+		"swapgs"
+		: "=r"(cur) : "r"(uaddr) : "memory");
 	if (cur != (int32)val) {
 		release_sem(sFutexMu);
 		delete_sem(waitSem);
@@ -4298,6 +4375,9 @@ sys_compat_exit60(int64 status)
 				: "r"(ctid), "r"(zero)
 				: "memory");
 			kser_puts("TC\n");
+			sys_compat_futex((void*)(addr_t)ctid,
+				LINUX_FUTEX_WAKE, 1, NULL, NULL, 0);
+			kser_puts("FW\n");
 		}
 		/* OS.h exit_thread() is a no-op from this driver. kill_thread
 		 * posts SIGKILLTHR but delivery waits for user return — we
@@ -5687,7 +5767,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR52\n");
+	kser_puts("PR53d\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-23 (Day 56: pthread_create flags CLONEPTOK)
+**Updated:** 2026-08-23 (Day 57: clone3; glibc pthread still KT)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -132,7 +132,7 @@ but they are not what this busybox set exercises.
 
 ## Next
 
-1. Real glibc-static `pthread_create` binary.
+1. glibc `start_thread` Kill Thread → `PTHREADOK`.
 2. Ash fd 0 blocking is still the tty stub.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /

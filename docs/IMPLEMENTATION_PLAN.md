@@ -1,6 +1,6 @@
 # Implementation plan (living)
 
-**Last updated:** 2026-08-23 (Day 56: pthread_create flags CLONEPTOK)  
+**Last updated:** 2026-08-23 (Day 57: clone3 + futex GS; glibc pthread KT)  
 **Order of work (do not skip):** syscall layer → CLI/no-GUI Linux binaries → later ioctl/drivers/graphics.
 
 This file is the **pickup and onboarding document**. If you are new, read
@@ -50,7 +50,8 @@ Standups: [Day 13](STANDUP_DAY13.md) (first reboot diagnosis) →
 [Day 53](STANDUP_DAY53.md) (`CLONE_SETTLS` + CLEARTID; `CLONETLSOK`) →
 [Day 54](STANDUP_DAY54.md) (stack `pollfd`; `POLLSTKOK`) →
 [Day 55](STANDUP_DAY55.md) (`CLONE_THREAD` `wait4` `-ECHILD`; `CLONETHROK`) →
-[Day 56](STANDUP_DAY56.md) (pthread_create flags; `CLONEPTOK`).
+[Day 56](STANDUP_DAY56.md) (pthread_create flags; `CLONEPTOK`) →
+[Day 57](STANDUP_DAY57.md) (`clone3`; glibc `pthread_create` still KT).
 
 ---
 
@@ -91,12 +92,10 @@ directly; `dprintf` is silent unless `serial_debug_output` is on.
 `KERNEL_STACK_SIZE` is 16 KB; debug builds add a 4 KB guard (area 20 KB).
 This Haiku has **no CR4.SMAP** — do not emit `STAC`.
 
-**Where we are (Day 56):** glibc `pthread_create` clone flags are
-**`CLONEPTOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**.
-Stack pollfd **`POLLSTKOK`**. SETTLS+CLEARTID **`CLONETLSOK`**.
-Extra-thread `exit`(60) **`CLONEEXOK`**. `hello_fork` **`FORKOK`**.
-Blocking ELF `poll(-1)` **`POLLBLKOK`**. Ash **`echo SHLIVE`** still
-holds.
+**Where we are (Day 57):** `clone3` (435) is in the trap. Futex WAIT
+loads with user GS; extra-thread exit `FUTEX_WAKE`. `clone_vm` runs
+on `gs:8` not `gKstack`. glibc-static `pthread_create` reaches
+`start_thread` then Kill Thread. Flag word still **`CLONEPTOK`**.
 Punch-out: [CLI_APPLET_PUNCHOUT.md](CLI_APPLET_PUNCHOUT.md).
 
 **Where we were (Day 38):** After `ND`, C close then futex (`uU`),
@@ -115,12 +114,10 @@ User `rbp` is preserved across C helpers that `sysretq`.
 `try_fork`/`wait4`/`execve` C runs on `gs:8-0xA00`, not the one
 global `gKstack`. `rbx=0` at clone is ash's atfork walker.
 
-**What needs doing next:** a real glibc-static `pthread_create` binary.
-Ash fd 0 blocking is still the tty stub. Do not unmark CR3 on a
-CLONE_VM thread `exit`(60). Do not futex from extra-thread exit. Do
-not `_user_wait_for_objects` from C. Do not `_user_fork` for
-`CLONE_VM`. Do not `FBIOPUT` a new video mode. Do not build DRM. Do
-not start a linuxkpi driver layer yet.
+**What needs doing next:** glibc `start_thread` Kill Thread (`fs:0x28`
+/ TCB). Then `PTHREADOK`. Ash fd 0 blocking is still the tty stub.
+Do not `user_memcpy` TLS futex words. Do not `gKstack` for clone_vm.
+Do not `FBIOPUT`. Do not DRM. Do not linuxkpi yet.
 
 **Public tester brief:** [STATUS.md](STATUS.md). Point outsiders there
 so bug reports include the binary, the command, and Kill Thread vs KDL.
@@ -303,7 +300,7 @@ Do not truncate `haiku_serial.log` while QEMU holds the fd.
 
 See `docs/SYSCALL_COVERAGE.md` for the ~90-syscall “90% of software” table.
 
-1. Real glibc-static `pthread_create` (not just the flag word).
+1. glibc `start_thread` KT → `PTHREADOK`.
 2. Do not `FBIOPUT` under app_server. Do not DRM. Do not linuxkpi yet.
 
 ---
@@ -372,6 +369,8 @@ Push a small commit after each of: a working new syscall, a loader/hook safety f
 | `tests/hello_clonept.s` | pthread_create flags; `CLONEPTOK` Day 56 |
 | `scripts/guest_run_clonept.sh` | Guest: fork + clonevm + tls + thr + pt |
 | `docs/STANDUP_DAY56.md` | Day 56 wrap: pthread_create flags |
+| `tests/hello_pthread.c` | glibc-static `pthread_create`+join; not `PTHREADOK` yet |
+| `docs/STANDUP_DAY57.md` | Day 57 wrap: clone3 + futex GS |
 | `tests/hello_exec.s` | Linux `execve("/boot/home/hello_min")`; `EXEC_RC=0` Day 22 |
 | `tests/hello_futex.s` | futex WAIT EAGAIN / WAKE 0 / WAIT timeout; `FUTEXOK` Day 23 |
 | `scripts/guest_run_futex.sh` | Guest: futex probe; POST `futex_out.txt` |

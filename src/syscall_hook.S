@@ -187,6 +187,7 @@
 	.extern	sys_compat_statx
 	.extern	sys_compat_try_fork
 	.extern	sys_compat_clone_vm
+	.extern	sys_compat_clone3
 	.extern	sys_compat_exit_prep
 	.extern	sys_compat_exit60
 	.extern	sys_compat_fork_parent_dump
@@ -206,6 +207,10 @@
 	.hidden	gPollSnap
 	.globl	sPollWrote
 	.hidden	sPollWrote
+	.globl	gCloneRdx
+	.hidden	gCloneRdx
+	.globl	gCloneR8
+	.hidden	gCloneR8
 	.extern	sys_compat_exit_prep
 
 #define SYS_COMPAT_MARK_NR	0x1337
@@ -596,6 +601,8 @@ sys_compat_lstar:
 	KSER	'C'
 	jmp	.Lclone
 .Lnotclone:
+	cmp	rax, 435		/* Linux clone3 */
+	je	.Lclone3
 	cmp	rax, 57			/* Linux fork */
 	je	.Lfork
 	cmp	rax, 58			/* Linux vfork */
@@ -1380,6 +1387,28 @@ sys_compat_lstar:
 	jmp	.Lret
 .endm
 
+	/* clone_vm/clone3: child's first syscalls must not smash
+	 * gKstack (parent still in C). Use this thread's kstack. */
+.macro CALL_GS8 fn
+	mov	[rip + gSavedRsp], rsp
+	mov	rsp, qword ptr [gs:8]
+	sub	rsp, 0xA00
+	and	rsp, -16
+	sti
+	call	\fn
+	cli
+	mov	rsp, [rip + gSavedRsp]
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	r11
+	pop	rcx
+	jmp	.Lret
+.endm
+
 .Lclone_vm:
 	/* rdi=flags rsi=stack rdx=ptid r10=ctid r8=tls rcx=RIP. */
 	KSER	'T'
@@ -1396,7 +1425,24 @@ sys_compat_lstar:
 	mov	rcx, rdx
 	mov	rdx, rdi
 	mov	rdi, qword ptr [rsp + 56]
-	CALL_C	sys_compat_clone_vm
+	CALL_GS8	sys_compat_clone_vm
+
+.Lclone3:
+	/* rdi=args rsi=size rdx=fn rcx=RIP r8=arg.
+	 * glibc __clone3(args,size,fn,arg): child call *%rdx. */
+	KSER	'3'
+	push	rcx
+	push	r11
+	push	rdi
+	push	rsi
+	push	rdx
+	push	r8
+	push	r9
+	push	r10
+	mov	r9, rdx
+	mov	rdx, qword ptr [rsp + 56]
+	mov	rcx, r9
+	CALL_GS8	sys_compat_clone3
 
 .Lopen_c:
 	push	rcx
@@ -2797,6 +2843,10 @@ gForkUserFlags:
 gForkUserRbp:
 	.quad	0
 gForkChildTid:
+	.quad	0
+gCloneRdx:
+	.quad	0
+gCloneR8:
 	.quad	0
 gForkRbx:
 	.quad	0

@@ -1,16 +1,16 @@
-# Status for testers (2026-08-23, Day 56)
+# Status for testers (2026-08-23, Day 57)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY56.md`](STANDUP_DAY56.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY57.md`](STANDUP_DAY57.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 56)
+## What you can expect today (`main`, Day 57)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -67,7 +67,7 @@ than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
 
 - **Dynamic glibc** (`ld-linux.so.2`) — not a supported target yet. Static first.
 - **Linux `ioctl`** — TTY onto Haiku tty. fbdev `/dev/fb0` onto Haiku VESA (1280x800x32, mmap). Other families `-ENOTTY`.
-- **`CLONE_VM` / pthreads** — same-team clone + SETTLS + `CLONE_THREAD` `wait4` `-ECHILD` is **`CLONETHROK`**. pthread_create flag word (`FS|FILES|SIGHAND|SYSVSEM`) is **`CLONEPTOK`** (Day 56). A glibc-static `pthread_create` binary is not guest-proven yet.
+- **`CLONE_VM` / pthreads** — flag word **`CLONEPTOK`**. `clone3` is wired (Day 57); glibc-static `pthread_create` reaches `start_thread` then Kill Thread. Not `PTHREADOK`.
 - **Real signals** — `rt_sigaction` / `rt_sigprocmask` return 0 and do nothing. `rt_sigreturn` is `-ENOSYS`.
 - **Sockets, epoll, ptrace, namespaces, io_uring, bpf** — not implemented.
 - **Interactive TTY `sh`** — busybox ash on a Haiku Terminal: prompt + `echo SHLIVE`. Stack/ELF `nfds==1` pollfd is copied (`POLLSTKOK`). Ash fd 0 blocking still stubs so `read()` gets keystrokes.
