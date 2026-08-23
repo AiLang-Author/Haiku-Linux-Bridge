@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-23 (Day 55: CLONE_THREAD wait4 ECHILD CLONETHROK)
+**Last updated:** 2026-08-23 (Day 56: pthread_create flags CLONEPTOK)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -118,7 +118,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **works** (`_user_fork`). Child IRETQ to `0x40101c`. `hello_fork` `FORKOK`. Day 20–21. `CLONE_VM` + child `exit`(60) **`CLONEEXOK`** (Day 52). SETTLS + CLEARTID **`CLONETLSOK`** (Day 53). `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`** (Day 55). |
+| 56/57/58 | clone/fork/vfork | **works**. `hello_fork` `FORKOK`. `CLONEEXOK`. SETTLS **`CLONETLSOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**. pthread_create flags **`CLONEPTOK`** (Day 56). `THREAD` without `SIGHAND` is `-EINVAL`. |
 | 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
 | 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
 | 202 | futex | **works** (WAIT/WAKE/BITSET; REQUEUE-as-wake). `hello_futex` `FUTEXOK`. Day 23. |
@@ -144,7 +144,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 ### Intentionally later
 
-other ioctl families (sockets / DRM), socket/connect/bind/listen/accept, pthread CLONE_FS/FILES/SIGHAND,
+other ioctl families (sockets / DRM), socket/connect/bind/listen/accept, glibc-static pthread_create,
 ptrace, mount, bpf, io_uring, inotify, epoll.
 
 ## Score
@@ -174,9 +174,9 @@ Rare/deprecated syscalls wait for a filed issue.
 **Wired, not separately guest-proven**: pread64/pwrite64, writev/readv,
 getppid.
 
-**Highest remaining for “coreutils in the wild”:** glibc `pthread_create`
-(`CLONE_FS|FILES|SIGHAND|SYSVSEM`). `CLONE_THREAD` `wait4` `-ECHILD` is
-**`CLONETHROK`** (Day 55). SETTLS + CLEARTID is **`CLONETLSOK`** (Day 53).
+**Highest remaining for “coreutils in the wild”:** a real glibc-static
+`pthread_create` (the flag word is **`CLONEPTOK`**, Day 56).
+`CLONE_THREAD` `wait4` `-ECHILD` is **`CLONETHROK`** (Day 55).
 `clone(CLONE_VM)` + child `exit`(60) is **`CLONEEXOK`** (Day 52).
 `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
 **`POLLBLKOK`**. Stack pollfd is **`POLLSTKOK`** (Day 54).

@@ -1,16 +1,16 @@
-# Status for testers (2026-08-23, Day 55)
+# Status for testers (2026-08-23, Day 56)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY55.md`](STANDUP_DAY55.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY56.md`](STANDUP_DAY56.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 55)
+## What you can expect today (`main`, Day 56)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -19,7 +19,7 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 | Tiny Linux `write`/`exit` | `hello_min` prints, `DONE_RC=0` |
 | File I/O, dirs, stat, chmod/chown/truncate, rename, symlink, time | `hello_wstat` `WSTATOK`; LTP `uname01` past `tst_tmpdir` |
 | busybox **as a single process** | `echo`, `uname`, `cat`, `ls`, `cp`, `mv`, `ln -s`, `readlink`, `touch`, `rm`, `date`, `grep`, `sed`, `wc`, `head`, `sort`, `cut` |
-| `clone`/`fork` + `wait4` | `hello_fork` → `FORKOK`. `clone(CLONE_VM)` + child `exit(60)` `hello_clonevm` **`CLONEEXOK`**. SETTLS+CLEARTID **`CLONETLSOK`**. `CLONE_THREAD` + `wait4` `-ECHILD` `hello_clonethr` **`CLONETHROK`** (Day 55) |
+| `clone`/`fork` + `wait4` | `hello_fork` → `FORKOK`. `CLONEEXOK`. SETTLS **`CLONETLSOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**. pthread_create flags **`CLONEPTOK`** (Day 56) |
 | `execve` of another Linux ELF | `hello_exec` → `hello_min`, `EXEC_RC=0` |
 | `futex` WAIT/WAKE | `hello_futex` → `FUTEXOK` |
 | `poll` / `ppoll` / `select` | `SELECTOK`. ELF `poll(nfds==1)` `hello_poll` **`POLLOK`**. Blocking ELF `poll(-1)` `hello_pollblk` **`POLLBLKOK`**. Stack pollfd `hello_pollstk` **`POLLSTKOK`** (Day 54). Ash fd 0 blocking still a tty stub |
@@ -67,7 +67,7 @@ than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
 
 - **Dynamic glibc** (`ld-linux.so.2`) — not a supported target yet. Static first.
 - **Linux `ioctl`** — TTY onto Haiku tty. fbdev `/dev/fb0` onto Haiku VESA (1280x800x32, mmap). Other families `-ENOTTY`.
-- **`CLONE_VM` / pthreads** — same-team `clone(CLONE_VM, stack)` + child `exit`(60) is **`CLONEEXOK`**. SETTLS/CLEARTID **`CLONETLSOK`**. `CLONE_THREAD` + `wait4(tid)` `-ECHILD` **`CLONETHROK`** (Day 55). glibc `pthread_create` may still miss `CLONE_FS|FILES|SIGHAND`.
+- **`CLONE_VM` / pthreads** — same-team clone + SETTLS + `CLONE_THREAD` `wait4` `-ECHILD` is **`CLONETHROK`**. pthread_create flag word (`FS|FILES|SIGHAND|SYSVSEM`) is **`CLONEPTOK`** (Day 56). A glibc-static `pthread_create` binary is not guest-proven yet.
 - **Real signals** — `rt_sigaction` / `rt_sigprocmask` return 0 and do nothing. `rt_sigreturn` is `-ENOSYS`.
 - **Sockets, epoll, ptrace, namespaces, io_uring, bpf** — not implemented.
 - **Interactive TTY `sh`** — busybox ash on a Haiku Terminal: prompt + `echo SHLIVE`. Stack/ELF `nfds==1` pollfd is copied (`POLLSTKOK`). Ash fd 0 blocking still stubs so `read()` gets keystrokes.

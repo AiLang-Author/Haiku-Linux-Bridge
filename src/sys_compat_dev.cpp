@@ -383,6 +383,12 @@ static int32 sHaveGid;
 static uint32 sUid;
 static uint32 sGid;
 static uint64 sClearTid;
+#define LINUX_CLONE_VM              0x00000100ULL
+#define LINUX_CLONE_FS              0x00000200ULL
+#define LINUX_CLONE_FILES           0x00000400ULL
+#define LINUX_CLONE_SIGHAND         0x00000800ULL
+#define LINUX_CLONE_THREAD          0x00010000ULL
+#define LINUX_CLONE_SYSVSEM         0x00040000ULL
 #define LINUX_CLONE_SETTLS          0x00080000ULL
 #define LINUX_CLONE_PARENT_SETTID   0x00100000ULL
 #define LINUX_CLONE_CHILD_CLEARTID  0x00200000ULL
@@ -2278,7 +2284,16 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
 	kser_hex(userRip);
 	kser_puts(" sp=");
 	kser_hex(childStack);
+	kser_puts(" FL=");
+	kser_hex(cloneFlags);
 	kser_putc('\n');
+	/* Same-team spawn already shares cwd, fds, and our stub
+	 * sighand. Accept glibc pthread_create's extra bits.
+	 * Linux: CLONE_THREAD requires CLONE_SIGHAND; SIGHAND
+	 * requires CLONE_VM (this path already has VM). */
+	if ((cloneFlags & LINUX_CLONE_THREAD) != 0
+		&& (cloneFlags & LINUX_CLONE_SIGHAND) == 0)
+		return -LINUX_EINVAL;
 	if (sSpawnFn == 0 || sResumeFn == 0 || gForkTramp < 0x100000ULL)
 		return -LINUX_ENOSYS;
 	if (userRip < 0x100000ULL || childStack < 0x100000ULL)
@@ -5672,7 +5687,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR51\n");
+	kser_puts("PR52\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

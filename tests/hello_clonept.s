@@ -1,8 +1,9 @@
 /*
- * Probe: clone(CLONE_VM|CLONE_THREAD|SETTLS|PARENT_SETTID|CHILD_CLEARTID).
- * Child checks fs:0 == magic, then exit(60).
- * Parent joins via ctid==0, then wait4(tid, WNOHANG) is -ECHILD.
- * Success: CLONETHROK.
+ * Probe: glibc pthread_create clone flags.
+ * VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
+ * = 0x3d0f00. Child fs:0 magic, shared-pipe write, exit(60).
+ * Parent: ptid, flag, pipe byte, ctid==0, wait4 -ECHILD.
+ * Success: CLONEPTOK.
  * License: Public Domain / CC0 1.0 Universal
  */
 
@@ -27,16 +28,24 @@ ctid:
 wst:
 	.long 0
 	.align 8
+fds:
+	.long 0
+	.long 0
+	.align 8
 ts:
 	.quad 0
 	.quad 5000000
+oneb:
+	.byte 65
+rbuf:
+	.byte 0
 
 .section .rodata
 msg_ok:
-	.ascii "CLONETHROK\n"
+	.ascii "CLONEPTOK\n"
 	msg_ok_len = . - msg_ok
 msg_fail:
-	.ascii "CLONETHRFAIL\n"
+	.ascii "CLONEPTFAIL\n"
 	msg_fail_len = . - msg_fail
 msg_fptid:
 	.ascii "Fptid\n"
@@ -50,11 +59,24 @@ msg_fctid:
 msg_fwait:
 	.ascii "Fwait\n"
 	msg_fwait_len = . - msg_fwait
+msg_fpipe:
+	.ascii "Fpipe\n"
+	msg_fpipe_len = . - msg_fpipe
 
 .section .text
 _start:
-	/* VM|SIGHAND|THREAD|SETTLS|PARENT_SETTID|CHILD_CLEARTID = 0x390900 */
-	mov	rdi, 0x390900
+	/* pipe2(fds, 0) */
+	.att_syntax prefix
+	leaq	fds(%rip), %rdi
+	xorq	%rsi, %rsi
+	movq	$293, %rax
+	.intel_syntax noprefix
+	syscall
+	test	rax, rax
+	jnz	.Lfail
+
+	/* 0x3d0f00 pthread_create set */
+	mov	rdi, 0x3d0f00
 	lea	rsi, [cstack + 8192]
 	lea	rdx, [ptid]
 	lea	r10, [ctid]
@@ -89,6 +111,19 @@ _start:
 	jmp	.Lfflag
 
 .Lseen:
+	/* read shared pipe — CLONE_FILES */
+	mov	edi, dword ptr [fds]
+	.att_syntax prefix
+	leaq	rbuf(%rip), %rsi
+	movq	$1, %rdx
+	movq	$0, %rax
+	.intel_syntax noprefix
+	syscall
+	cmp	rax, 1
+	jne	.Lfpipe
+	cmp	byte ptr [rbuf], 65
+	jne	.Lfpipe
+
 	mov	r12, 200
 .Lwaitc:
 	cmp	dword ptr [ctid], 0
@@ -106,7 +141,6 @@ _start:
 	jmp	.Lfctid
 
 .Ljoined:
-	/* wait4(tid, &wst, WNOHANG) → -ECHILD */
 	mov	rdi, r13
 	lea	rsi, [wst]
 	mov	rdx, 1
@@ -138,6 +172,13 @@ _start:
 	mov	rdx, 0xA11A11A1A11A11A1
 	cmp	rax, rdx
 	jne	.Lhang
+	mov	edi, dword ptr [fds + 4]
+	.att_syntax prefix
+	leaq	oneb(%rip), %rsi
+	movq	$1, %rdx
+	movq	$1, %rax
+	.intel_syntax noprefix
+	syscall
 	mov	dword ptr [flag], 1
 	.att_syntax prefix
 	movq	$60, %rax
@@ -162,6 +203,10 @@ _start:
 .Lfwait:
 	lea	rsi, [msg_fwait]
 	mov	rdx, msg_fwait_len
+	jmp	.Lfailw
+.Lfpipe:
+	lea	rsi, [msg_fpipe]
+	mov	rdx, msg_fpipe_len
 	jmp	.Lfailw
 .Lfail:
 	lea	rsi, [msg_fail]
