@@ -1,16 +1,16 @@
-# Status for testers (2026-08-23, Day 57)
+# Status for testers (2026-08-23, Day 58, parked)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
 **License:** Public Domain / CC0 1.0 Universal
 **What this is:** an out-of-tree Linux ABI for Haiku. Unmodified 64-bit Linux ELFs run on Haiku by trapping `syscall` and translating to `_kern_*`. No binary patching. No Linux kernel. No Linux userspace rewrite.
 
-This page is the short public snapshot. Pickup / landmines for people hacking the trap: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY57.md`](STANDUP_DAY57.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
+This page is the short public snapshot. **Parked Day 58** — pickup is [`CONTINUATION.md`](CONTINUATION.md). Living plan: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Per-syscall table: [`SYSCALL_COVERAGE.md`](SYSCALL_COVERAGE.md). Latest wrap: [`STANDUP_DAY58.md`](STANDUP_DAY58.md). Punch-out: [`CLI_APPLET_PUNCHOUT.md`](CLI_APPLET_PUNCHOUT.md).
 
 **Please test. File issues.** The CLI 90% set is wide enough that outside binaries will find the next holes faster than we will.
 
 ---
 
-## What you can expect today (`main`, Day 57)
+## What you can expect today (`main`, Day 58, parked)
 
 The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_run`. The desktop and Haiku's own shell stay up if you do not mark a Haiku team as Linux.
 
@@ -19,7 +19,7 @@ The guest-proven path is **static 64-bit Linux ELFs** launched with `sys_compat_
 | Tiny Linux `write`/`exit` | `hello_min` prints, `DONE_RC=0` |
 | File I/O, dirs, stat, chmod/chown/truncate, rename, symlink, time | `hello_wstat` `WSTATOK`; LTP `uname01` past `tst_tmpdir` |
 | busybox **as a single process** | `echo`, `uname`, `cat`, `ls`, `cp`, `mv`, `ln -s`, `readlink`, `touch`, `rm`, `date`, `grep`, `sed`, `wc`, `head`, `sort`, `cut` |
-| `clone`/`fork` + `wait4` | `hello_fork` → `FORKOK`. `CLONEEXOK`. SETTLS **`CLONETLSOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**. pthread_create flags **`CLONEPTOK`** (Day 56) |
+| `clone`/`fork` + `wait4` | `hello_fork` → `FORKOK`. `CLONEEXOK`. SETTLS **`CLONETLSOK`**. `CLONE_THREAD` `wait4` `-ECHILD` **`CLONETHROK`**. pthread_create flags **`CLONEPTOK`**. `clone3` fn/arg **`CLONE3FNOK`** (Day 58). Not `PTHREADOK` |
 | `execve` of another Linux ELF | `hello_exec` → `hello_min`, `EXEC_RC=0` |
 | `futex` WAIT/WAKE | `hello_futex` → `FUTEXOK` |
 | `poll` / `ppoll` / `select` | `SELECTOK`. ELF `poll(nfds==1)` `hello_poll` **`POLLOK`**. Blocking ELF `poll(-1)` `hello_pollblk` **`POLLBLKOK`**. Stack pollfd `hello_pollstk` **`POLLSTKOK`** (Day 54). Ash fd 0 blocking still a tty stub |
@@ -67,7 +67,7 @@ than Day 27.** A `.Lret` store into the rseq page under CLI KDLed
 
 - **Dynamic glibc** (`ld-linux.so.2`) — not a supported target yet. Static first.
 - **Linux `ioctl`** — TTY onto Haiku tty. fbdev `/dev/fb0` onto Haiku VESA (1280x800x32, mmap). Other families `-ENOTTY`.
-- **`CLONE_VM` / pthreads** — flag word **`CLONEPTOK`**. `clone3` is wired (Day 57); glibc-static `pthread_create` reaches `start_thread` then Kill Thread. Not `PTHREADOK`.
+- **`CLONE_VM` / pthreads** — flag word **`CLONEPTOK`**. `clone3` trampoline **`CLONE3FNOK`** (Day 58). glibc-static `pthread_create` still not `PTHREADOK` (`start_thread` `stopped_start` lock). See [`CONTINUATION.md`](CONTINUATION.md).
 - **Real signals** — `rt_sigaction` / `rt_sigprocmask` return 0 and do nothing. `rt_sigreturn` is `-ENOSYS`.
 - **Sockets, epoll, ptrace, namespaces, io_uring, bpf** — not implemented.
 - **Interactive TTY `sh`** — busybox ash on a Haiku Terminal: prompt + `echo SHLIVE`. Stack/ELF `nfds==1` pollfd is copied (`POLLSTKOK`). Ash fd 0 blocking still stubs so `read()` gets keystrokes.
@@ -165,7 +165,7 @@ Rare or deprecated Linux numbers are fine as issues. We add them when someone ac
 
 ```
                     (later) ioctl / TTY / sockets / drivers
-                 busybox sh + real pipelines     ← in progress
+                 busybox sh + real pipelines     ← guest-green; glibc pthread next
               fork+execve+poll  (PIPELINEOK)
            poll / select / file mmap / futex
         clone / wait4 / execve

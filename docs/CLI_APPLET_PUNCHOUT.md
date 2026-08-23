@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-23 (Day 57: clone3; glibc pthread still KT)
+**Updated:** 2026-08-23 (Day 58: parked; `CLONE3FNOK`; not `PTHREADOK`)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -58,11 +58,13 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `hello_pollstk` | **`POLLSTKOK`** `POLLSTK_RC=0` (Day 54): `pollfd` on the stack |
 | `hello_clonethr` | **`CLONETHROK`** `CLONETHR_RC=0` (Day 55): `CLONE_THREAD` + `wait4` `-ECHILD` |
 | `hello_clonept` | **`CLONEPTOK`** `CLONEPT_RC=0` (Day 56): pthread_create flag word + shared pipe |
+| `hello_clone3fn` | **`CLONE3FNOK`** `CLONE3FN_RC=0` (Day 58): `clone3` + SETTLS + trampoline `call fn(arg)` |
 
 ## Fragile / wrong (punch these before a toolchain)
 
 | Hole | What we saw | Why it matters |
 |---|---|---|
+| **glibc `pthread_create`** | `CLONE3FNOK`; `start_thread` `stopped_start` lock then abort. Not `PTHREADOK`. | Toolchain / any threaded static. [CONTINUATION.md](CONTINUATION.md) |
 | **Other ioctl families** | sockets / DRM still `-ENOTTY` | Not next. |
 | **`sched_getaffinity` one CPU** | `nproc` prints `1` on QEMU `-smp 4` | Fine for CLI; wrong for parallel make later. |
 | **`umask` / `sync` (162)** | Wired in the trap; not in the status script | Host applets issue them. |

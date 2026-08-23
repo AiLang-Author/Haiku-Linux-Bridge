@@ -38,15 +38,23 @@ This repo is **C++ and x86_64 assembler** in the public domain (CC0). It is an o
 - Guest **curl** is Haiku’s own curl on BSD sockets. Fetch and POST to the host HTTP helper work (`--max-time` so a stuck POST cannot hang the script).
 - `id` now prints `groups=0(root)` (`getgroups` guest-green).
 - Tiny `hello_exit` (`exit_group(42)`) is **`EXIT42_RC=42`**. glibc `return 1` / `exit(1)` and busybox **`false` / differing `cmp` now exit 1**.
-- Raw `write` then exit lands in a redirect (`hello_wr` prints `WRPROBE`). glibc `puts` prints **`PRINTF_OK`**. busybox **`date` / `md5sum` / `nproc` write** on a redirected fd. Linux **TTY ioctl** maps onto Haiku tty (`WINSZ 25x80`). Linux **`/dev/fb0`** is Haiku VESA (**1280x800x32**). Interactive **busybox ash** on the Terminal: **`echo SHLIVE`**. ELF **`hello_poll` `POLLOK`**. Blocking ELF **`poll(-1)` `POLLBLKOK`**. Stack **`pollfd` `POLLSTKOK`**. **`echo HI \| cat`** prints **`HI`** in a Haiku redirect. **`clone(CLONE_VM)` + child `exit`(60) `CLONEEXOK`**. **`CLONE_SETTLS` + `CHILD_CLEARTID` `CLONETLSOK`**. **`CLONE_THREAD` `wait4` `-ECHILD` `CLONETHROK`**. pthread_create flags **`CLONEPTOK`**.
+- Raw `write` then exit lands in a redirect (`hello_wr` prints `WRPROBE`). glibc `puts` prints **`PRINTF_OK`**. busybox **`date` / `md5sum` / `nproc` write** on a redirected fd. Linux **TTY ioctl** maps onto Haiku tty (`WINSZ 25x80`). Linux **`/dev/fb0`** is Haiku VESA (**1280x800x32**). Interactive **busybox ash** on the Terminal: **`echo SHLIVE`**. ELF **`hello_poll` `POLLOK`**. Blocking ELF **`poll(-1)` `POLLBLKOK`**. Stack **`pollfd` `POLLSTKOK`**. **`echo HI \| cat`** prints **`HI`** in a Haiku redirect. **`clone(CLONE_VM)` + child `exit`(60) `CLONEEXOK`**. **`CLONE_SETTLS` + `CHILD_CLEARTID` `CLONETLSOK`**. **`CLONE_THREAD` `wait4` `-ECHILD` `CLONETHROK`**. pthread_create flags **`CLONEPTOK`**. **`clone3` fn/arg `CLONE3FNOK`**. glibc `pthread_create` not `PTHREADOK` yet.
 
-Pickup: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [`docs/STATUS.md`](docs/STATUS.md). Punch-out list: [`docs/CLI_APPLET_PUNCHOUT.md`](docs/CLI_APPLET_PUNCHOUT.md).
+Pickup: [`docs/CONTINUATION.md`](docs/CONTINUATION.md) (parked Day 58 — start here). Living plan: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Testers: [`docs/STATUS.md`](docs/STATUS.md). Punch-out list: [`docs/CLI_APPLET_PUNCHOUT.md`](docs/CLI_APPLET_PUNCHOUT.md).
+
+## Parked (2026-08-23, Day 58)
+
+The original grinder is stepping away for a few weeks. The live trap, the guest-proven pyramid, and the next hole are written up so someone else can take the baton:
+
+- **Green:** `clone3` + SETTLS + trampoline `call fn(arg)` prints **`CLONE3FNOK`**. pthread_create flag word is **`CLONEPTOK`**.
+- **Open:** glibc-static `pthread_create` is not **`PTHREADOK`**. `start_thread` waits on the `stopped_start` lock, then abort. Details in [`docs/CONTINUATION.md`](docs/CONTINUATION.md).
+- License is CC0. Fork it. Send patches.
 
 ## Current status (honest)
 
-**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY57.md`](docs/STANDUP_DAY57.md).
+**Share this with testers:** [`docs/STATUS.md`](docs/STATUS.md) — what works, what to run, how to file a useful bug. Latest wrap: [`docs/STANDUP_DAY58.md`](docs/STANDUP_DAY58.md).
 
-**Living pickup / onboarding plan:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — read that first if you are changing the trap. Update it when a syscall lands or a trap changes.
+**Pickup if you are changing the trap:** [`docs/CONTINUATION.md`](docs/CONTINUATION.md), then [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Update both when a syscall lands or a trap changes.
 
 Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` and extra drivers are later.
 
@@ -72,7 +80,7 @@ Order of work: **syscall layer first** (CLI / no-GUI Linux ELFs). Linux `ioctl` 
 | Linux `time` / `gettimeofday` / real RTC | **Works** — `_kern_get_clock` 0xc0. busybox `date` prints **Fri Aug 14 18:17:47 UTC 2026**. |
 | Linux `fcntl` / `statx` / `fadvise64` | **Works** — `_kern_fcntl` 0x76, `statx` from `read_stat`. `hello_fcntl` / `FCNTOK`. |
 | busybox grep / sed / wc / head / sort / cut | **Works** — single-process, no fork. All RC=0. |
-| Linux `clone` / `wait4` / `exit` | **`CLONEPTOK`**. `clone3` (435) Day 57. glibc-static `pthread_create` not `PTHREADOK` yet. |
+| Linux `clone` / `wait4` / `exit` | **`CLONEPTOK`**. `clone3` **`CLONE3FNOK`** Day 58. glibc-static `pthread_create` not `PTHREADOK` yet. |
 | Linux `execve` | **Works** — `hello_exec` replaced itself with `hello_min` via `_user_exec` of `sys_compat_run`. `EXEC_RC=0`. See Day 22. |
 | Linux `futex` | **Works** — WAIT/WAKE on per-thread kstack. `hello_futex` / `FUTEXOK`. See Day 23. |
 | Linux `poll` / `ppoll` | **Partial** — ELF `nfds==1` **`POLLOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`**. Stack pollfd **`POLLSTKOK`**. Ash fd 0 blocking still a tty stub. Day 54. |

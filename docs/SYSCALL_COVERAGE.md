@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-23 (Day 57: clone3; glibc pthread still KT)
+**Last updated:** 2026-08-23 (Day 58: `CLONE3FNOK`; glibc pthread still not `PTHREADOK`)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -118,8 +118,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 | # | name | status |
 |---|---|---|
-| 56/57/58 | clone/fork/vfork | **works**. `CLONEPTOK`. `clone3` (435) wired Day 57. glibc `pthread_create` reaches `start_thread` then KT. |
-| 435 | clone3 | **partial**. Same-team spawn + SETTLS + fn/arg trampoline. Not `PTHREADOK`. |
+| 56/57/58 | clone/fork/vfork | **works**. `CLONEPTOK`. `clone3` (435) **`CLONE3FNOK`** Day 58. glibc `pthread_create` still not `PTHREADOK`. |
+| 435 | clone3 | **partial**. Same-team spawn + SETTLS + fn/arg trampoline **`CLONE3FNOK`**. glibc `start_thread` `stopped_start` lock remains. |
 | 61 | wait4 | **works**. Parent `Vv` + `FORKOK`. Day 20. |
 | 59 | execve | **works**. `_user_exec` 0x2e of `sys_compat_run <path>`. `hello_exec` → `hello_min`, `EXEC_RC=0`. Day 22. |
 | 202 | futex | **works** (WAIT/WAKE/BITSET; REQUEUE-as-wake). `hello_futex` `FUTEXOK`. Day 23. |
@@ -145,7 +145,8 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 
 ### Intentionally later
 
-other ioctl families (sockets / DRM), socket/connect/bind/listen/accept, glibc-static pthread_create,
+other ioctl families (sockets / DRM), socket/connect/bind/listen/accept,
+glibc-static `pthread_create` (`CLONE3FNOK` but not `PTHREADOK`),
 ptrace, mount, bpf, io_uring, inotify, epoll.
 
 ## Score
@@ -176,7 +177,9 @@ Rare/deprecated syscalls wait for a filed issue.
 getppid.
 
 **Highest remaining for “coreutils in the wild”:** a real glibc-static
-`pthread_create` (the flag word is **`CLONEPTOK`**, Day 56).
+`pthread_create` (`PTHREADOK`). Flag word **`CLONEPTOK`**. Isolation
+`clone3`+fn **`CLONE3FNOK`** (Day 58). Pickup:
+[CONTINUATION.md](CONTINUATION.md).
 `CLONE_THREAD` `wait4` `-ECHILD` is **`CLONETHROK`** (Day 55).
 `clone(CLONE_VM)` + child `exit`(60) is **`CLONEEXOK`** (Day 52).
 `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is

@@ -41,6 +41,17 @@ tests/hello_fs
 tests/hello_mmap
 tests/hello_rseq
 tests/hello_rwc
+tests/hello_pthread
+tests/hello_clone3fn
+tests/hello_clonept
+tests/hello_clonethr
+tests/hello_clonetls
+tests/hello_clonevm
+tests/hello_pollblk
+tests/hello_pollstk
+tests/hello_mmapf.o
+tests/hello_pipeline.o
+tests/hello_select.o
 
 # LTP guest results collected over the network
 results/

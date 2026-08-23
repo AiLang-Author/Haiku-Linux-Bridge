@@ -1784,6 +1784,7 @@ sys_compat_lstar:
 	push	r10
 	CALL_C	sys_compat_setgid
 .Lgettid:
+	KSER	't'
 	push	rcx
 	push	r11
 	push	rdi
@@ -1792,7 +1793,7 @@ sys_compat_lstar:
 	push	r8
 	push	r9
 	push	r10
-	CALL_C	sys_compat_gettid
+	CALL_GS8	sys_compat_gettid
 .Lset_tid_address:
 	push	rcx
 	push	r11
@@ -2630,6 +2631,7 @@ sys_compat_lstar:
 .Larch_prctl:
 	cmp	rdi, 0x1002		/* ARCH_SET_FS */
 	jne	.Lenosys
+	KSER	'A'
 	mov	[rip + gLinuxFS], rsi
 	push	rcx
 	push	r11

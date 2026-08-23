@@ -2302,7 +2302,37 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
 		return -LINUX_ENOSYS;
 	if (userRip < 0x100000ULL || childStack < 0x100000ULL)
 		return -LINUX_EFAULT;
+	/* Linux clone3 child SP is stack+stack_size, 16-aligned.
+	 * glibc then `call *%rdx` (SysV: SP%16==0 at call). PR53e
+	 * SP-8 made start_thread entry misaligned; __ctype_init KT. */
 	childStack &= ~(uint64)15;
+	kser_puts("SP=");
+	kser_hex(childStack);
+	kser_puts(" ULS=");
+	kser_hex(gUlsOff);
+	kser_putc('\n');
+	if (tls >= 0x100000ULL && linux_user_ok((void*)(addr_t)tls, 48)
+		&& linux_user_ok((void*)(addr_t)(tls - 96), 8)) {
+		uint64 tw[4];
+		tw[0] = tw[1] = tw[2] = tw[3] = 0;
+		if (user_memcpy(&tw[0], (void*)(addr_t)tls, 8) == B_OK
+			&& user_memcpy(&tw[1], (void*)(addr_t)(tls + 0x10), 8)
+				== B_OK
+			&& user_memcpy(&tw[2], (void*)(addr_t)(tls + 0x28), 8)
+				== B_OK
+			&& user_memcpy(&tw[3], (void*)(addr_t)(tls - 96), 8)
+				== B_OK) {
+			kser_puts("TCB0=");
+			kser_hex(tw[0]);
+			kser_puts(" SELF=");
+			kser_hex(tw[1]);
+			kser_puts(" CAN=");
+			kser_hex(tw[2]);
+			kser_puts(" LOC=");
+			kser_hex(tw[3]);
+			kser_putc('\n');
+		}
+	}
 	tramp = gForkTramp;
 	entry = tramp + 0x80;
 	nameu = tramp + 0x1c0;
@@ -5767,7 +5797,10 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR53d\n");
+	kser_puts("PR53g\n");
+	kser_puts("ULS=");
+	kser_hex(gUlsOff);
+	kser_putc('\n');
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
