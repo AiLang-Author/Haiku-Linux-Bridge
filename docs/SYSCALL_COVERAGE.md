@@ -1,6 +1,6 @@
 # Core 90% Linux syscall set
 
-**Last updated:** 2026-08-22 (Day 53: CLONE_SETTLS + CLEARTID CLONETLSOK)
+**Last updated:** 2026-08-23 (Day 54: stack pollfd POLLSTKOK)
 
 Linux has 300+ x86_64 syscall numbers. Roughly **80–100 of them** dominate
 everyday CLI and statically-linked C programs (glibc startup + POSIX file
@@ -129,7 +129,7 @@ Status: **works** (guest-proven), **wired** (implemented, not yet guest-proven),
 |---|---|---|
 | 22/293 | pipe/pipe2 | **works**. `sh -c 'echo HI \| cat'` `SH_PIPE_RC=0`. Day 31. |
 | 40 | sendfile | **pipe = `-EINVAL`** (Linux: `in_fd` must be mmapable). busybox `cat` then `read`/`write`. Regular-file bounce later. |
-| 7 | poll | **ELF nfds==1 `POLLOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`** (Day 50): write flag + snooze after poll starts. Ash `nfds==1` still a no-copy stub. Do not `_user_wait_for_objects` from C (KDL even with ELF `0x403020`). |
+| 7 | poll | **ELF nfds==1 `POLLOK`**. Blocking ELF `poll(-1)` **`POLLBLKOK`**. Stack pollfd **`POLLSTKOK`** (Day 54). fd 0 blocking still tty stub. Do not `_user_wait_for_objects` from C. |
 | 23/270 | select/pselect6 | **works**. fd_set → poll. `hello_select` `SELECTOK`. Day 25. |
 | 271 | ppoll | **works** (timespec → ms; sigset ignored). |
 
@@ -178,7 +178,8 @@ getppid.
 (`CLONE_THREAD` / wait4). SETTLS + CLEARTID is **`CLONETLSOK`** (Day 53).
 `clone(CLONE_VM)` + child `exit`(60) is **`CLONEEXOK`** (Day 52).
 `hello_poll` is **`POLLOK`**. Blocking ELF `poll(-1)` is
-**`POLLBLKOK`** (Day 50). `nanosleep` snoozes (used by that probe).
+**`POLLBLKOK`**. Stack pollfd is **`POLLSTKOK`** (Day 54).
+`nanosleep` snoozes (used by that probe).
 `echo HI | cat` prints **`HI`** in a Haiku redirect (Day 49).
 Interactive ash is guest-green (`echo SHLIVE`, Day 47). Testers
 should start from

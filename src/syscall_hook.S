@@ -371,6 +371,7 @@ sys_compat_lstar:
 	mov	qword ptr [rip + gMapCur], 0
 	mov	qword ptr [rip + gArenaHi], 0
 .Lmark_ok:
+	mov	byte ptr [rip + sPollWrote], 0
 	mov	qword ptr [rip + gLinuxFS], 0
 	mov	qword ptr [rip + gRseqPtr], 0
 	mov	qword ptr [rip + gRseqLen], 0
@@ -1274,12 +1275,13 @@ sys_compat_lstar:
 	push	rsi
 	cmp	rsi, 1
 	jne	.Lpoll_c
-	cmp	rdi, 0x400000
-	jb	.Lpoll_c
-	cmp	rdi, 0x1000000
-	jae	.Lpoll_c
 	test	rdi, 7
 	jnz	.Lpoll_c
+	cmp	rdi, 0x100000
+	jb	.Lpoll_c
+	mov	rcx, 0x0000800000000000
+	cmp	rdi, rcx
+	jae	.Lpoll_c
 	push	rax
 	swapgs
 	mov	rax, qword ptr [rdi]
@@ -1296,12 +1298,13 @@ sys_compat_lstar:
 	pop	rdi
 	cmp	rsi, 1
 	jne	.Lpoll_out
-	cmp	rdi, 0x400000
-	jb	.Lpoll_out
-	cmp	rdi, 0x1000000
-	jae	.Lpoll_out
 	test	rdi, 7
 	jnz	.Lpoll_out
+	cmp	rdi, 0x100000
+	jb	.Lpoll_out
+	mov	rcx, 0x0000800000000000
+	cmp	rdi, rcx
+	jae	.Lpoll_out
 	push	rax
 	mov	rax, qword ptr [rip + gPollSnap]
 	swapgs

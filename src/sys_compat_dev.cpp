@@ -2989,24 +2989,15 @@ fionread_fd(int32 fd)
 	return nread;
 }
 
-/* hello_poll pfd is .align 8 in ELF .data (~0x40xxxx). ash's stdin
- * pollfd was 0x7fffffcfff01. Never copy that. */
+/* nfds==1 pollfd is copied in the hook with user GS. ELF .data
+ * (~0x40xxxx) and the Linux stack (~0x7fff... / arena) both qualify.
+ * Never user_memcpy: that GPFd (src=0x7fffffcfff01). */
 static int
-pollfd_in_elf(const void* fds, int64 nfds)
+pollfd_user(const void* fds, int64 nfds)
 {
-	uint64 a = (uint64)(addr_t)fds;
-	uint64 n;
-
-	if (nfds <= 0)
+	if (nfds != 1)
 		return 0;
-	n = (uint64)nfds * 8;
-	if ((a & 7) != 0)
-		return 0;
-	if (a < 0x400000ULL || a >= 0x1000000ULL)
-		return 0;
-	if (a + n > 0x1000000ULL)
-		return 0;
-	return 1;
+	return linux_user_ok(fds, 8) && (((uint64)(addr_t)fds) & 7) == 0;
 }
 
 extern "C" int64
@@ -3024,16 +3015,15 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	if (nfds == 0)
 		return 0;
 	/*
-	 * Hook copied ELF nfds==1 pollfd into gPollSnap (user GS).
-	 * Do not _user_wait_for_objects from C: even with the ELF
-	 * pollfd at 0x403020, user_memcpy GPFd (src=0x7fffffcfff01).
-	 * Do not kernel wait_for_objects_etc: kernel=true waits on
-	 * the kernel io context (READ on an empty pipe).
+	 * Hook copied nfds==1 pollfd into gPollSnap (user GS), ELF
+	 * or stack. Do not _user_wait_for_objects from C (GPF).
+	 * Do not kernel wait_for_objects_etc (wrong io context).
 	 * POLLIN is the Linux write() flag (sPollWrote). timeout 0
 	 * is one check; timeout != 0 snoozes until the flag or the
-	 * deadline. Ash nfds==1 still the no-copy stub.
+	 * deadline. fd 0 + blocking is still the tty stub so ash
+	 * can fall through to read() (keystrokes are not sPollWrote).
 	 */
-	if (!pollfd_in_elf(fds, nfds)) {
+	if (!pollfd_user(fds, nfds)) {
 		if (nfds == 1) {
 			if (timeoutMs == 0)
 				return 0;
@@ -3042,8 +3032,6 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 		}
 		return -LINUX_EFAULT;
 	}
-	if (nfds != 1)
-		return -LINUX_EINVAL;
 	snap = gPollSnap;
 	kfds[0] = (uint8)snap;
 	kfds[1] = (uint8)(snap >> 8);
@@ -3067,6 +3055,16 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	}
 	sPollWrote = 0;
 	kser_puts("PW\n");
+	/* Interactive ash: poll(0, POLLIN, -1) then read(). A write
+	 * flag wait would hang (tty input is not Linux write()). */
+	if ((int32)(kfds[0] | (kfds[1] << 8) | (kfds[2] << 16)
+		| (kfds[3] << 24)) == 0) {
+		snooze(5000);
+		kfds[6] = LINUX_POLLIN;
+		ready = 1;
+		kser_puts("PT\n");
+		goto poll_snap;
+	}
 	left = timeoutMs;
 	for (;;) {
 		if (sPollWrote != 0 && (ev & LINUX_POLLIN) != 0) {
@@ -5656,7 +5654,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR49g\n");
+	kser_puts("PR50b\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
