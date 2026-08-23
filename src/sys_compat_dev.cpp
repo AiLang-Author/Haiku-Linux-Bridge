@@ -2238,10 +2238,23 @@ clone_t_take(int32 tid)
 	for (i = 0; i < CLONE_T_SLOTS; i++) {
 		if (sCloneT[i].tid == tid) {
 			ctid = sCloneT[i].cleartid;
-			sCloneT[i].tid = 0;
 			sCloneT[i].cleartid = 0;
 			return ctid;
 		}
+	}
+	return 0;
+}
+
+static int
+clone_t_has(int32 tid)
+{
+	int i;
+
+	if (tid <= 0)
+		return 0;
+	for (i = 0; i < CLONE_T_SLOTS; i++) {
+		if (sCloneT[i].tid == tid)
+			return 1;
 	}
 	return 0;
 }
@@ -2362,6 +2375,8 @@ sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
 	if ((cloneFlags & LINUX_CLONE_CHILD_CLEARTID) != 0
 		&& linux_user_ok((void*)(addr_t)childTid, 4))
 		clone_t_set(tid, childTid);
+	else
+		clone_t_set(tid, 0);
 	resume = (haiku_resume_fn)(addr_t)sResumeFn;
 	st = resume(tid);
 	kser_puts("TR");
@@ -2404,6 +2419,9 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 
 	(void)rusage;
 	sLastWait = 0;
+	/* Same-team clone() threads are not waitable children. */
+	if (pid > 0 && clone_t_has((int32)pid))
+		return -LINUX_ECHILD;
 	if (sWaitFn == 0)
 		return -LINUX_ENOSYS;
 	hflags = HAIKU_WEXITED;
@@ -5654,7 +5672,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR50b\n");
+	kser_puts("PR51\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();

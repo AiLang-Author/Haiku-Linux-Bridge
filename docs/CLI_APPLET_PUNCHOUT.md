@@ -1,6 +1,6 @@
 # CLI applet punch-out
 
-**Updated:** 2026-08-23 (Day 54: stack pollfd POLLSTKOK)
+**Updated:** 2026-08-23 (Day 55: CLONE_THREAD wait4 ECHILD CLONETHROK)
 
 **License:** Public Domain / CC0 1.0 Universal
 **Goal:** run static Linux CLI and toolchain programs on Haiku without
@@ -56,6 +56,7 @@ Haiku’s curl on BSD sockets, not the Linux ABI.
 | `hello_clonevm` | **`CLONEEXOK`** `CLONEVM_RC=0` (Day 52): `clone(CLONE_VM)` + child `exit`(60) |
 | `hello_clonetls` | **`CLONETLSOK`** `CLONETLS_RC=0` (Day 53): SETTLS + PARENT_SETTID + CLEARTID |
 | `hello_pollstk` | **`POLLSTKOK`** `POLLSTK_RC=0` (Day 54): `pollfd` on the stack |
+| `hello_clonethr` | **`CLONETHROK`** `CLONETHR_RC=0` (Day 55): `CLONE_THREAD` + `wait4` `-ECHILD` |
 
 ## Fragile / wrong (punch these before a toolchain)
 
@@ -130,7 +131,7 @@ but they are not what this busybox set exercises.
 
 ## Next
 
-1. `CLONE_THREAD` wait4 / full `pthread_create` later.
+1. glibc `pthread_create` flags (`CLONE_FS|FILES|SIGHAND|SYSVSEM`).
 2. Ash fd 0 blocking is still the tty stub.
 
 `false` / `cmp` `$?` is guest-green (Day 42). Redirected `date` /
