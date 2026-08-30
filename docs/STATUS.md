@@ -1,3 +1,16 @@
+# Status for testers (2026-08-30, PR54s mmap worker)
+
+**Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)
+**License:** Public Domain / CC0 1.0 Universal
+**Banner:** `PR54s` — Linux `mmap(ANON)` is one Haiku area per call
+(kernel worker + `create_area_etc`, demand-paged). No size cap. No
+multi-GB bump arena. `sys_compat_run` brk window is 32MB.
+
+Ailang self-compile on the guest is the open hole. Host RSS for that
+compile is ~1.4GB. Do not change compiler sources.
+
+Pickup: [`CONTINUATION.md`](CONTINUATION.md).
+
 # Status for testers (2026-08-23, Day 58, parked)
 
 **Repo:** [https://github.com/AiLang-Author/Haiku-Linux-Bridge](https://github.com/AiLang-Author/Haiku-Linux-Bridge)

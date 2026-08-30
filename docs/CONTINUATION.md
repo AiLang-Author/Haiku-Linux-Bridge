@@ -1,8 +1,7 @@
-# Continuation / parking notes (Day 58)
+# Continuation / parking notes (Day 58 + 2026-08-30 mmap)
 
-**Parked:** 2026-08-23. The original grinder is stepping away for a
-few weeks. This file is the pickup document. Read it before changing
-the trap.
+**Parked:** 2026-08-23. Pickup continued 2026-08-30 for Ailang
+self-compile on the Haiku guest.
 
 **License:** Public Domain / CC0 1.0 Universal
 **Repo:** https://github.com/AiLang-Author/Haiku-Linux-Bridge
@@ -10,9 +9,46 @@ the trap.
 `src/sys_compat_run.c`
 **Living plan:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 **Testers:** [STATUS.md](STATUS.md)
+**Banner:** `PR54s` (COM1 at driver load). `MWgo` = mmap worker up.
 
 Fork it. The license is CC0. Pull requests are welcome. Do not wait
 for the original author.
+
+---
+
+## 2026-08-30 — Linux mmap is a VMA, not a sized arena
+
+Do **not** change Ailang compiler sources. Host self-compile RSS is
+~1.4GB. The compiler's `mmap(64MB ANON)` per import is VA; only the
+file bytes are touched.
+
+A **size cap** on those maps (PR54p–r, 8–128MB forced to 4MB) is a
+hardcoded failure: import buffers were smaller than `ReadBinaryFile`
+expected, names garbled, compile ended `Unknown function` (missing
+import / smashed file). Cap is gone.
+
+Do **not** pre-create a 2–48GB `linux_arena` and bump-allocate mmap
+out of it. Haiku `create_area` of that size charges RAM+swap even
+with `B_NO_LOCK`. That is not how Linux mmap works.
+
+**PR54s:** each Linux `mmap(ANON)` is `create_area_etc` of the
+requested size on a **kernel worker thread** (`sys_compat_mmap`).
+The SYSCALL hook must not call `_user_create_area` (nested user copy
+→ KDL, PR54j). Worker uses `B_STACK_AREA` +
+`CREATE_AREA_DONT_COMMIT_MEMORY` so pages commit on fault (same
+overcommit model as Linux). `munmap` still `vm_delete_area(team)`.
+`sys_compat_run` only maps a **32MB brk window** for glibc TLS /
+small `brk`. Large allocs are mmap.
+
+COM1: `PR54s`, `MWgo`, `MA` (area ok), `CE=` (create_area_etc error),
+`ME` (mmap ANON failed), `MWto` (worker timeout).
+
+Guest rebuild: unique filenames (Haiku curl caches GET).
+`scripts/guest_go_pr54s.sh` then reboot then
+`scripts/guest_go_pr54s_cc.sh`.
+
+Do not pick **Debug** on Oh no (debugger chain GPF's bash/ls/curl).
+Terminate / Oh no only. Reports land on `/boot/home/Desktop/`.
 
 ---
 
