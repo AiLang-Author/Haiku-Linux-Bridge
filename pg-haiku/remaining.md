@@ -3,6 +3,20 @@
 Not in the patch series yet. Add a numbered patch when something is
 actually fixed.
 
+## Isolation + pgbench (tree build, 2026-08-31)
+
+Run on our patched 18.4 (`0001`–`0003`), private cluster port **55440**,
+packaged 5432 left alone.
+
+- Official **isolation** suite: **All 119 tests passed** (`ISOLATION_DONE rc=0`).
+  SSI serialization failures in the server log are expected; the tester
+  checks those outcomes.
+- **pgbench** scale 10, 8 clients, 4 jobs, 20s:
+  - select-only: **5440 tps**, 1.47 ms avg latency
+  - TPC-B-like: **753 tps**, 10.6 ms avg latency
+
+Not a fuzzer. Next batteries: `src/test/recovery` TAP, `make check-world`.
+
 ## Packaged libpq is still broken
 
 HaikuPorts `postgresql18` 18.4-2 on r1beta6 still ships the unpatched
