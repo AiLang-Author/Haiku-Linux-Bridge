@@ -1,2 +1,3 @@
 0001-nonblocking-sockets.patch
 0002-skip-localeconv_l.patch
+0003-negative-zero.patch

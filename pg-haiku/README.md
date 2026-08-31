@@ -15,6 +15,7 @@ itself stays under the PostgreSQL license.
 | --- | --- |
 | [`patches/0001-nonblocking-sockets.patch`](patches/0001-nonblocking-sockets.patch) | `psql -c` never returns after a successful query. `make check` stalls after `using temp instance`. |
 | [`patches/0002-skip-localeconv_l.patch`](patches/0002-skip-localeconv_l.patch) | `to_char(..., '9G999')` and `'123'::money` hang. Haiku `localeconv_l()` never returns. |
+| [`patches/0003-negative-zero.patch`](patches/0003-negative-zero.patch) | `'-0'::float8` becomes `+0`. Haiku `strtod("-0")` drops the sign bit. Breaks float PK/FK. |
 
 ### 0001 in one paragraph
 

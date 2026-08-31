@@ -1,0 +1,42 @@
+From 3333333333333333333333333333333333333333 Mon Sep 17 00:00:00 2001
+From: Haiku PostgreSQL port <user@haiku>
+Date: Mon, 31 Aug 2026 03:58:00 +0000
+Subject: Preserve IEEE negative zero in float4/float8 input on Haiku
+
+Haiku strtod("-0") and strtof("-0") return +0 (signbit clear). C99 and
+PostgreSQL require a signed zero so float PK/FK updates on -0 vs 0 work.
+If the scanned token starts with ASCII '-' and the value is zero, flip
+the sign. Official foreign_key regress then passes.
+
+--- a/src/backend/utils/adt/float.c
++++ b/src/backend/utils/adt/float.c
+@@ -210,6 +210,11 @@
+ 	errno = 0;
+ 	val = strtof(num, &endptr);
+ 
++#ifdef __HAIKU__
++	if (val == 0.0f && *num == 45)
++		val = -val;
++#endif
++
+ 	/* did we not see anything that looks like a double? */
+ 	if (endptr == num || errno != 0)
+ 	{
+@@ -416,6 +421,15 @@
+ 	errno = 0;
+ 	val = strtod(num, &endptr);
+ 
++#ifdef __HAIKU__
++	/*
++	 * Haiku strtod("-0") returns +0.  C99 requires a signed zero.  If the
++	 * scanned token started with - and the value is zero, restore the sign.
++	 */
++	if (val == 0.0 && *num == 45)
++		val = -val;
++#endif
++
+ 	/* did we not see anything that looks like a double? */
+ 	if (endptr == num || errno != 0)
+ 	{
+-- 
+2.54.0

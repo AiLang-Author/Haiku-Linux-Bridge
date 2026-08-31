@@ -24,6 +24,12 @@ Haiku `localeconv_l()` hangs; `localeconv()` and `uselocale()` work.
 path. After that, official `int8`, `money`, and `numeric` regress tests
 pass.
 
+## `stats` regress and `synchronous_commit`
+
+A full `make check` with `synchronous_commit=off` in TEMP_CONFIG fails
+`stats` because that test asserts `synchronous_commit` is `on`. That is
+the test harness, not Haiku. Re-run without overriding it.
+
 ## Serial one-test-per-cluster is a false FAIL
 
 `char_tbl` / `int4_tbl` and friends are created by `test_setup`. Running
