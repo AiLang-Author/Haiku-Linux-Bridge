@@ -1,0 +1,145 @@
+From 8f1c0b1e0a0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f Mon Sep 17 00:00:00 2001
+From: Haiku PostgreSQL port <user@haiku>
+Date: Mon, 31 Aug 2026 03:10:00 +0000
+Subject: Fix nonblocking sockets so psql/libpq return on Haiku
+
+Haiku defines SOCK_NONBLOCK and records fcntl(O_NONBLOCK) in F_GETFL,
+but recv()/send() on TCP and AF_UNIX sockets still block.  That makes
+PQconsumeInput hang after a successful query: psql -c never exits and
+make check stalls after "using temp instance".
+
+ioctl(FIONBIO) is the flag the network stack honors.  MSG_DONTWAIT on
+recv/send is the per-call fallback.
+
+--- a/src/port/noblock.c
++++ b/src/port/noblock.c
+@@ -15,6 +15,9 @@
+ #include "c.h"
+ 
+ #include <fcntl.h>
++#if defined(__HAIKU__)
++#include <sys/ioctl.h>
++#endif
+ 
+ 
+ /*
+@@ -24,9 +27,23 @@
+ bool
+ pg_set_noblock(pgsocket sock)
+ {
++#if defined(__HAIKU__)
++	int			on = 1;
++#endif
+ #if !defined(WIN32)
+ 	int			flags;
++#endif
+ 
++#if defined(__HAIKU__)
++	/*
++	 * fcntl(O_NONBLOCK) is visible via F_GETFL, but recv()/send() on TCP and
++	 * AF_UNIX sockets ignore it.  ioctl(FIONBIO) is the flag the network
++	 * stack honors.  Keep the fcntl() update below so F_GETFL matches.
++	 */
++	if (ioctl(sock, FIONBIO, &on) == -1)
++		return false;
++#endif
++#if !defined(WIN32)
+ 	flags = fcntl(sock, F_GETFL);
+ 	if (flags < 0)
+ 		return false;
+@@ -48,9 +65,18 @@
+ bool
+ pg_set_block(pgsocket sock)
+ {
++#if defined(__HAIKU__)
++	int			on = 0;
++#endif
+ #if !defined(WIN32)
+ 	int			flags;
++#endif
+ 
++#if defined(__HAIKU__)
++	if (ioctl(sock, FIONBIO, &on) == -1)
++		return false;
++#endif
++#if !defined(WIN32)
+ 	flags = fcntl(sock, F_GETFL);
+ 	if (flags < 0)
+ 		return false;
+
+--- a/src/interfaces/libpq/fe-connect.c
++++ b/src/interfaces/libpq/fe-connect.c
+@@ -3364,7 +3364,7 @@
+ 							goto keep_going;
+ 						}
+ 					}
+-#ifndef SOCK_NONBLOCK
++#if !defined(SOCK_NONBLOCK) || defined(__HAIKU__)
+ 					if (!pg_set_noblock(conn->sock))
+ 					{
+ 						libpq_append_conn_error(conn, "could not set socket to nonblocking mode: %s",
+@@ -3556,6 +3556,22 @@
+ 					goto keep_going;
+ 				}
+ 
++#ifdef __HAIKU__
++				/*
++				 * Haiku defines SOCK_NONBLOCK, so the fcntl() path above is
++				 * skipped, but recv()/send() on TCP and AF_UNIX sockets still
++				 * block.  ioctl(FIONBIO) in pg_set_noblock is the flag that
++				 * actually works; re-apply it after connect() in case the
++				 * handshake dropped it.
++				 */
++				if (!pg_set_noblock(conn->sock))
++				{
++					libpq_append_conn_error(conn, "could not set socket to nonblocking mode: %s",
++											SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
++					goto error_return;
++				}
++#endif
++
+ 				/* Fill in the client address */
+ 				conn->laddr.salen = sizeof(conn->laddr.addr);
+ 				if (getsockname(conn->sock,
+
+--- a/src/interfaces/libpq/fe-secure.c
++++ b/src/interfaces/libpq/fe-secure.c
+@@ -198,7 +198,12 @@
+ 
+ 	SOCK_ERRNO_SET(0);
+ 
++#ifdef __HAIKU__
++	/* SOCK_NONBLOCK/fcntl O_NONBLOCK do not make recv() nonblocking. */
++	n = recv(conn->sock, ptr, len, MSG_DONTWAIT);
++#else
+ 	n = recv(conn->sock, ptr, len, 0);
++#endif
+ 
+ 	if (n < 0)
+ 	{
+@@ -340,6 +345,10 @@
+ retry_masked:
+ #endif							/* MSG_NOSIGNAL */
+ 
++#ifdef __HAIKU__
++	flags |= MSG_DONTWAIT;
++#endif
++
+ 	DISABLE_SIGPIPE(conn, spinfo, return -1);
+ 
+ 	n = send(conn->sock, ptr, len, flags);
+@@ -354,10 +363,10 @@
+ 		 * again, and retry the send().
+ 		 */
+ #ifdef MSG_NOSIGNAL
+-		if (flags != 0 && result_errno == EINVAL)
++		if ((flags & MSG_NOSIGNAL) && result_errno == EINVAL)
+ 		{
+ 			conn->sigpipe_flag = false;
+-			flags = 0;
++			flags &= ~MSG_NOSIGNAL;
+ 			goto retry_masked;
+ 		}
+ #endif							/* MSG_NOSIGNAL */
+-- 
+2.54.0

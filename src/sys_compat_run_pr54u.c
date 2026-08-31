@@ -349,9 +349,10 @@ int main(int argc, char** argv)
      * Passed to 0x1337 as (rdi=base, rsi=size). glibc static TLS
      * allocation needs this before any Linux malloc.
      */
-/* Overcommit VA (B_STACK_AREA) so mmap(64MB) is not 64MB RAM.
-	 * Host self-compile RSS ~1.4GB. Try largest hole first. */
-#define SYS_COMPAT_ARENA_SIZE (32ull * 1024ull * 1024ull * 1024ull)
+/* brk/sbrk only. Linux mmap(ANON) is a real Haiku area per call
+	 * (sys_compat mmap worker), not this window. 32MB is enough
+	 * for glibc TLS + small brk. */
+#define SYS_COMPAT_ARENA_SIZE (32ull * 1024ull * 1024ull)
     /* Tiny fork probes do not malloc; skip the arena so fork_team
      * does not COW it. Name contains "fork". */
     int skip_arena = (strstr(elf_path, "fork") != NULL);
@@ -360,10 +361,8 @@ int main(int argc, char** argv)
     if (arena_sz != 0) {
         static const uint64_t tries[] = {
             SYS_COMPAT_ARENA_SIZE,
-            16ull * 1024ull * 1024ull * 1024ull,
-            8ull * 1024ull * 1024ull * 1024ull,
-            5600ull * 1024ull * 1024ull,
-            2048ull * 1024ull * 1024ull
+            16ull * 1024ull * 1024ull,
+            8ull * 1024ull * 1024ull
         };
         unsigned ti;
         arena = MAP_FAILED;

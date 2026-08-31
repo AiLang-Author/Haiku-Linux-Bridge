@@ -3869,10 +3869,9 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 			}
 			return (int64)a;
 		}
-		/* Exact-size carve from the loader's overcommit arena.
-		 * create_area_etc from this hook KDLs (PR54w). Worker
-		 * areas were not readable by _kern_read (10 decls). */
-		carved = mmap_anon_carve(len);
+		/* MAP_FIXED into the small brk window stays a carve.
+		 * Anonymous mmap is a real Haiku area (Linux VMA). */
+		carved = mmap_anon_haiku(len, prot);
 		if (carved < 0)
 			kser_puts("ME\n");
 		return carved;
@@ -6307,7 +6306,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR54x\n");
+	kser_puts("PR54w\n");
 	kser_puts("ULS=");
 	kser_hex(gUlsOff);
 	kser_putc('\n');

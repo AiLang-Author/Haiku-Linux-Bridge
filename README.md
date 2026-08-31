@@ -11,6 +11,8 @@ This project is dedicated to the **Public Domain** under the **Creative Commons 
 > You can copy, modify, distribute, and perform the work, even for commercial purposes, all without asking permission.
 > **Pull Requests and Community Contributions are very welcome!**
 
+PostgreSQL-on-Haiku port fixes (psql hang, …) live in [`pg-haiku/`](pg-haiku/). Numbered patches; cherry-pick or `git am`.
+
 ---
 
 ## 🎯 Architecture Overview

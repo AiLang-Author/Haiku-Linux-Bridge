@@ -31,22 +31,8 @@ haiku_private_anon(const char* name, size_t size, uint32 prot)
     size_t i;
 
     size = (size + B_PAGE_SIZE - 1) & ~(size_t)(B_PAGE_SIZE - 1);
-    /* B_STACK_AREA: Haiku overcommits (commit on fault). Linux mmap
-     * 64MB ANON is VA; host self-compile RSS is ~1.4GB. Do not
-     * charge 64MB RAM per untouched Import buffer. */
-    {
-        uint32 oprot = prot;
-        if (size > 32u * 1024u * 1024u)
-            oprot |= B_STACK_AREA;
-        id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
-            size, B_NO_LOCK, oprot);
-        if (id < 0 && oprot != prot) {
-            printf("[-] create_area %s overcommit: %d, retry\n",
-                name, (int)id);
-            id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
-                size, B_NO_LOCK, prot);
-        }
-    }
+    id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
+        size, B_NO_LOCK, prot);
     if (id < 0) {
         printf("[-] create_area %s: %d\n", name, (int)id);
         return MAP_FAILED;
@@ -349,21 +335,21 @@ int main(int argc, char** argv)
      * Passed to 0x1337 as (rdi=base, rsi=size). glibc static TLS
      * allocation needs this before any Linux malloc.
      */
-/* Overcommit VA (B_STACK_AREA) so mmap(64MB) is not 64MB RAM.
-	 * Host self-compile RSS ~1.4GB. Try largest hole first. */
-#define SYS_COMPAT_ARENA_SIZE (32ull * 1024ull * 1024ull * 1024ull)
-    /* Tiny fork probes do not malloc; skip the arena so fork_team
+/* ailang.x Import_ReadFile Allocate(64MB+1) per module and keeps it.
+	 * 30 modules ≈ 1.92GB plus 4MB arena slabs plus 160/256MB maps.
+	 * 2GB carve ENOMEM; uint32 max is 4095MB so 3584MB. PR54f recycles. */
+#define SYS_COMPAT_ARENA_SIZE (3584u * 1024u * 1024u)
+    /* Tiny fork probes do not malloc; skip the 32MB arena so fork_team
      * does not COW it. Name contains "fork". */
     int skip_arena = (strstr(elf_path, "fork") != NULL);
-    uint64_t arena_sz = skip_arena ? 0 : SYS_COMPAT_ARENA_SIZE;
+    uint32_t arena_sz = skip_arena ? 0 : SYS_COMPAT_ARENA_SIZE;
     void* arena = NULL;
     if (arena_sz != 0) {
-        static const uint64_t tries[] = {
+        static const uint32_t tries[] = {
             SYS_COMPAT_ARENA_SIZE,
-            16ull * 1024ull * 1024ull * 1024ull,
-            8ull * 1024ull * 1024ull * 1024ull,
-            5600ull * 1024ull * 1024ull,
-            2048ull * 1024ull * 1024ull
+            3072u * 1024u * 1024u,
+            2048u * 1024u * 1024u,
+            1024u * 1024u * 1024u
         };
         unsigned ti;
         arena = MAP_FAILED;
@@ -373,15 +359,14 @@ int main(int argc, char** argv)
                 B_READ_AREA | B_WRITE_AREA);
             if (arena != MAP_FAILED)
                 break;
-            printf("[-] create_area linux_arena %llu failed\n",
-                (unsigned long long)arena_sz);
+            printf("[-] create_area linux_arena %u failed\n", arena_sz);
         }
         if (arena == MAP_FAILED) {
             printf("[-] create_area brk/mmap arena\n");
             return 1;
         }
-        printf("[+] arena %p +%llu for Linux brk/mmap\n",
-               arena, (unsigned long long)arena_sz);
+        printf("[+] arena %p +%u for Linux brk/mmap\n",
+               arena, arena_sz);
     } else
         printf("[+] no arena (fork probe)\n");
     /* Child IRETQ trampoline (rseq-style: this layer owns the return).

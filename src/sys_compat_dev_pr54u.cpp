@@ -367,9 +367,11 @@ mmap_worker(void* arg)
 			prot = sMapProt;
 			if (prot == 0)
 				prot = B_READ_AREA | B_WRITE_AREA;
-			/* Plain RW B_NO_LOCK. B_STACK_AREA + DONT_COMMIT
-			 * made kernel read() into the map fail (10 decls,
-			 * Arena_Alloc missing). */
+			/* B_STACK_AREA: commit on fault (Linux overcommit). */
+			prot |= B_STACK_AREA;
+			/* B_STACK_AREA: overcommit, commit on fault.
+			 * Do not CREATE_AREA_DONT_COMMIT_MEMORY — kernel
+			 * read() into those maps fails, Import gets 0. */
 			area = sCreateAreaEtc(sMapTeam, "linux_mmap", sMapLen,
 				B_NO_LOCK, prot, 0, 0, &vr, &pr, &mapped);
 			sMapArea = area;
@@ -3797,27 +3799,30 @@ mmap_anon_haiku(uint64 len, int64 prot)
 		hprot = B_READ_AREA | B_WRITE_AREA;
 	mapped = NULL;
 	area = (int32)0x80000000;
-	/* create_area_etc with kernel pointers is safe in the hook
-	 * (file mmap already calls vm_map_file here). Worker-thread
-	 * create left maps the team could open but not read (10 decls).
-	 * Never _user_create_area (PR54j KDL). */
-	if (sCreateAreaEtc != 0) {
-		vr.address = NULL;
-		vr.address_specification = B_ANY_ADDRESS;
-		vr._pad = 0;
-		vr.alignment = 0;
-		pr.low_address = 0;
-		pr.high_address = 0;
-		pr.alignment = 0;
-		pr.boundary = 0;
-		mapped = NULL;
-		if (len >= (8ull * 1024ull * 1024ull)) {
-			kser_puts("Mz=");
-			kser_hex(len);
-			kser_putc('\n');
+	(void)vr;
+	(void)pr;
+	/* Never _user_create_area from the SYSCALL hook (PR54j KDL).
+	 * Kernel worker runs create_area_etc like Linux mmap: one VMA
+	 * of the requested size, demand-paged (B_STACK_AREA). */
+	if (sMapThr >= 0 && sCreateAreaEtc != 0) {
+		if (acquire_sem(sMapGate) == B_OK) {
+			sMapOp = MAP_OP_CREATE;
+			sMapTeam = info.team;
+			sMapLen = len;
+			sMapProt = hprot;
+			sMapAddr = NULL;
+			sMapArea = -1;
+			release_sem(sMapReq);
+			if (acquire_sem_etc(sMapDone, 1, B_RELATIVE_TIMEOUT,
+				5000000LL) == B_OK) {
+				area = sMapSt;
+				mapped = (void*)sMapAddr;
+			} else {
+				kser_puts("MWto\n");
+				area = (int32)0x80000000;
+			}
+			release_sem(sMapGate);
 		}
-		area = sCreateAreaEtc(info.team, "linux_mmap", len, B_NO_LOCK,
-			hprot, 0, 0, &vr, &pr, &mapped);
 		if (area < 0) {
 			kser_puts("CE=");
 			kser_hex((uint64)(uint32)area);
@@ -3869,10 +3874,9 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 			}
 			return (int64)a;
 		}
-		/* Exact-size carve from the loader's overcommit arena.
-		 * create_area_etc from this hook KDLs (PR54w). Worker
-		 * areas were not readable by _kern_read (10 decls). */
-		carved = mmap_anon_carve(len);
+		/* MAP_FIXED into the small brk window stays a carve.
+		 * Anonymous mmap is a real Haiku area (Linux VMA). */
+		carved = mmap_anon_haiku(len, prot);
 		if (carved < 0)
 			kser_puts("ME\n");
 		return carved;
@@ -6307,7 +6311,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR54x\n");
+	kser_puts("PR54u\n");
 	kser_puts("ULS=");
 	kser_hex(gUlsOff);
 	kser_putc('\n');

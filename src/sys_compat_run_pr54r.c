@@ -31,22 +31,8 @@ haiku_private_anon(const char* name, size_t size, uint32 prot)
     size_t i;
 
     size = (size + B_PAGE_SIZE - 1) & ~(size_t)(B_PAGE_SIZE - 1);
-    /* B_STACK_AREA: Haiku overcommits (commit on fault). Linux mmap
-     * 64MB ANON is VA; host self-compile RSS is ~1.4GB. Do not
-     * charge 64MB RAM per untouched Import buffer. */
-    {
-        uint32 oprot = prot;
-        if (size > 32u * 1024u * 1024u)
-            oprot |= B_STACK_AREA;
-        id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
-            size, B_NO_LOCK, oprot);
-        if (id < 0 && oprot != prot) {
-            printf("[-] create_area %s overcommit: %d, retry\n",
-                name, (int)id);
-            id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
-                size, B_NO_LOCK, prot);
-        }
-    }
+    id = create_area(name, &addr, B_RANDOMIZED_ANY_ADDRESS,
+        size, B_NO_LOCK, prot);
     if (id < 0) {
         printf("[-] create_area %s: %d\n", name, (int)id);
         return MAP_FAILED;
@@ -349,9 +335,10 @@ int main(int argc, char** argv)
      * Passed to 0x1337 as (rdi=base, rsi=size). glibc static TLS
      * allocation needs this before any Linux malloc.
      */
-/* Overcommit VA (B_STACK_AREA) so mmap(64MB) is not 64MB RAM.
-	 * Host self-compile RSS ~1.4GB. Try largest hole first. */
-#define SYS_COMPAT_ARENA_SIZE (32ull * 1024ull * 1024ull * 1024ull)
+/* Import_ReadFile keeps 64MB per module (54 × 64MB ≈ 3.46GB) plus
+	 * 160/256MB compile maps. uint32 max is 4095MB so use uint64 5GB.
+	 * B_NO_LOCK, no commit-touch. Recycle in the driver. */
+#define SYS_COMPAT_ARENA_SIZE (5600ull * 1024ull * 1024ull)
     /* Tiny fork probes do not malloc; skip the arena so fork_team
      * does not COW it. Name contains "fork". */
     int skip_arena = (strstr(elf_path, "fork") != NULL);
@@ -360,9 +347,9 @@ int main(int argc, char** argv)
     if (arena_sz != 0) {
         static const uint64_t tries[] = {
             SYS_COMPAT_ARENA_SIZE,
-            16ull * 1024ull * 1024ull * 1024ull,
-            8ull * 1024ull * 1024ull * 1024ull,
-            5600ull * 1024ull * 1024ull,
+            5120ull * 1024ull * 1024ull,
+            4095ull * 1024ull * 1024ull,
+            3584ull * 1024ull * 1024ull,
             2048ull * 1024ull * 1024ull
         };
         unsigned ti;

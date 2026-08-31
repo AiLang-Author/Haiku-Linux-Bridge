@@ -3,6 +3,40 @@
 **Parked:** 2026-08-23. Pickup continued 2026-08-30 for Ailang
 self-compile on the Haiku guest.
 
+---
+
+## 2026-08-30 — nested CAD import was a stale Librarys copy
+
+Ailang `LibraryImport.Cad.SketchProfile.ProfIR` works on Linux as-is.
+On Haiku it failed with `Unknown function: CAD_Sketch.ProfCompile`.
+Do **not** change CAD or compiler sources for this.
+
+`Import_FindLibBase` uses `/proc/self/exe` + `/Librarys`. The compiler
+binary is `/boot/home/ailang.x`, so it opens **`/boot/home/Librarys`**,
+not the GitHub clone.
+
+`/boot/home/Librarys` was a curl/copy tree (owner `sshd`, dates Aug 15–18):
+`Cad/SketchProfile/` had Loop/Tess/Snap only. The facade
+`Library.CAD_SketchProfile.ailang` had no `ProfIR` import.
+`Library.ProfIR.ailang` was missing.
+
+The git clone at `/boot/home/Ailang-Self-Hosting-` (HEAD `feab5755`)
+had the full nested tree. Serial: Loop/Tess/Snap opened from
+`/boot/home/Librarys/...`; ProfIR did not exist there (`n` after open).
+
+**Fix (GIT56):** `git reset --hard origin/master` on the clone, then
+`ln -s /boot/home/Ailang-Self-Hosting-/Librarys /boot/home/Librarys`.
+Guest compiled `CAD/cad_app.ailang` → `/boot/home/cad_app.x` 2540752
+bytes (`results/ltp/git56_run.png`). Script:
+`scripts/guest_go_git56.sh`.
+
+Haiku R1/beta6 bump is incoming. HaikuPorts refresh already failed
+(`haiku>=r1~beta6_hrev59866_5-1` vs postgresql18_server). After the
+new image: keep the git clone as the Librarys source of truth; do not
+curl individual library files next to `ailang.x`.
+
+---
+
 **License:** Public Domain / CC0 1.0 Universal
 **Repo:** https://github.com/AiLang-Author/Haiku-Linux-Bridge
 **Live trap:** `src/syscall_hook.S` + `src/sys_compat_dev.cpp` +

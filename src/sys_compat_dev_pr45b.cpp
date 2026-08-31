@@ -289,143 +289,6 @@ typedef area_id (*haiku_vmmapk_fn)(team_id team, const char* name,
  * _user_delete_area is CurrentID()+kernel=false (syscall path). */
 typedef int32 (*haiku_vmdel_fn)(int32 team, int32 area, bool kernel);
 typedef int32 (*haiku_userdel_fn)(int32 area);
-typedef int32 (*haiku_usercreate_fn)(const char* name, void** address,
-	uint32 spec, uint64 size, uint32 lock, uint32 protection);
-static haiku_usercreate_fn sUserCreateArea;
-/* create_area_etc(team, name, size, lock, prot, flags, guard,
- * virtRestrict, physRestrict, _address). kernel=true inside. */
-struct virt_restr {
-	void* address;
-	uint32 address_specification;
-	uint32 _pad;
-	uint64 alignment;
-};
-struct phys_restr {
-	uint64 low_address;
-	uint64 high_address;
-	uint64 alignment;
-	uint64 boundary;
-};
-typedef int32 (*haiku_create_area_etc_fn)(int32 team, const char* name,
-	uint64 size, uint32 lock, uint32 protection, uint32 flags,
-	uint32 guardSize, const struct virt_restr* vr,
-	const struct phys_restr* pr, void** _address);
-static haiku_create_area_etc_fn sCreateAreaEtc;
-static haiku_vmdel_fn sVmDeleteArea;
-#ifndef CREATE_AREA_DONT_COMMIT_MEMORY
-#define CREATE_AREA_DONT_COMMIT_MEMORY 0x10
-#endif
-static void kser_putc(char c);
-static void kser_puts(const char* s);
-static void kser_hex(uint64 v);
-
-/* Linux mmap is a new VMA per call, not a pre-sized bump arena.
- * create_area_etc from the SYSCALL hook nested-copies and KDLs
- * (PR54j). A kernel worker does the Haiku VM op instead. */
-#define MAP_OP_NONE 0
-#define MAP_OP_CREATE 1
-#define MAP_OP_DELETE 2
-#define MAP_OP_QUIT 3
-static sem_id sMapGate = -1;
-static sem_id sMapReq = -1;
-static sem_id sMapDone = -1;
-static thread_id sMapThr = -1;
-static volatile int32 sMapOp;
-static volatile int32 sMapTeam;
-static volatile uint64 sMapLen;
-static volatile uint32 sMapProt;
-static volatile uint32 sMapFlags;
-static volatile void* sMapAddr;
-static volatile int32 sMapArea;
-static volatile int32 sMapSt;
-
-static int32
-mmap_worker(void* arg)
-{
-	(void)arg;
-	for (;;) {
-		if (acquire_sem(sMapReq) != B_OK)
-			break;
-		if (sMapOp == MAP_OP_QUIT)
-			break;
-		if (sMapOp == MAP_OP_CREATE && sCreateAreaEtc != 0) {
-			struct virt_restr vr;
-			struct phys_restr pr;
-			void* mapped;
-			uint32 prot;
-			int32 area;
-
-			vr.address = NULL;
-			vr.address_specification = B_ANY_ADDRESS;
-			vr._pad = 0;
-			vr.alignment = 0;
-			pr.low_address = 0;
-			pr.high_address = 0;
-			pr.alignment = 0;
-			pr.boundary = 0;
-			mapped = NULL;
-			prot = sMapProt;
-			if (prot == 0)
-				prot = B_READ_AREA | B_WRITE_AREA;
-			/* Plain RW B_NO_LOCK. B_STACK_AREA + DONT_COMMIT
-			 * made kernel read() into the map fail (10 decls,
-			 * Arena_Alloc missing). */
-			area = sCreateAreaEtc(sMapTeam, "linux_mmap", sMapLen,
-				B_NO_LOCK, prot, 0, 0, &vr, &pr, &mapped);
-			sMapArea = area;
-			sMapAddr = mapped;
-			sMapSt = area;
-		} else if (sMapOp == MAP_OP_DELETE && sVmDeleteArea != 0) {
-			sMapSt = sVmDeleteArea(sMapTeam, sMapArea, true);
-		} else
-			sMapSt = (int32)0x80000000;
-		release_sem(sMapDone);
-	}
-	return 0;
-}
-
-static int
-mmap_worker_start(void)
-{
-	if (sMapThr >= 0)
-		return 0;
-	sMapGate = create_sem(1, "sys_compat_mapgate");
-	sMapReq = create_sem(0, "sys_compat_mapreq");
-	sMapDone = create_sem(0, "sys_compat_mapdone");
-	if (sMapGate < 0 || sMapReq < 0 || sMapDone < 0)
-		return -1;
-	sMapThr = spawn_kernel_thread(mmap_worker, "sys_compat_mmap",
-		B_NORMAL_PRIORITY, NULL);
-	if (sMapThr < 0)
-		return -1;
-	resume_thread(sMapThr);
-	kser_puts("MWgo\n");
-	return 0;
-}
-
-static void
-mmap_worker_stop(void)
-{
-	if (sMapThr >= 0 && sMapReq >= 0) {
-		status_t ignored;
-		sMapOp = MAP_OP_QUIT;
-		release_sem(sMapReq);
-		wait_for_thread(sMapThr, &ignored);
-		sMapThr = -1;
-	}
-	if (sMapGate >= 0) {
-		delete_sem(sMapGate);
-		sMapGate = -1;
-	}
-	if (sMapReq >= 0) {
-		delete_sem(sMapReq);
-		sMapReq = -1;
-	}
-	if (sMapDone >= 0) {
-		delete_sem(sMapDone);
-		sMapDone = -1;
-	}
-}
 typedef int32 (*haiku_vmclone_fn)(int32 team, const char* name, void** addr,
 	uint32 spec, uint32 prot, uint32 mapping, int32 unmapRange,
 	int32 source, int32 kernel);
@@ -460,13 +323,12 @@ static uint64 sPipeFn;
 static uint64 sFcntlFn;
 static uint64 sIoctlFn;
 static uint64 sForkFn;
-static uint64 sSpawnFn;
-static uint64 sResumeFn;
 static uint64 sWaitObjFn;
 static uint64 sWaitObjKern;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
+static haiku_vmdel_fn sVmDeleteArea;
 static haiku_userdel_fn sUserDeleteArea;
 static haiku_vmclone_fn sVmCloneArea;
 static haiku_vmphys_fn sVmMapPhys;
@@ -474,11 +336,9 @@ typedef int32 (*haiku_close_fn)(int32 fd);
 static haiku_close_fn sKernClose;
 typedef void (*haiku_exit_team_fn)(int32 status);
 static haiku_exit_team_fn sUserExitTeam;
-typedef void (*haiku_exit_thread_fn)(int32 status);
-static haiku_exit_thread_fn sUserExitThread;
 typedef void (*haiku_thread_exit_fn)(void);
 static haiku_thread_exit_fn sThreadExit;
-#define LINUX_MAP_SLOTS 2048
+#define LINUX_MAP_SLOTS 16
 struct linux_file_map {
 	uint64 addr;
 	uint64 len;
@@ -499,13 +359,10 @@ static uint64 sKernWriteStatFn;
 static char sWstatPath[1024];
 extern "C" uint64 sWstatScratch;
 extern "C" uint64 gPollSnap;
-extern "C" uint8 sPollWrote;
 static uint64 sReadFn;
 static uint64 sWriteFn;
 static uint64 sOpenFn;
 static char sLinuxExe[256];
-static char sCmdline[512];
-static int sCmdlineN;
 static uint64 sRetUserland;
 static uint64 sForkGs0;
 static uint64 sForkGs8;
@@ -521,24 +378,6 @@ static int32 sHaveGid;
 static uint32 sUid;
 static uint32 sGid;
 static uint64 sClearTid;
-#define LINUX_CLONE_VM              0x00000100ULL
-#define LINUX_CLONE_FS              0x00000200ULL
-#define LINUX_CLONE_FILES           0x00000400ULL
-#define LINUX_CLONE_SIGHAND         0x00000800ULL
-#define LINUX_CLONE_THREAD          0x00010000ULL
-#define LINUX_CLONE_SYSVSEM         0x00040000ULL
-#define LINUX_CLONE_SETTLS          0x00080000ULL
-#define LINUX_CLONE_PARENT_SETTID   0x00100000ULL
-#define LINUX_CLONE_CHILD_CLEARTID  0x00200000ULL
-#define LINUX_CLONE_CHILD_SETTID    0x01000000ULL
-static uint64 sCloneFn;
-static uint64 sCloneArg;
-#define CLONE_T_SLOTS 8
-struct clone_thr {
-	int32 tid;
-	uint64 cleartid;
-};
-static struct clone_thr sCloneT[CLONE_T_SLOTS];
 extern "C" uint64 sRobustList;
 extern "C" uint64 sRobustLen;
 #define TEAM_R_SLOTS 8
@@ -558,7 +397,6 @@ static uint64 sDentMark;
 static int64 sLastStat;
 static uint32 sLastMode;
 static int64 sLastSize;
-static void anon_free_reset(void);
 
 extern "C" {
 	void sys_compat_lstar(void);
@@ -585,7 +423,6 @@ extern "C" {
 	extern uint64 gForkHaikuRsp;
 	extern uint64 gForkPending;
 	extern uint64 gMarkExe;
-	extern uint64 gMarkCmd;
 	extern uint64 gForkFS;
 	extern uint64 gForkUserRbp;
 	extern uint64 gForkChildTid;
@@ -608,7 +445,6 @@ extern "C" {
 	int64 sys_compat_getgroups(int64 size, void* list);
 	int64 sys_compat_sched_getaffinity(int64 pid, uint64 len, void* mask);
 	void sys_compat_exit_team(int64 status);
-	int64 sys_compat_exit60(int64 status);
 	int64 sys_compat_getuid(void);
 	int64 sys_compat_getgid(void);
 	int64 sys_compat_setuid(int64 uid);
@@ -673,11 +509,6 @@ extern "C" {
 	int64 sys_compat_statx(int64 fd, const void* path, int64 flags,
 		uint32 mask, void* buf);
 	int64 sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags);
-	int64 sys_compat_clone_vm(uint64 userRip, uint64 childStack,
-		uint64 cloneFlags, uint64 parentTid, uint64 childTid,
-		uint64 tls);
-	int64 sys_compat_clone3(void* uargs, uint64 usize, uint64 userRip,
-		uint64 fn, uint64 arg);
 	void sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags,
 		int64 retval);
 }
@@ -747,16 +578,6 @@ linux_user_ok(const void* p, uint64 n)
 	if (n >= 0x0000800000000000ULL - a)
 		return 0;
 	return 1;
-}
-
-/* Linux AT_FDCWD=-100. Haiku cwd is -1. -100 as a Haiku fd
- * Kill Threads on relative open (compiler Core Registry). */
-static int32
-haiku_dirfd(int64 linux_fd)
-{
-	if (linux_fd == -100)
-		return -1;
-	return (int32)linux_fd;
 }
 
 static void
@@ -1063,70 +884,6 @@ discover_wait_for_objects_etc(void)
 }
 
 static void
-discover_spawn_thread(void)
-{
-	image_info info;
-	int32 cookie;
-	void* p;
-	int n;
-	static const char* const names[] = {
-		"_user_spawn_thread",
-		"_Z19_user_spawn_threadP26thread_creation_attributes",
-		"_kern_spawn_thread",
-		NULL
-	};
-
-	sSpawnFn = 0;
-	sResumeFn = 0;
-	cookie = 0;
-	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-		for (n = 0; names[n] != NULL; n++) {
-			p = NULL;
-			if ((get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_TEXT, &p) == B_OK
-				|| get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
-				sSpawnFn = (uint64)(addr_t)p;
-				kser_puts("SPWfn=");
-				kser_hex((uint64)(addr_t)p);
-				kser_putc('\n');
-				goto found_spawn;
-			}
-		}
-	}
-	kser_puts("SPWno\n");
-found_spawn:
-	{
-		static const char* const rnames[] = {
-			"resume_thread",
-			"_Z13resume_threadi",
-			"_Z13resume_threadl",
-			"_user_resume_thread",
-			"_Z19_user_resume_threadi",
-			NULL
-		};
-		cookie = 0;
-		while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-			for (n = 0; rnames[n] != NULL; n++) {
-				p = NULL;
-				if ((get_image_symbol(info.id, rnames[n],
-					B_SYMBOL_TYPE_TEXT, &p) == B_OK
-					|| get_image_symbol(info.id, rnames[n],
-					B_SYMBOL_TYPE_ANY, &p) == B_OK)
-					&& p != NULL) {
-					sResumeFn = (uint64)(addr_t)p;
-					kser_puts("RSMfn=");
-					kser_hex((uint64)(addr_t)p);
-					kser_putc('\n');
-					return;
-				}
-			}
-		}
-	}
-	kser_puts("RSMno\n");
-}
-
-static void
 discover_user_delete_area(void)
 {
 	image_info info;
@@ -1157,73 +914,6 @@ discover_user_delete_area(void)
 		}
 	}
 	kser_puts("UDno\n");
-}
-
-static void
-discover_user_create_area(void)
-{
-	image_info info;
-	int32 cookie;
-	void* p;
-	int n;
-	static const char* const names[] = {
-		"_user_create_area",
-		"_Z17_user_create_areaPKcPPvjmjj",
-		NULL
-	};
-
-	sUserCreateArea = 0;
-	cookie = 0;
-	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-		for (n = 0; names[n] != NULL; n++) {
-			p = NULL;
-			if ((get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_TEXT, &p) == B_OK
-				|| get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
-				sUserCreateArea = (haiku_usercreate_fn)p;
-				kser_puts("UCfn=");
-				kser_hex((uint64)(addr_t)p);
-				kser_putc('\n');
-				return;
-			}
-		}
-	}
-	kser_puts("UCno\n");
-}
-
-static void
-discover_create_area_etc(void)
-{
-	image_info info;
-	int32 cookie;
-	void* p;
-	int n;
-	static const char* const names[] = {
-		"create_area_etc",
-		"_Z15create_area_etciPKcmjjjjPK28virtual_address_restrictions"
-			"PK29physical_address_restrictionsPPv",
-		NULL
-	};
-
-	sCreateAreaEtc = 0;
-	cookie = 0;
-	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-		for (n = 0; names[n] != NULL; n++) {
-			p = NULL;
-			if ((get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_TEXT, &p) == B_OK
-				|| get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
-				sCreateAreaEtc = (haiku_create_area_etc_fn)p;
-				kser_puts("CEfn=");
-				kser_hex((uint64)(addr_t)p);
-				kser_putc('\n');
-				return;
-			}
-		}
-	}
-	kser_puts("CEno\n");
 }
 
 static void
@@ -1295,40 +985,6 @@ discover_user_exit_team(void)
 		}
 	}
 	kser_puts("EXno\n");
-}
-
-static void
-discover_user_exit_thread(void)
-{
-	image_info info;
-	int32 cookie;
-	void* p;
-	int n;
-	static const char* const names[] = {
-		"_user_exit_thread",
-		"_Z18_user_exit_threadi",
-		"_Z18_user_exit_threadl",
-		NULL
-	};
-
-	sUserExitThread = 0;
-	cookie = 0;
-	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-		for (n = 0; names[n] != NULL; n++) {
-			p = NULL;
-			if ((get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_TEXT, &p) == B_OK
-				|| get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
-				sUserExitThread = (haiku_exit_thread_fn)p;
-				kser_puts("XUfn=");
-				kser_hex((uint64)(addr_t)p);
-				kser_putc('\n');
-				return;
-			}
-		}
-	}
-	kser_puts("XUno\n");
 }
 
 static void
@@ -1784,7 +1440,7 @@ sys_compat_stat(int64 fd, const void* userPath, void* userStat, int64 flags)
 		traverse = 1;
 
 	fn = (haiku_read_stat_fn)(addr_t)sReadStatFn;
-	st = fn(haiku_dirfd(fd), path, traverse, userStat, HAIKU_STAT_SIZE);
+	st = fn((int32)fd, path, traverse, userStat, HAIKU_STAT_SIZE);
 	sLastStat = (int64)st;
 	if (st != 0)
 		return haiku_status_to_linux((int64)st);
@@ -1810,7 +1466,7 @@ sys_compat_mkdir(int64 fd, const void* path, int64 mode)
 	if (sCreateDirFn == 0)
 		return -LINUX_ENOSYS;
 	fn = (haiku_create_dir_fn)(addr_t)sCreateDirFn;
-	st = fn(haiku_dirfd(fd), path, (int32)(mode & 07777));
+	st = fn((int32)fd, path, (int32)(mode & 07777));
 	sLastPath = (int64)st;
 	return haiku_status_to_linux((int64)st);
 }
@@ -1828,13 +1484,13 @@ sys_compat_unlink(int64 fd, const void* path, int64 flags)
 		if (sRemoveDirFn == 0)
 			return -LINUX_ENOSYS;
 		fn = (haiku_path2_fn)(addr_t)sRemoveDirFn;
-		st = fn(haiku_dirfd(fd), path);
+		st = fn((int32)fd, path);
 	} else {
 		haiku_path2_fn fn;
 		if (sUnlinkFn == 0)
 			return -LINUX_ENOSYS;
 		fn = (haiku_path2_fn)(addr_t)sUnlinkFn;
-		st = fn(haiku_dirfd(fd), path);
+		st = fn((int32)fd, path);
 	}
 	sLastPath = (int64)st;
 	return haiku_status_to_linux((int64)st);
@@ -1851,7 +1507,7 @@ sys_compat_access(int64 fd, const void* path, int64 mode)
 	if (sAccessFn == 0)
 		return -LINUX_ENOSYS;
 	fn = (haiku_access_fn)(addr_t)sAccessFn;
-	st = fn(haiku_dirfd(fd), path, (int32)mode, 0);
+	st = fn((int32)fd, path, (int32)mode, 0);
 	sLastPath = (int64)st;
 	return haiku_status_to_linux((int64)st);
 }
@@ -1885,7 +1541,7 @@ sys_compat_chdir(int64 fd, const void* path)
 		return -LINUX_ENOSYS;
 	/* fchdir: path NULL, fd is the directory. chdir: fd=AT_FDCWD. */
 	fn = (haiku_setcwd_fn)(addr_t)sSetcwdFn;
-	st = fn(haiku_dirfd(fd), path);
+	st = fn((int32)fd, path);
 	sLastPath = (int64)st;
 	return haiku_status_to_linux((int64)st);
 }
@@ -1942,13 +1598,6 @@ linux_clear_all(void)
 	}
 	gLinuxN = 0;
 	{
-		int c;
-		for (c = 0; c < CLONE_T_SLOTS; c++) {
-			sCloneT[c].tid = 0;
-			sCloneT[c].cleartid = 0;
-		}
-	}
-	{
 		int m;
 		for (m = 0; m < LINUX_MAP_SLOTS; m++) {
 			sFileMaps[m].addr = 0;
@@ -1996,21 +1645,6 @@ sys_compat_mark_team(void)
 	gLinuxTeam[slot] = info.team;
 	if (gMarkExe != 0 && ((uint64)gMarkExe) >= 0x100000ULL)
 		copy_user_cstr(sLinuxExe, (const void*)(addr_t)gMarkExe, 256);
-	sCmdlineN = 0;
-	sCmdline[0] = 0;
-	if (gMarkCmd != 0 && ((uint64)gMarkCmd) >= 0x100000ULL) {
-		int i;
-		if (user_memcpy(sCmdline, (void*)(addr_t)gMarkCmd,
-			sizeof(sCmdline) - 1) == B_OK) {
-			sCmdline[sizeof(sCmdline) - 1] = 0;
-			for (i = (int)sizeof(sCmdline) - 2; i >= 0; i--) {
-				if (sCmdline[i] != 0) {
-					sCmdlineN = i + 1;
-					break;
-				}
-			}
-		}
-	}
 	/* Last arena page is a real user mapping. Steal it so
 	 * _user_write_stat / utimensat never bounce through RSP. */
 	sWstatScratch = 0;
@@ -2030,7 +1664,6 @@ sys_compat_mark_team(void)
 	sRobustList = 0;
 	sRobustLen = 0;
 	sExitCloses = 0;
-	anon_free_reset();
 	{
 		struct team_robust* tr = team_r_get(info.team, 1);
 		if (tr != NULL) {
@@ -2452,289 +2085,6 @@ sys_compat_try_fork(uint64 userRip, uint64 userRsp, uint64 userFlags)
 	return (int64)st;
 }
 
-static void
-clone_t_set(int32 tid, uint64 cleartid)
-{
-	int i, empty;
-
-	empty = -1;
-	for (i = 0; i < CLONE_T_SLOTS; i++) {
-		if (sCloneT[i].tid == tid) {
-			sCloneT[i].cleartid = cleartid;
-			return;
-		}
-		if (empty < 0 && sCloneT[i].tid == 0)
-			empty = i;
-	}
-	if (empty < 0)
-		empty = 0;
-	sCloneT[empty].tid = tid;
-	sCloneT[empty].cleartid = cleartid;
-}
-
-static uint64
-clone_t_take(int32 tid)
-{
-	int i;
-	uint64 ctid;
-
-	for (i = 0; i < CLONE_T_SLOTS; i++) {
-		if (sCloneT[i].tid == tid) {
-			ctid = sCloneT[i].cleartid;
-			sCloneT[i].cleartid = 0;
-			return ctid;
-		}
-	}
-	return 0;
-}
-
-static int
-clone_t_has(int32 tid)
-{
-	int i;
-
-	if (tid <= 0)
-		return 0;
-	for (i = 0; i < CLONE_T_SLOTS; i++) {
-		if (sCloneT[i].tid == tid)
-			return 1;
-	}
-	return 0;
-}
-
-extern "C" int64
-sys_compat_clone_vm(uint64 userRip, uint64 childStack, uint64 cloneFlags,
-	uint64 parentTid, uint64 childTid, uint64 tls)
-{
-	typedef int32 (*haiku_spawn_fn)(void* userAttr);
-	typedef int32 (*haiku_resume_fn)(int32 tid);
-	haiku_spawn_fn spawn;
-	haiku_resume_fn resume;
-	uint8 tb[128];
-	uint8 attr[72];
-	uint8 nameb[8];
-	uint64 tramp, entry, nameu, attu;
-	int32 tid, st, t32;
-	int i, n;
-
-	kser_puts("TV rip=");
-	kser_hex(userRip);
-	kser_puts(" sp=");
-	kser_hex(childStack);
-	kser_puts(" FL=");
-	kser_hex(cloneFlags);
-	kser_putc('\n');
-	/* Same-team spawn already shares cwd, fds, and our stub
-	 * sighand. Accept glibc pthread_create's extra bits.
-	 * Linux: CLONE_THREAD requires CLONE_SIGHAND; SIGHAND
-	 * requires CLONE_VM (this path already has VM). */
-	if ((cloneFlags & LINUX_CLONE_THREAD) != 0
-		&& (cloneFlags & LINUX_CLONE_SIGHAND) == 0)
-		return -LINUX_EINVAL;
-	if (sSpawnFn == 0 || sResumeFn == 0 || gForkTramp < 0x100000ULL)
-		return -LINUX_ENOSYS;
-	if (userRip < 0x100000ULL || childStack < 0x100000ULL)
-		return -LINUX_EFAULT;
-	/* Linux clone3 child SP is stack+stack_size, 16-aligned.
-	 * glibc then `call *%rdx` (SysV: SP%16==0 at call). PR53e
-	 * SP-8 made start_thread entry misaligned; __ctype_init KT. */
-	childStack &= ~(uint64)15;
-	kser_puts("SP=");
-	kser_hex(childStack);
-	kser_puts(" ULS=");
-	kser_hex(gUlsOff);
-	kser_putc('\n');
-	if (tls >= 0x100000ULL && linux_user_ok((void*)(addr_t)tls, 48)
-		&& linux_user_ok((void*)(addr_t)(tls - 96), 8)) {
-		uint64 tw[4];
-		tw[0] = tw[1] = tw[2] = tw[3] = 0;
-		if (user_memcpy(&tw[0], (void*)(addr_t)tls, 8) == B_OK
-			&& user_memcpy(&tw[1], (void*)(addr_t)(tls + 0x10), 8)
-				== B_OK
-			&& user_memcpy(&tw[2], (void*)(addr_t)(tls + 0x28), 8)
-				== B_OK
-			&& user_memcpy(&tw[3], (void*)(addr_t)(tls - 96), 8)
-				== B_OK) {
-			kser_puts("TCB0=");
-			kser_hex(tw[0]);
-			kser_puts(" SELF=");
-			kser_hex(tw[1]);
-			kser_puts(" CAN=");
-			kser_hex(tw[2]);
-			kser_puts(" LOC=");
-			kser_hex(tw[3]);
-			kser_putc('\n');
-		}
-	}
-	tramp = gForkTramp;
-	entry = tramp + 0x80;
-	nameu = tramp + 0x1c0;
-	attu = tramp + 0x200;
-	n = 0;
-	if ((cloneFlags & LINUX_CLONE_SETTLS) != 0 && tls >= 0x100000ULL) {
-		/* mov $ARCH_SET_FS,%rdi; movabs $tls,%rsi; mov $158,%rax; syscall */
-		tb[n++] = 0x48;
-		tb[n++] = 0xc7;
-		tb[n++] = 0xc7;
-		tb[n++] = 0x02;
-		tb[n++] = 0x10;
-		tb[n++] = 0x00;
-		tb[n++] = 0x00;
-		tb[n++] = 0x48;
-		tb[n++] = 0xbe;
-		for (i = 0; i < 8; i++)
-			tb[n++] = (uint8)(tls >> (8 * i));
-		tb[n++] = 0x48;
-		tb[n++] = 0xc7;
-		tb[n++] = 0xc0;
-		tb[n++] = 0x9e;
-		tb[n++] = 0x00;
-		tb[n++] = 0x00;
-		tb[n++] = 0x00;
-		tb[n++] = 0x0f;
-		tb[n++] = 0x05;
-	}
-	kser_puts(" FN=");
-	kser_hex(sCloneFn);
-	kser_puts(" AR=");
-	kser_hex(sCloneArg);
-	kser_putc('\n');
-	/* movabs $fn,%rdx; movabs $arg,%r8 — glibc __clone3 */
-	tb[n++] = 0x48;
-	tb[n++] = 0xba;
-	for (i = 0; i < 8; i++)
-		tb[n++] = (uint8)(sCloneFn >> (8 * i));
-	tb[n++] = 0x49;
-	tb[n++] = 0xb8;
-	for (i = 0; i < 8; i++)
-		tb[n++] = (uint8)(sCloneArg >> (8 * i));
-	/* xor %eax,%eax; movabs $stack,%r11; mov %r11,%rsp;
-	 * movabs $rip,%r11; jmp *%r11 */
-	tb[n++] = 0x31;
-	tb[n++] = 0xc0;
-	tb[n++] = 0x49;
-	tb[n++] = 0xbb;
-	for (i = 0; i < 8; i++)
-		tb[n++] = (uint8)(childStack >> (8 * i));
-	tb[n++] = 0x4c;
-	tb[n++] = 0x89;
-	tb[n++] = 0xdc;
-	tb[n++] = 0x49;
-	tb[n++] = 0xbb;
-	for (i = 0; i < 8; i++)
-		tb[n++] = (uint8)(userRip >> (8 * i));
-	tb[n++] = 0x41;
-	tb[n++] = 0xff;
-	tb[n++] = 0xe3;
-	if (user_memcpy((void*)(addr_t)entry, tb, (size_t)n) != B_OK)
-		return -LINUX_EFAULT;
-	nameb[0] = 'l';
-	nameb[1] = 'c';
-	nameb[2] = 'l';
-	nameb[3] = 'o';
-	nameb[4] = 'n';
-	nameb[5] = 'e';
-	nameb[6] = 0;
-	nameb[7] = 0;
-	if (user_memcpy((void*)(addr_t)nameu, nameb, 8) != B_OK)
-		return -LINUX_EFAULT;
-	for (i = 0; i < 72; i++)
-		attr[i] = 0;
-	for (i = 0; i < 8; i++) {
-		attr[i] = (uint8)(entry >> (8 * i));
-		attr[8 + i] = (uint8)(nameu >> (8 * i));
-	}
-	attr[64] = 10; /* B_NORMAL_PRIORITY */
-	if (user_memcpy((void*)(addr_t)attu, attr, 72) != B_OK)
-		return -LINUX_EFAULT;
-	spawn = (haiku_spawn_fn)(addr_t)sSpawnFn;
-	tid = spawn((void*)(addr_t)attu);
-	kser_puts("TS");
-	kser_hex((uint64)(int64)tid);
-	kser_putc('\n');
-	if (tid <= 0)
-		return haiku_status_to_linux((int64)tid);
-	t32 = tid;
-	if ((cloneFlags & LINUX_CLONE_PARENT_SETTID) != 0
-		&& linux_user_ok((void*)(addr_t)parentTid, 4))
-		user_memcpy((void*)(addr_t)parentTid, &t32, 4);
-	if ((cloneFlags & LINUX_CLONE_CHILD_SETTID) != 0
-		&& linux_user_ok((void*)(addr_t)childTid, 4))
-		user_memcpy((void*)(addr_t)childTid, &t32, 4);
-	kser_puts("PT=");
-	kser_hex(parentTid);
-	kser_puts(" CT=");
-	kser_hex(childTid);
-	kser_puts(" TL=");
-	kser_hex(tls);
-	kser_putc('\n');
-	if ((cloneFlags & LINUX_CLONE_CHILD_CLEARTID) != 0
-		&& linux_user_ok((void*)(addr_t)childTid, 4))
-		clone_t_set(tid, childTid);
-	else
-		clone_t_set(tid, 0);
-	resume = (haiku_resume_fn)(addr_t)sResumeFn;
-	st = resume(tid);
-	kser_puts("TR");
-	kser_hex((uint64)(int64)st);
-	kser_putc('\n');
-	if (st < 0)
-		return haiku_status_to_linux((int64)st);
-	return (int64)(uint32)tid;
-}
-
-struct linux_clone_args {
-	uint64 flags;
-	uint64 pidfd;
-	uint64 child_tid;
-	uint64 parent_tid;
-	uint64 exit_signal;
-	uint64 stack;
-	uint64 stack_size;
-	uint64 tls;
-};
-
-extern "C" int64
-sys_compat_clone3(void* uargs, uint64 usize, uint64 userRip,
-	uint64 fn, uint64 arg)
-{
-	struct linux_clone_args a;
-	uint64 n, childStack;
-	int64 tid;
-
-	kser_puts("C3 sz=");
-	kser_hex(usize);
-	kser_puts(" fn=");
-	kser_hex(fn);
-	kser_puts(" ar=");
-	kser_hex(arg);
-	kser_putc('\n');
-	if (usize < 64 || usize > 256)
-		return -LINUX_EINVAL;
-	if (!linux_user_ok(uargs, usize))
-		return -LINUX_EFAULT;
-	for (n = 0; n < sizeof(a); n++)
-		((uint8*)&a)[n] = 0;
-	n = usize;
-	if (n > sizeof(a))
-		n = sizeof(a);
-	if (user_memcpy(&a, uargs, (size_t)n) != B_OK)
-		return -LINUX_EFAULT;
-	if ((a.flags & LINUX_CLONE_VM) == 0 || a.stack < 0x100000ULL
-		|| a.stack_size < 4096)
-		return -LINUX_ENOSYS;
-	if (a.stack_size >= (1ULL << 40))
-		return -LINUX_EINVAL;
-	sCloneFn = fn;
-	sCloneArg = arg;
-	childStack = a.stack + a.stack_size;
-	tid = sys_compat_clone_vm(userRip, childStack, a.flags,
-		a.parent_tid, a.child_tid, a.tls);
-	sCloneFn = 0;
-	sCloneArg = 0;
-	return tid;
-}
-
 extern "C" void
 sys_compat_fork_parent_dump(uint64 rip, uint64 rsp, uint64 flags, int64 retval)
 {
@@ -2767,9 +2117,6 @@ sys_compat_wait4(int64 pid, int32* status, int64 options, void* rusage,
 
 	(void)rusage;
 	sLastWait = 0;
-	/* Same-team clone() threads are not waitable children. */
-	if (pid > 0 && clone_t_has((int32)pid))
-		return -LINUX_ECHILD;
 	if (sWaitFn == 0)
 		return -LINUX_ENOSYS;
 	hflags = HAIKU_WEXITED;
@@ -3162,15 +2509,8 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 		timed = 1;
 	}
 
-	/* user_memcpy of Linux TLS/stack futex words GPFs
-	 * (src=0x7fffffcfff01). Load with user GS. */
-	if (!linux_user_ok(uaddr, 4))
+	if (user_memcpy(&cur, uaddr, 4) != B_OK)
 		return -LINUX_EFAULT;
-	__asm__ __volatile__(
-		"swapgs\n\t"
-		"movl (%1), %0\n\t"
-		"swapgs"
-		: "=r"(cur) : "r"(uaddr) : "memory");
 	if (cur != (int32)val)
 		return -LINUX_EAGAIN;
 	if (timed && relative && usec == 0)
@@ -3181,11 +2521,11 @@ sys_compat_futex(void* uaddr, int64 op, uint32 val, const void* utime,
 		return -LINUX_ENOMEM;
 
 	acquire_sem(sFutexMu);
-	__asm__ __volatile__(
-		"swapgs\n\t"
-		"movl (%1), %0\n\t"
-		"swapgs"
-		: "=r"(cur) : "r"(uaddr) : "memory");
+	if (user_memcpy(&cur, uaddr, 4) != B_OK) {
+		release_sem(sFutexMu);
+		delete_sem(waitSem);
+		return -LINUX_EFAULT;
+	}
 	if (cur != (int32)val) {
 		release_sem(sFutexMu);
 		delete_sem(waitSem);
@@ -3337,49 +2677,38 @@ haiku_to_linux_pevents(uint16 e)
  * Linux poll/ppoll → _user_wait_for_objects. infos must be a user
  * address (scratch). Block on the official kstack, not gKstack.
  */
-/* Haiku FIONREAD. _user_ioctl writes to sWstatScratch; load with
- * user GS (kernel GS load of user VA GPFd). */
-static int32
-fionread_fd(int32 fd)
-{
-	haiku_ioctl_fn ifn;
-	void* sc;
-	int32 nread, st;
-
-	if (sIoctlFn == 0 || sWstatScratch < 0x100000ULL)
-		return 0;
-	sc = (void*)(addr_t)sWstatScratch;
-	ifn = (haiku_ioctl_fn)(addr_t)sIoctlFn;
-	st = ifn(fd, 0xbe000001u, sc, 4);
-	if (st < 0)
-		return 0;
-	nread = 0;
-	__asm__ __volatile__(
-		"swapgs\n\t"
-		"movl (%1), %0\n\t"
-		"swapgs"
-		: "=r"(nread) : "r"(sc) : "memory");
-	return nread;
-}
-
-/* nfds==1 pollfd is copied in the hook with user GS. ELF .data
- * (~0x40xxxx) and the Linux stack (~0x7fff... / arena) both qualify.
- * Never user_memcpy: that GPFd (src=0x7fffffcfff01). */
+/* hello_poll pfd is .align 8 in ELF .data (~0x40xxxx). ash's stdin
+ * pollfd was 0x7fffffcfff01. Never copy that. */
 static int
-pollfd_user(const void* fds, int64 nfds)
+pollfd_in_elf(const void* fds, int64 nfds)
 {
-	if (nfds != 1)
+	uint64 a = (uint64)(addr_t)fds;
+	uint64 n;
+
+	if (nfds <= 0)
 		return 0;
-	return linux_user_ok(fds, 8) && (((uint64)(addr_t)fds) & 7) == 0;
+	n = (uint64)nfds * 8;
+	if ((a & 7) != 0)
+		return 0;
+	if (a < 0x400000ULL || a >= 0x1000000ULL)
+		return 0;
+	if (a + n > 0x1000000ULL)
+		return 0;
+	return 1;
 }
 
 extern "C" int64
 sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 {
-	uint8 kfds[8];
-	int32 ready;
-	uint16 ev;
-	int64 left;
+	haiku_waitobj_fn fn;
+	uint8 kfds[POLL_MAX_FDS * 8];
+	uint8 hinfos[POLL_MAX_FDS * 8];
+	int32 i, n, ready;
+	int32 fd;
+	uint16 ev, rev;
+	uint32 flags;
+	int64 tout;
+	int32 st;
 	uint64 snap;
 
 	(void)scratch;
@@ -3388,15 +2717,12 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	if (nfds == 0)
 		return 0;
 	/*
-	 * Hook copied nfds==1 pollfd into gPollSnap (user GS), ELF
-	 * or stack. Do not _user_wait_for_objects from C (GPF).
-	 * Do not kernel wait_for_objects_etc (wrong io context).
-	 * POLLIN is the Linux write() flag (sPollWrote). timeout 0
-	 * is one check; timeout != 0 snoozes until the flag or the
-	 * deadline. fd 0 + blocking is still the tty stub so ash
-	 * can fall through to read() (keystrokes are not sPollWrote).
+	 * _user_wait_for_objects user_memcpy GPFd (src 0x7fffffcfff01)
+	 * after the ELF pollfd was already in hand (P0x403018). Use
+	 * kernel wait_for_objects_etc with a kernel infos pointer.
+	 * Hook copied ELF nfds==1 pollfd into gPollSnap (user GS).
 	 */
-	if (!pollfd_user(fds, nfds)) {
+	if (!pollfd_in_elf(fds, nfds)) {
 		if (nfds == 1) {
 			if (timeoutMs == 0)
 				return 0;
@@ -3405,6 +2731,10 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 		}
 		return -LINUX_EFAULT;
 	}
+	if (nfds != 1)
+		return -LINUX_EINVAL;
+	if (sWaitObjKern == 0)
+		return -LINUX_ENOSYS;
 	snap = gPollSnap;
 	kfds[0] = (uint8)snap;
 	kfds[1] = (uint8)(snap >> 8);
@@ -3414,49 +2744,75 @@ sys_compat_poll(void* fds, int64 nfds, int64 timeoutMs, void* scratch)
 	kfds[5] = (uint8)(snap >> 40);
 	kfds[6] = 0;
 	kfds[7] = 0;
-	ev = (uint16)(kfds[4] | (kfds[5] << 8));
+
+	for (i = 0; i < (int32)nfds; i++) {
+		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
+			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
+		ev = (uint16)(kfds[i * 8 + 4] | (kfds[i * 8 + 5] << 8));
+		/* Haiku object_wait_info: object, type, events */
+		hinfos[i * 8 + 0] = (uint8)fd;
+		hinfos[i * 8 + 1] = (uint8)(fd >> 8);
+		hinfos[i * 8 + 2] = (uint8)(fd >> 16);
+		hinfos[i * 8 + 3] = (uint8)(fd >> 24);
+		if (fd < 0) {
+			hinfos[i * 8 + 4] = 0;
+			hinfos[i * 8 + 5] = 0;
+			hinfos[i * 8 + 6] = 0;
+			hinfos[i * 8 + 7] = 0;
+		} else {
+			uint16 hev = linux_to_haiku_pevents(ev);
+			hinfos[i * 8 + 4] = 0; /* B_OBJECT_TYPE_FD */
+			hinfos[i * 8 + 5] = 0;
+			hinfos[i * 8 + 6] = (uint8)hev;
+			hinfos[i * 8 + 7] = (uint8)(hev >> 8);
+		}
+	}
+	if (timeoutMs < 0) {
+		flags = 0;
+		tout = 0x7fffffffffffffffLL;
+	} else {
+		flags = 8; /* B_RELATIVE_TIMEOUT */
+		if (timeoutMs > 0x7fffffffLL / 1000)
+			tout = 0x7fffffffLL;
+		else
+			tout = timeoutMs * 1000;
+	}
+	fn = (haiku_waitobj_fn)(addr_t)sWaitObjKern;
+	kser_puts("WK\n");
+	st = fn(hinfos, (int32)nfds, flags, tout);
+	kser_puts("WS");
+	kser_hex((uint64)(int64)st);
+	kser_putc('\n');
+	if (st < 0) {
+		if ((uint32)(int32)st == 0x80000009
+			|| (uint32)(int32)st == 0x8000000b)
+			return 0;
+		return haiku_status_to_linux((int64)st);
+	}
+
 	ready = 0;
-	/* timeout 0: one shot on the write flag. A prior team's
-	 * stdout write must not wake poll(-1) on a new empty pipe. */
-	if (timeoutMs == 0) {
-		if (sPollWrote != 0 && (ev & LINUX_POLLIN) != 0) {
-			sPollWrote = 0;
-			kfds[6] = LINUX_POLLIN;
-			ready = 1;
+	for (i = 0; i < (int32)nfds; i++) {
+		fd = (int32)(kfds[i * 8] | (kfds[i * 8 + 1] << 8)
+			| (kfds[i * 8 + 2] << 16) | (kfds[i * 8 + 3] << 24));
+		rev = 0;
+		if (fd < 0)
+			rev = 0;
+		else {
+			uint16 hev = (uint16)(hinfos[i * 8 + 6]
+				| (hinfos[i * 8 + 7] << 8));
+			rev = haiku_to_linux_pevents(hev);
 		}
-		goto poll_snap;
+		kfds[i * 8 + 6] = (uint8)rev;
+		kfds[i * 8 + 7] = (uint8)(rev >> 8);
+		if (rev != 0)
+			ready++;
 	}
-	sPollWrote = 0;
-	kser_puts("PW\n");
-	/* Interactive ash: poll(0, POLLIN, -1) then read(). A write
-	 * flag wait would hang (tty input is not Linux write()). */
-	if ((int32)(kfds[0] | (kfds[1] << 8) | (kfds[2] << 16)
-		| (kfds[3] << 24)) == 0) {
-		snooze(5000);
-		kfds[6] = LINUX_POLLIN;
+	if (ready == 0 && st > 0) {
+		ev = (uint16)(kfds[4] | (kfds[5] << 8));
+		kfds[6] = (uint8)ev;
+		kfds[7] = (uint8)(ev >> 8);
 		ready = 1;
-		kser_puts("PT\n");
-		goto poll_snap;
 	}
-	left = timeoutMs;
-	for (;;) {
-		if (sPollWrote != 0 && (ev & LINUX_POLLIN) != 0) {
-			sPollWrote = 0;
-			kfds[6] = LINUX_POLLIN;
-			ready = 1;
-			break;
-		}
-		if (left == 0)
-			break;
-		snooze(5000);
-		if (left > 0) {
-			if (left <= 5)
-				break;
-			left -= 5;
-		}
-	}
-	kser_puts("PE\n");
-poll_snap:
 	gPollSnap = (uint64)kfds[0]
 		| ((uint64)kfds[1] << 8)
 		| ((uint64)kfds[2] << 16)
@@ -3465,6 +2821,7 @@ poll_snap:
 		| ((uint64)kfds[5] << 40)
 		| ((uint64)kfds[6] << 48)
 		| ((uint64)kfds[7] << 56);
+	(void)n;
 	return (int64)ready;
 }
 
@@ -3643,207 +3000,6 @@ sys_compat_pselect(int64 nfds, void* rfds, void* wfds, void* efds,
 
 static int64 mmap_fb(void* addr, uint64 len, int64 prot, int64 flags);
 
-#define ANON_FREE_SLOTS 4096
-static struct {
-	uint64 addr;
-	uint64 len;
-} sAnonFree[ANON_FREE_SLOTS];
-
-static void
-anon_free_reset(void)
-{
-	int i;
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		sAnonFree[i].addr = 0;
-		sAnonFree[i].len = 0;
-	}
-}
-
-static void
-anon_absorb_bump(void)
-{
-	int i, progressed;
-	do {
-		progressed = 0;
-		for (i = 0; i < ANON_FREE_SLOTS; i++) {
-			if (sAnonFree[i].len == 0)
-				continue;
-			if (sAnonFree[i].addr == gMapCur) {
-				gMapCur += sAnonFree[i].len;
-				if (gMapCur > gArenaHi)
-					gMapCur = gArenaHi;
-				sAnonFree[i].addr = 0;
-				sAnonFree[i].len = 0;
-				progressed = 1;
-			}
-		}
-	} while (progressed);
-}
-
-static void
-anon_recycle(uint64 a, uint64 al)
-{
-	int i;
-	uint64 end;
-
-	al = (al + 4095) & ~(uint64)4095;
-	if (al == 0)
-		return;
-	end = a + al;
-	if (a == gMapCur) {
-		gMapCur = end;
-		if (gMapCur > gArenaHi)
-			gMapCur = gArenaHi;
-		anon_absorb_bump();
-		return;
-	}
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len == 0)
-			continue;
-		if (sAnonFree[i].addr + sAnonFree[i].len == a) {
-			a = sAnonFree[i].addr;
-			al = (end - a);
-			sAnonFree[i].addr = 0;
-			sAnonFree[i].len = 0;
-			break;
-		}
-	}
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len == 0)
-			continue;
-		if (end == sAnonFree[i].addr) {
-			end += sAnonFree[i].len;
-			al = end - a;
-			sAnonFree[i].addr = 0;
-			sAnonFree[i].len = 0;
-			break;
-		}
-	}
-	if (a == gMapCur) {
-		gMapCur = end;
-		if (gMapCur > gArenaHi)
-			gMapCur = gArenaHi;
-		anon_absorb_bump();
-		return;
-	}
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len == 0) {
-			sAnonFree[i].addr = a;
-			sAnonFree[i].len = al;
-			return;
-		}
-	}
-	kser_puts("MF\n");
-}
-
-static int64
-mmap_anon_carve(uint64 want)
-{
-	uint64 a;
-	int i, best;
-
-	want = (want + 4095) & ~(uint64)4095;
-	if (want == 0)
-		return -LINUX_EINVAL;
-	if (want >= (8ull * 1024ull * 1024ull)) {
-		kser_puts("Mz=");
-		kser_hex(want);
-		kser_putc('\n');
-	}
-	if (gBrkBase == 0)
-		return -LINUX_ENOMEM;
-	best = -1;
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len >= want
-			&& (best < 0 || sAnonFree[i].len < sAnonFree[best].len))
-			best = i;
-	}
-	if (best >= 0) {
-		a = sAnonFree[best].addr;
-		sAnonFree[best].len -= want;
-		sAnonFree[best].addr += want;
-		if (sAnonFree[best].len < 4096) {
-			sAnonFree[best].addr = 0;
-			sAnonFree[best].len = 0;
-		}
-		return (int64)a;
-	}
-	if (gMapCur < gBrkCur + want)
-		return -LINUX_ENOMEM;
-	a = gMapCur - want;
-	a &= ~(uint64)4095;
-	if (a < gBrkCur)
-		return -LINUX_ENOMEM;
-	gMapCur = a;
-	return (int64)a;
-}
-
-static int64
-mmap_anon_haiku(uint64 len, int64 prot)
-{
-	void* mapped;
-	struct virt_restr vr;
-	struct phys_restr pr;
-	team_info info;
-	int32 area;
-	uint32 hprot;
-	int m;
-
-	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
-		return -LINUX_ENOMEM;
-	len = (len + 4095) & ~(uint64)4095;
-	hprot = (uint32)prot & 7;
-	if (hprot == 0)
-		hprot = B_READ_AREA | B_WRITE_AREA;
-	mapped = NULL;
-	area = (int32)0x80000000;
-	/* create_area_etc with kernel pointers is safe in the hook
-	 * (file mmap already calls vm_map_file here). Worker-thread
-	 * create left maps the team could open but not read (10 decls).
-	 * Never _user_create_area (PR54j KDL). */
-	if (sCreateAreaEtc != 0) {
-		vr.address = NULL;
-		vr.address_specification = B_ANY_ADDRESS;
-		vr._pad = 0;
-		vr.alignment = 0;
-		pr.low_address = 0;
-		pr.high_address = 0;
-		pr.alignment = 0;
-		pr.boundary = 0;
-		mapped = NULL;
-		if (len >= (8ull * 1024ull * 1024ull)) {
-			kser_puts("Mz=");
-			kser_hex(len);
-			kser_putc('\n');
-		}
-		area = sCreateAreaEtc(info.team, "linux_mmap", len, B_NO_LOCK,
-			hprot, 0, 0, &vr, &pr, &mapped);
-		if (area < 0) {
-			kser_puts("CE=");
-			kser_hex((uint64)(uint32)area);
-			kser_putc('\n');
-		}
-	}
-	if (area < 0)
-		return -LINUX_ENOMEM;
-	if ((uint64)(addr_t)mapped < 0x100000ULL) {
-		kser_puts("CZ\n");
-		return -LINUX_ENOMEM;
-	}
-	kser_puts("MA\n");
-	for (m = 0; m < LINUX_MAP_SLOTS; m++) {
-		if (sFileMaps[m].fd < 0 && sFileMaps[m].area == 0) {
-			sFileMaps[m].addr = (uint64)(addr_t)mapped;
-			sFileMaps[m].len = len;
-			sFileMaps[m].area = area;
-			sFileMaps[m].team = info.team;
-			sFileMaps[m].fd = -1;
-			break;
-		}
-	}
-	return (int64)(addr_t)mapped;
-}
-
 extern "C" int64
 sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	int64 fd, int64 offset)
@@ -3852,31 +3008,14 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	uint32 spec, hprot, mapping;
 	int32 area;
 	team_info info;
-	int64 carved;
 
 	kser_puts("MM\n");
 	if (sFbFd >= 0 && (int32)fd == sFbFd)
 		return mmap_fb(addr, len, prot, flags);
 	if (len == 0)
 		return -LINUX_EINVAL;
-	if ((flags & LINUX_MAP_ANON) != 0) {
-		if ((flags & LINUX_MAP_FIXED) != 0) {
-			uint64 a = (uint64)(addr_t)addr;
-			if (gBrkBase == 0 || a < gBrkBase
-				|| a + len > gArenaHi) {
-				kser_puts("FX\n");
-				return -LINUX_ENOMEM;
-			}
-			return (int64)a;
-		}
-		/* Exact-size carve from the loader's overcommit arena.
-		 * create_area_etc from this hook KDLs (PR54w). Worker
-		 * areas were not readable by _kern_read (10 decls). */
-		carved = mmap_anon_carve(len);
-		if (carved < 0)
-			kser_puts("ME\n");
-		return carved;
-	}
+	if ((flags & LINUX_MAP_ANON) != 0)
+		return -LINUX_ENOMEM;
 	if (fd < 0)
 		return -LINUX_EBADF;
 	if ((offset & 4095) != 0)
@@ -4076,43 +3215,6 @@ fill_proc_node(const char* path, char* dst, int max)
 			"processes 100\nprocs_running 1\n");
 		return n;
 	}
-	if (sc_eq(path, "/proc/self/exe")
-		|| sc_eq(path, "/proc/1/exe")) {
-		const char* exe = sLinuxExe[0] ? sLinuxExe : "/boot/home/ailang.x";
-		n = put_str(dst, max, n, exe);
-		if (n < max)
-			dst[n++] = '\n';
-		return n;
-	}
-	if (sc_eq(path, "/proc/self/environ")
-		|| sc_eq(path, "/proc/1/environ")) {
-		n = put_str(dst, max, n, "PATH=/boot/home");
-		if (n < max)
-			dst[n++] = '\0';
-		n = put_str(dst, max, n, "HOME=/boot/home");
-		if (n < max)
-			dst[n++] = '\0';
-		return n;
-	}
-	if (sc_eq(path, "/proc/self/cmdline")
-		|| sc_eq(path, "/proc/1/cmdline")) {
-		if (sCmdlineN > 0) {
-			int i;
-			int lim = sCmdlineN;
-			if (lim > max)
-				lim = max;
-			for (i = 0; i < lim; i++)
-				dst[i] = sCmdline[i];
-			return lim;
-		}
-		{
-			const char* exe = sLinuxExe[0] ? sLinuxExe : "linux.elf";
-			n = put_str(dst, max, n, exe);
-			if (n < max)
-				dst[n++] = '\0';
-			return n;
-		}
-	}
 	return -1;
 }
 
@@ -4142,7 +3244,7 @@ open_proc_node(const char* kpath)
 	if (user_memcpy(ubody, body, (size_t)n) != B_OK)
 		return -LINUX_EFAULT;
 	ofn = (haiku_open_fn)(addr_t)sOpenFn;
-	fd = ofn(-1, upath,
+	fd = ofn(-100, upath,
 		2 | HAIKU_O_CREAT_BIT | HAIKU_O_TRUNC_BIT, 0600);
 	if (fd < 0)
 		return haiku_status_to_linux((int64)fd);
@@ -4153,7 +3255,7 @@ open_proc_node(const char* kpath)
 	}
 	if (sUnlinkFn != 0) {
 		ufn = (haiku_path2_fn)(addr_t)sUnlinkFn;
-		ufn(-1, upath);
+		ufn(-100, upath);
 	}
 	kser_puts("PO\n");
 	return (int64)fd;
@@ -4270,7 +3372,7 @@ open_fb_node(int64 flags)
 	if (user_memcpy(upath, nullPath, sizeof(nullPath)) != B_OK)
 		return -LINUX_EFAULT;
 	ofn = (haiku_open_fn)(addr_t)sOpenFn;
-	fd = ofn(-1, upath, 2, 0);
+	fd = ofn(-100, upath, 2, 0);
 	if (fd < 0)
 		return haiku_status_to_linux((int64)fd);
 	sFbFd = fd;
@@ -4403,9 +3505,6 @@ sys_compat_open(int64 dirfd, const void* path, int64 flags, int64 mode)
 		return -LINUX_EFAULT;
 	if (copy_user_cstr(sWstatPath, path, (int)sizeof(sWstatPath)) < 0)
 		return -LINUX_EFAULT;
-	kser_puts("OP ");
-	kser_puts(sWstatPath);
-	kser_putc('\n');
 	if (sc_starts(sWstatPath, "/proc/") || sc_starts(sWstatPath, "/sys/"))
 		return open_proc_node(sWstatPath);
 	if (sc_starts(sWstatPath, "/dev/fb"))
@@ -4413,7 +3512,7 @@ sys_compat_open(int64 dirfd, const void* path, int64 flags, int64 mode)
 	if (sOpenFn == 0)
 		return -LINUX_ENOSYS;
 	fn = (haiku_open_fn)(addr_t)sOpenFn;
-	st = fn(haiku_dirfd(dirfd), path, xlat_oflags(flags), (int32)mode);
+	st = fn((int32)dirfd, path, xlat_oflags(flags), (int32)mode);
 	if (st >= 0)
 		return (int64)st;
 	return haiku_status_to_linux((int64)st);
@@ -4537,12 +3636,9 @@ sys_compat_munmap(void* addr, uint64 len)
 
 	if (len == 0)
 		return 0;
-	/* Arena carve is not a Haiku mapping. Recycle so mmap/munmap
-	 * churn (Ailang 181/155 on a tiny compile) does not ENOMEM. */
-	if (gBrkBase != 0 && a >= gBrkBase && a < gArenaHi) {
-		anon_recycle(a, len);
+	/* Arena carve is not a Haiku mapping. */
+	if (gBrkBase != 0 && a >= gBrkBase && a < gArenaHi)
 		return 0;
-	}
 
 	len = (len + 4095) & ~(uint64)4095;
 	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
@@ -4870,61 +3966,6 @@ sys_compat_exit_prep(void)
 
 extern "C" uint64 sExitR14;
 
-extern "C" int64
-sys_compat_exit60(int64 status)
-{
-	team_info info;
-	int32 tid;
-	uint64 ctid;
-	int32 zero;
-
-	(void)status;
-	if (get_team_info(B_CURRENT_TEAM, &info) == B_OK
-		&& info.thread_count > 1) {
-		tid = find_thread(NULL);
-		ctid = clone_t_take(tid);
-		kser_puts("XT n=");
-		kser_hex((uint64)(uint32)info.thread_count);
-		kser_putc('\n');
-		if (ctid >= 0x100000ULL && linux_user_ok((void*)(addr_t)ctid, 4)) {
-			zero = 0;
-			kser_puts("CK=");
-			kser_hex(ctid);
-			kser_putc('\n');
-			__asm__ __volatile__(
-				"swapgs\n\t"
-				"movl %1, (%0)\n\t"
-				"swapgs"
-				:
-				: "r"(ctid), "r"(zero)
-				: "memory");
-			kser_puts("TC\n");
-			sys_compat_futex((void*)(addr_t)ctid,
-				LINUX_FUTEX_WAKE, 1, NULL, NULL, 0);
-			kser_puts("FW\n");
-		}
-		/* OS.h exit_thread() is a no-op from this driver. kill_thread
-		 * posts SIGKILLTHR but delivery waits for user return — we
-		 * never sysret. _user_exit_thread + thread_exit matches the
-		 * last-thread path without _user_exit_team. CLONE_SETTLS
-		 * left IA32_FS_BASE on the Linux TLS; thread_exit then KT. */
-		wrmsr(IA32_FS_BASE, 0);
-		kser_puts("FS0\n");
-		if (sUserExitThread != 0) {
-			kser_puts("XU\n");
-			sUserExitThread((int32)status);
-			kser_puts("XUR\n");
-		}
-		if (sThreadExit != 0) {
-			kser_puts("XTX\n");
-			sThreadExit();
-			kser_puts("XTXR\n");
-		}
-		return 1;
-	}
-	return 0;
-}
-
 extern "C" void
 sys_compat_exit_team(int64 status)
 {
@@ -5051,7 +4092,7 @@ sys_compat_rename(int64 oldFd, const void* oldPath, int64 newFd,
 	if (sRenameFn == 0)
 		return -LINUX_ENOSYS;
 	fn = (haiku_rename_fn)(addr_t)sRenameFn;
-	st = fn(haiku_dirfd(oldFd), oldPath, haiku_dirfd(newFd), newPath);
+	st = fn((int32)oldFd, oldPath, (int32)newFd, newPath);
 	return haiku_status_to_linux((int64)st);
 }
 
@@ -5066,7 +4107,7 @@ sys_compat_symlink(int64 fd, const void* linkPath, const void* target)
 	if (sSymlinkFn == 0)
 		return -LINUX_ENOSYS;
 	fn = (haiku_symlink_fn)(addr_t)sSymlinkFn;
-	st = fn(haiku_dirfd(fd), linkPath, target, 0);
+	st = fn((int32)fd, linkPath, target, 0);
 	return haiku_status_to_linux((int64)st);
 }
 
@@ -5084,7 +4125,7 @@ sys_compat_link(int64 oldFd, const void* oldPath, int64 newFd,
 		return -LINUX_ENOSYS;
 	follow = ((flags & LINUX_AT_SYMLINK_FOLLOW) != 0) ? 1 : 0;
 	fn = (haiku_link_fn)(addr_t)sLinkFn;
-	st = fn(haiku_dirfd(newFd), newPath, haiku_dirfd(oldFd), oldPath, follow);
+	st = fn((int32)newFd, newPath, (int32)oldFd, oldPath, follow);
 	if ((uint32)st == 0x8000600e)
 		return -LINUX_EPERM;
 	return haiku_status_to_linux((int64)st);
@@ -5102,22 +4143,6 @@ sys_compat_readlink(int64 fd, const void* path, void* buf, uint64 bufsiz)
 		return -LINUX_EFAULT;
 	if (bufsiz == 0)
 		return -LINUX_EINVAL;
-	if (copy_user_cstr(sWstatPath, path, (int)sizeof(sWstatPath)) < 0)
-		return -LINUX_EFAULT;
-	if (sc_eq(sWstatPath, "/proc/self/exe")
-		|| sc_eq(sWstatPath, "/proc/1/exe")) {
-		int n;
-		const char* exe = sLinuxExe[0] ? sLinuxExe : "/boot/home/ailang.x";
-		n = 0;
-		while (exe[n] != 0)
-			n++;
-		if ((uint64)n > bufsiz)
-			n = (int)bufsiz;
-		if (n > 0 && user_memcpy(buf, exe, (size_t)n) != B_OK)
-			return -LINUX_EFAULT;
-		kser_puts("RL\n");
-		return (int64)n;
-	}
 	if (sReadLinkFn == 0)
 		return -LINUX_ENOSYS;
 	sz = bufsiz;
@@ -5125,7 +4150,7 @@ sys_compat_readlink(int64 fd, const void* path, void* buf, uint64 bufsiz)
 	if (user_memcpy(userSz, &sz, sizeof(sz)) != B_OK)
 		return -LINUX_EFAULT;
 	fn = (haiku_readlink_fn)(addr_t)sReadLinkFn;
-	st = fn(haiku_dirfd(fd), path, buf, userSz);
+	st = fn((int32)fd, path, buf, userSz);
 	if (st != 0)
 		return haiku_status_to_linux((int64)st);
 	if (user_memcpy(&sz, userSz, sizeof(sz)) != B_OK)
@@ -5350,17 +4375,9 @@ sys_compat_nanosleep(const void* req, void* rem)
 	}
 	if ((int64)sec < 0 || nsec >= 1000000000ULL)
 		return -LINUX_EINVAL;
+	/* No snooze number proven yet. Zero-duration is enough for CLI. */
 	if (sec == 0 && nsec == 0)
 		return 0;
-	{
-		uint64 us;
-		if (sec > 2000ULL)
-			sec = 2000ULL;
-		us = sec * 1000000ULL + nsec / 1000ULL;
-		if (us == 0)
-			us = 1;
-		snooze((bigtime_t)us);
-	}
 	return 0;
 }
 
@@ -6307,10 +5324,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR54x\n");
-	kser_puts("ULS=");
-	kser_hex(gUlsOff);
-	kser_putc('\n');
+	kser_puts("PR45b\n");
 	print_sys_compat_images();
 	discover_syscall_table();
 	discover_vm_map_file();
@@ -6318,14 +5332,9 @@ init_driver(void)
 	discover_vm_map_phys();
 	discover_vm_delete_area();
 	discover_wait_for_objects_etc();
-	discover_spawn_thread();
 	discover_user_delete_area();
-	discover_user_create_area();
-	discover_create_area_etc();
-	mmap_worker_start();
 	discover_kern_close();
 	discover_user_exit_team();
-	discover_user_exit_thread();
 	discover_thread_exit();
 	discover_kern_write_stat();
 	if (sFutexMu < 0)
@@ -6344,7 +5353,6 @@ init_driver(void)
 extern "C" void
 uninit_driver(void)
 {
-	mmap_worker_stop();
 	linux_clear_all();
 	call_all_cpus_sync(&restore_lstar, NULL);
 	if (sFutexMu >= 0) {

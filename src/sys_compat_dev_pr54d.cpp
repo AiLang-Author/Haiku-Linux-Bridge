@@ -289,143 +289,6 @@ typedef area_id (*haiku_vmmapk_fn)(team_id team, const char* name,
  * _user_delete_area is CurrentID()+kernel=false (syscall path). */
 typedef int32 (*haiku_vmdel_fn)(int32 team, int32 area, bool kernel);
 typedef int32 (*haiku_userdel_fn)(int32 area);
-typedef int32 (*haiku_usercreate_fn)(const char* name, void** address,
-	uint32 spec, uint64 size, uint32 lock, uint32 protection);
-static haiku_usercreate_fn sUserCreateArea;
-/* create_area_etc(team, name, size, lock, prot, flags, guard,
- * virtRestrict, physRestrict, _address). kernel=true inside. */
-struct virt_restr {
-	void* address;
-	uint32 address_specification;
-	uint32 _pad;
-	uint64 alignment;
-};
-struct phys_restr {
-	uint64 low_address;
-	uint64 high_address;
-	uint64 alignment;
-	uint64 boundary;
-};
-typedef int32 (*haiku_create_area_etc_fn)(int32 team, const char* name,
-	uint64 size, uint32 lock, uint32 protection, uint32 flags,
-	uint32 guardSize, const struct virt_restr* vr,
-	const struct phys_restr* pr, void** _address);
-static haiku_create_area_etc_fn sCreateAreaEtc;
-static haiku_vmdel_fn sVmDeleteArea;
-#ifndef CREATE_AREA_DONT_COMMIT_MEMORY
-#define CREATE_AREA_DONT_COMMIT_MEMORY 0x10
-#endif
-static void kser_putc(char c);
-static void kser_puts(const char* s);
-static void kser_hex(uint64 v);
-
-/* Linux mmap is a new VMA per call, not a pre-sized bump arena.
- * create_area_etc from the SYSCALL hook nested-copies and KDLs
- * (PR54j). A kernel worker does the Haiku VM op instead. */
-#define MAP_OP_NONE 0
-#define MAP_OP_CREATE 1
-#define MAP_OP_DELETE 2
-#define MAP_OP_QUIT 3
-static sem_id sMapGate = -1;
-static sem_id sMapReq = -1;
-static sem_id sMapDone = -1;
-static thread_id sMapThr = -1;
-static volatile int32 sMapOp;
-static volatile int32 sMapTeam;
-static volatile uint64 sMapLen;
-static volatile uint32 sMapProt;
-static volatile uint32 sMapFlags;
-static volatile void* sMapAddr;
-static volatile int32 sMapArea;
-static volatile int32 sMapSt;
-
-static int32
-mmap_worker(void* arg)
-{
-	(void)arg;
-	for (;;) {
-		if (acquire_sem(sMapReq) != B_OK)
-			break;
-		if (sMapOp == MAP_OP_QUIT)
-			break;
-		if (sMapOp == MAP_OP_CREATE && sCreateAreaEtc != 0) {
-			struct virt_restr vr;
-			struct phys_restr pr;
-			void* mapped;
-			uint32 prot;
-			int32 area;
-
-			vr.address = NULL;
-			vr.address_specification = B_ANY_ADDRESS;
-			vr._pad = 0;
-			vr.alignment = 0;
-			pr.low_address = 0;
-			pr.high_address = 0;
-			pr.alignment = 0;
-			pr.boundary = 0;
-			mapped = NULL;
-			prot = sMapProt;
-			if (prot == 0)
-				prot = B_READ_AREA | B_WRITE_AREA;
-			/* Plain RW B_NO_LOCK. B_STACK_AREA + DONT_COMMIT
-			 * made kernel read() into the map fail (10 decls,
-			 * Arena_Alloc missing). */
-			area = sCreateAreaEtc(sMapTeam, "linux_mmap", sMapLen,
-				B_NO_LOCK, prot, 0, 0, &vr, &pr, &mapped);
-			sMapArea = area;
-			sMapAddr = mapped;
-			sMapSt = area;
-		} else if (sMapOp == MAP_OP_DELETE && sVmDeleteArea != 0) {
-			sMapSt = sVmDeleteArea(sMapTeam, sMapArea, true);
-		} else
-			sMapSt = (int32)0x80000000;
-		release_sem(sMapDone);
-	}
-	return 0;
-}
-
-static int
-mmap_worker_start(void)
-{
-	if (sMapThr >= 0)
-		return 0;
-	sMapGate = create_sem(1, "sys_compat_mapgate");
-	sMapReq = create_sem(0, "sys_compat_mapreq");
-	sMapDone = create_sem(0, "sys_compat_mapdone");
-	if (sMapGate < 0 || sMapReq < 0 || sMapDone < 0)
-		return -1;
-	sMapThr = spawn_kernel_thread(mmap_worker, "sys_compat_mmap",
-		B_NORMAL_PRIORITY, NULL);
-	if (sMapThr < 0)
-		return -1;
-	resume_thread(sMapThr);
-	kser_puts("MWgo\n");
-	return 0;
-}
-
-static void
-mmap_worker_stop(void)
-{
-	if (sMapThr >= 0 && sMapReq >= 0) {
-		status_t ignored;
-		sMapOp = MAP_OP_QUIT;
-		release_sem(sMapReq);
-		wait_for_thread(sMapThr, &ignored);
-		sMapThr = -1;
-	}
-	if (sMapGate >= 0) {
-		delete_sem(sMapGate);
-		sMapGate = -1;
-	}
-	if (sMapReq >= 0) {
-		delete_sem(sMapReq);
-		sMapReq = -1;
-	}
-	if (sMapDone >= 0) {
-		delete_sem(sMapDone);
-		sMapDone = -1;
-	}
-}
 typedef int32 (*haiku_vmclone_fn)(int32 team, const char* name, void** addr,
 	uint32 spec, uint32 prot, uint32 mapping, int32 unmapRange,
 	int32 source, int32 kernel);
@@ -467,6 +330,7 @@ static uint64 sWaitObjKern;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
+static haiku_vmdel_fn sVmDeleteArea;
 static haiku_userdel_fn sUserDeleteArea;
 static haiku_vmclone_fn sVmCloneArea;
 static haiku_vmphys_fn sVmMapPhys;
@@ -478,7 +342,7 @@ typedef void (*haiku_exit_thread_fn)(int32 status);
 static haiku_exit_thread_fn sUserExitThread;
 typedef void (*haiku_thread_exit_fn)(void);
 static haiku_thread_exit_fn sThreadExit;
-#define LINUX_MAP_SLOTS 2048
+#define LINUX_MAP_SLOTS 16
 struct linux_file_map {
 	uint64 addr;
 	uint64 len;
@@ -558,7 +422,6 @@ static uint64 sDentMark;
 static int64 sLastStat;
 static uint32 sLastMode;
 static int64 sLastSize;
-static void anon_free_reset(void);
 
 extern "C" {
 	void sys_compat_lstar(void);
@@ -1157,73 +1020,6 @@ discover_user_delete_area(void)
 		}
 	}
 	kser_puts("UDno\n");
-}
-
-static void
-discover_user_create_area(void)
-{
-	image_info info;
-	int32 cookie;
-	void* p;
-	int n;
-	static const char* const names[] = {
-		"_user_create_area",
-		"_Z17_user_create_areaPKcPPvjmjj",
-		NULL
-	};
-
-	sUserCreateArea = 0;
-	cookie = 0;
-	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-		for (n = 0; names[n] != NULL; n++) {
-			p = NULL;
-			if ((get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_TEXT, &p) == B_OK
-				|| get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
-				sUserCreateArea = (haiku_usercreate_fn)p;
-				kser_puts("UCfn=");
-				kser_hex((uint64)(addr_t)p);
-				kser_putc('\n');
-				return;
-			}
-		}
-	}
-	kser_puts("UCno\n");
-}
-
-static void
-discover_create_area_etc(void)
-{
-	image_info info;
-	int32 cookie;
-	void* p;
-	int n;
-	static const char* const names[] = {
-		"create_area_etc",
-		"_Z15create_area_etciPKcmjjjjPK28virtual_address_restrictions"
-			"PK29physical_address_restrictionsPPv",
-		NULL
-	};
-
-	sCreateAreaEtc = 0;
-	cookie = 0;
-	while (get_next_image_info(B_SYSTEM_TEAM, &cookie, &info) == B_OK) {
-		for (n = 0; names[n] != NULL; n++) {
-			p = NULL;
-			if ((get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_TEXT, &p) == B_OK
-				|| get_image_symbol(info.id, names[n],
-				B_SYMBOL_TYPE_ANY, &p) == B_OK) && p != NULL) {
-				sCreateAreaEtc = (haiku_create_area_etc_fn)p;
-				kser_puts("CEfn=");
-				kser_hex((uint64)(addr_t)p);
-				kser_putc('\n');
-				return;
-			}
-		}
-	}
-	kser_puts("CEno\n");
 }
 
 static void
@@ -2030,7 +1826,6 @@ sys_compat_mark_team(void)
 	sRobustList = 0;
 	sRobustLen = 0;
 	sExitCloses = 0;
-	anon_free_reset();
 	{
 		struct team_robust* tr = team_r_get(info.team, 1);
 		if (tr != NULL) {
@@ -3643,207 +3438,6 @@ sys_compat_pselect(int64 nfds, void* rfds, void* wfds, void* efds,
 
 static int64 mmap_fb(void* addr, uint64 len, int64 prot, int64 flags);
 
-#define ANON_FREE_SLOTS 4096
-static struct {
-	uint64 addr;
-	uint64 len;
-} sAnonFree[ANON_FREE_SLOTS];
-
-static void
-anon_free_reset(void)
-{
-	int i;
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		sAnonFree[i].addr = 0;
-		sAnonFree[i].len = 0;
-	}
-}
-
-static void
-anon_absorb_bump(void)
-{
-	int i, progressed;
-	do {
-		progressed = 0;
-		for (i = 0; i < ANON_FREE_SLOTS; i++) {
-			if (sAnonFree[i].len == 0)
-				continue;
-			if (sAnonFree[i].addr == gMapCur) {
-				gMapCur += sAnonFree[i].len;
-				if (gMapCur > gArenaHi)
-					gMapCur = gArenaHi;
-				sAnonFree[i].addr = 0;
-				sAnonFree[i].len = 0;
-				progressed = 1;
-			}
-		}
-	} while (progressed);
-}
-
-static void
-anon_recycle(uint64 a, uint64 al)
-{
-	int i;
-	uint64 end;
-
-	al = (al + 4095) & ~(uint64)4095;
-	if (al == 0)
-		return;
-	end = a + al;
-	if (a == gMapCur) {
-		gMapCur = end;
-		if (gMapCur > gArenaHi)
-			gMapCur = gArenaHi;
-		anon_absorb_bump();
-		return;
-	}
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len == 0)
-			continue;
-		if (sAnonFree[i].addr + sAnonFree[i].len == a) {
-			a = sAnonFree[i].addr;
-			al = (end - a);
-			sAnonFree[i].addr = 0;
-			sAnonFree[i].len = 0;
-			break;
-		}
-	}
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len == 0)
-			continue;
-		if (end == sAnonFree[i].addr) {
-			end += sAnonFree[i].len;
-			al = end - a;
-			sAnonFree[i].addr = 0;
-			sAnonFree[i].len = 0;
-			break;
-		}
-	}
-	if (a == gMapCur) {
-		gMapCur = end;
-		if (gMapCur > gArenaHi)
-			gMapCur = gArenaHi;
-		anon_absorb_bump();
-		return;
-	}
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len == 0) {
-			sAnonFree[i].addr = a;
-			sAnonFree[i].len = al;
-			return;
-		}
-	}
-	kser_puts("MF\n");
-}
-
-static int64
-mmap_anon_carve(uint64 want)
-{
-	uint64 a;
-	int i, best;
-
-	want = (want + 4095) & ~(uint64)4095;
-	if (want == 0)
-		return -LINUX_EINVAL;
-	if (want >= (8ull * 1024ull * 1024ull)) {
-		kser_puts("Mz=");
-		kser_hex(want);
-		kser_putc('\n');
-	}
-	if (gBrkBase == 0)
-		return -LINUX_ENOMEM;
-	best = -1;
-	for (i = 0; i < ANON_FREE_SLOTS; i++) {
-		if (sAnonFree[i].len >= want
-			&& (best < 0 || sAnonFree[i].len < sAnonFree[best].len))
-			best = i;
-	}
-	if (best >= 0) {
-		a = sAnonFree[best].addr;
-		sAnonFree[best].len -= want;
-		sAnonFree[best].addr += want;
-		if (sAnonFree[best].len < 4096) {
-			sAnonFree[best].addr = 0;
-			sAnonFree[best].len = 0;
-		}
-		return (int64)a;
-	}
-	if (gMapCur < gBrkCur + want)
-		return -LINUX_ENOMEM;
-	a = gMapCur - want;
-	a &= ~(uint64)4095;
-	if (a < gBrkCur)
-		return -LINUX_ENOMEM;
-	gMapCur = a;
-	return (int64)a;
-}
-
-static int64
-mmap_anon_haiku(uint64 len, int64 prot)
-{
-	void* mapped;
-	struct virt_restr vr;
-	struct phys_restr pr;
-	team_info info;
-	int32 area;
-	uint32 hprot;
-	int m;
-
-	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
-		return -LINUX_ENOMEM;
-	len = (len + 4095) & ~(uint64)4095;
-	hprot = (uint32)prot & 7;
-	if (hprot == 0)
-		hprot = B_READ_AREA | B_WRITE_AREA;
-	mapped = NULL;
-	area = (int32)0x80000000;
-	/* create_area_etc with kernel pointers is safe in the hook
-	 * (file mmap already calls vm_map_file here). Worker-thread
-	 * create left maps the team could open but not read (10 decls).
-	 * Never _user_create_area (PR54j KDL). */
-	if (sCreateAreaEtc != 0) {
-		vr.address = NULL;
-		vr.address_specification = B_ANY_ADDRESS;
-		vr._pad = 0;
-		vr.alignment = 0;
-		pr.low_address = 0;
-		pr.high_address = 0;
-		pr.alignment = 0;
-		pr.boundary = 0;
-		mapped = NULL;
-		if (len >= (8ull * 1024ull * 1024ull)) {
-			kser_puts("Mz=");
-			kser_hex(len);
-			kser_putc('\n');
-		}
-		area = sCreateAreaEtc(info.team, "linux_mmap", len, B_NO_LOCK,
-			hprot, 0, 0, &vr, &pr, &mapped);
-		if (area < 0) {
-			kser_puts("CE=");
-			kser_hex((uint64)(uint32)area);
-			kser_putc('\n');
-		}
-	}
-	if (area < 0)
-		return -LINUX_ENOMEM;
-	if ((uint64)(addr_t)mapped < 0x100000ULL) {
-		kser_puts("CZ\n");
-		return -LINUX_ENOMEM;
-	}
-	kser_puts("MA\n");
-	for (m = 0; m < LINUX_MAP_SLOTS; m++) {
-		if (sFileMaps[m].fd < 0 && sFileMaps[m].area == 0) {
-			sFileMaps[m].addr = (uint64)(addr_t)mapped;
-			sFileMaps[m].len = len;
-			sFileMaps[m].area = area;
-			sFileMaps[m].team = info.team;
-			sFileMaps[m].fd = -1;
-			break;
-		}
-	}
-	return (int64)(addr_t)mapped;
-}
-
 extern "C" int64
 sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	int64 fd, int64 offset)
@@ -3852,31 +3446,14 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 	uint32 spec, hprot, mapping;
 	int32 area;
 	team_info info;
-	int64 carved;
 
 	kser_puts("MM\n");
 	if (sFbFd >= 0 && (int32)fd == sFbFd)
 		return mmap_fb(addr, len, prot, flags);
 	if (len == 0)
 		return -LINUX_EINVAL;
-	if ((flags & LINUX_MAP_ANON) != 0) {
-		if ((flags & LINUX_MAP_FIXED) != 0) {
-			uint64 a = (uint64)(addr_t)addr;
-			if (gBrkBase == 0 || a < gBrkBase
-				|| a + len > gArenaHi) {
-				kser_puts("FX\n");
-				return -LINUX_ENOMEM;
-			}
-			return (int64)a;
-		}
-		/* Exact-size carve from the loader's overcommit arena.
-		 * create_area_etc from this hook KDLs (PR54w). Worker
-		 * areas were not readable by _kern_read (10 decls). */
-		carved = mmap_anon_carve(len);
-		if (carved < 0)
-			kser_puts("ME\n");
-		return carved;
-	}
+	if ((flags & LINUX_MAP_ANON) != 0)
+		return -LINUX_ENOMEM;
 	if (fd < 0)
 		return -LINUX_EBADF;
 	if ((offset & 4095) != 0)
@@ -4403,9 +3980,6 @@ sys_compat_open(int64 dirfd, const void* path, int64 flags, int64 mode)
 		return -LINUX_EFAULT;
 	if (copy_user_cstr(sWstatPath, path, (int)sizeof(sWstatPath)) < 0)
 		return -LINUX_EFAULT;
-	kser_puts("OP ");
-	kser_puts(sWstatPath);
-	kser_putc('\n');
 	if (sc_starts(sWstatPath, "/proc/") || sc_starts(sWstatPath, "/sys/"))
 		return open_proc_node(sWstatPath);
 	if (sc_starts(sWstatPath, "/dev/fb"))
@@ -4537,12 +4111,9 @@ sys_compat_munmap(void* addr, uint64 len)
 
 	if (len == 0)
 		return 0;
-	/* Arena carve is not a Haiku mapping. Recycle so mmap/munmap
-	 * churn (Ailang 181/155 on a tiny compile) does not ENOMEM. */
-	if (gBrkBase != 0 && a >= gBrkBase && a < gArenaHi) {
-		anon_recycle(a, len);
+	/* Arena carve is not a Haiku mapping. */
+	if (gBrkBase != 0 && a >= gBrkBase && a < gArenaHi)
 		return 0;
-	}
 
 	len = (len + 4095) & ~(uint64)4095;
 	if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
@@ -6307,7 +5878,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR54x\n");
+	kser_puts("PR54d\n");
 	kser_puts("ULS=");
 	kser_hex(gUlsOff);
 	kser_putc('\n');
@@ -6320,9 +5891,6 @@ init_driver(void)
 	discover_wait_for_objects_etc();
 	discover_spawn_thread();
 	discover_user_delete_area();
-	discover_user_create_area();
-	discover_create_area_etc();
-	mmap_worker_start();
 	discover_kern_close();
 	discover_user_exit_team();
 	discover_user_exit_thread();
@@ -6344,7 +5912,6 @@ init_driver(void)
 extern "C" void
 uninit_driver(void)
 {
-	mmap_worker_stop();
 	linux_clear_all();
 	call_all_cpus_sync(&restore_lstar, NULL);
 	if (sFutexMu >= 0) {

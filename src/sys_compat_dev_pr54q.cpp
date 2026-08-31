@@ -311,121 +311,6 @@ typedef int32 (*haiku_create_area_etc_fn)(int32 team, const char* name,
 	uint32 guardSize, const struct virt_restr* vr,
 	const struct phys_restr* pr, void** _address);
 static haiku_create_area_etc_fn sCreateAreaEtc;
-static haiku_vmdel_fn sVmDeleteArea;
-#ifndef CREATE_AREA_DONT_COMMIT_MEMORY
-#define CREATE_AREA_DONT_COMMIT_MEMORY 0x10
-#endif
-static void kser_putc(char c);
-static void kser_puts(const char* s);
-static void kser_hex(uint64 v);
-
-/* Linux mmap is a new VMA per call, not a pre-sized bump arena.
- * create_area_etc from the SYSCALL hook nested-copies and KDLs
- * (PR54j). A kernel worker does the Haiku VM op instead. */
-#define MAP_OP_NONE 0
-#define MAP_OP_CREATE 1
-#define MAP_OP_DELETE 2
-#define MAP_OP_QUIT 3
-static sem_id sMapGate = -1;
-static sem_id sMapReq = -1;
-static sem_id sMapDone = -1;
-static thread_id sMapThr = -1;
-static volatile int32 sMapOp;
-static volatile int32 sMapTeam;
-static volatile uint64 sMapLen;
-static volatile uint32 sMapProt;
-static volatile uint32 sMapFlags;
-static volatile void* sMapAddr;
-static volatile int32 sMapArea;
-static volatile int32 sMapSt;
-
-static int32
-mmap_worker(void* arg)
-{
-	(void)arg;
-	for (;;) {
-		if (acquire_sem(sMapReq) != B_OK)
-			break;
-		if (sMapOp == MAP_OP_QUIT)
-			break;
-		if (sMapOp == MAP_OP_CREATE && sCreateAreaEtc != 0) {
-			struct virt_restr vr;
-			struct phys_restr pr;
-			void* mapped;
-			uint32 prot;
-			int32 area;
-
-			vr.address = NULL;
-			vr.address_specification = B_ANY_ADDRESS;
-			vr._pad = 0;
-			vr.alignment = 0;
-			pr.low_address = 0;
-			pr.high_address = 0;
-			pr.alignment = 0;
-			pr.boundary = 0;
-			mapped = NULL;
-			prot = sMapProt;
-			if (prot == 0)
-				prot = B_READ_AREA | B_WRITE_AREA;
-			/* Plain RW B_NO_LOCK. B_STACK_AREA + DONT_COMMIT
-			 * made kernel read() into the map fail (10 decls,
-			 * Arena_Alloc missing). */
-			area = sCreateAreaEtc(sMapTeam, "linux_mmap", sMapLen,
-				B_NO_LOCK, prot, 0, 0, &vr, &pr, &mapped);
-			sMapArea = area;
-			sMapAddr = mapped;
-			sMapSt = area;
-		} else if (sMapOp == MAP_OP_DELETE && sVmDeleteArea != 0) {
-			sMapSt = sVmDeleteArea(sMapTeam, sMapArea, true);
-		} else
-			sMapSt = (int32)0x80000000;
-		release_sem(sMapDone);
-	}
-	return 0;
-}
-
-static int
-mmap_worker_start(void)
-{
-	if (sMapThr >= 0)
-		return 0;
-	sMapGate = create_sem(1, "sys_compat_mapgate");
-	sMapReq = create_sem(0, "sys_compat_mapreq");
-	sMapDone = create_sem(0, "sys_compat_mapdone");
-	if (sMapGate < 0 || sMapReq < 0 || sMapDone < 0)
-		return -1;
-	sMapThr = spawn_kernel_thread(mmap_worker, "sys_compat_mmap",
-		B_NORMAL_PRIORITY, NULL);
-	if (sMapThr < 0)
-		return -1;
-	resume_thread(sMapThr);
-	kser_puts("MWgo\n");
-	return 0;
-}
-
-static void
-mmap_worker_stop(void)
-{
-	if (sMapThr >= 0 && sMapReq >= 0) {
-		status_t ignored;
-		sMapOp = MAP_OP_QUIT;
-		release_sem(sMapReq);
-		wait_for_thread(sMapThr, &ignored);
-		sMapThr = -1;
-	}
-	if (sMapGate >= 0) {
-		delete_sem(sMapGate);
-		sMapGate = -1;
-	}
-	if (sMapReq >= 0) {
-		delete_sem(sMapReq);
-		sMapReq = -1;
-	}
-	if (sMapDone >= 0) {
-		delete_sem(sMapDone);
-		sMapDone = -1;
-	}
-}
 typedef int32 (*haiku_vmclone_fn)(int32 team, const char* name, void** addr,
 	uint32 spec, uint32 prot, uint32 mapping, int32 unmapRange,
 	int32 source, int32 kernel);
@@ -467,6 +352,7 @@ static uint64 sWaitObjKern;
 static uint64 sMapFileFn;
 static haiku_vmmap_fn sVmMapFile;
 static haiku_vmmapk_fn sVmMapFileK;
+static haiku_vmdel_fn sVmDeleteArea;
 static haiku_userdel_fn sUserDeleteArea;
 static haiku_vmclone_fn sVmCloneArea;
 static haiku_vmphys_fn sVmMapPhys;
@@ -478,7 +364,7 @@ typedef void (*haiku_exit_thread_fn)(int32 status);
 static haiku_exit_thread_fn sUserExitThread;
 typedef void (*haiku_thread_exit_fn)(void);
 static haiku_thread_exit_fn sThreadExit;
-#define LINUX_MAP_SLOTS 2048
+#define LINUX_MAP_SLOTS 128
 struct linux_file_map {
 	uint64 addr;
 	uint64 len;
@@ -3643,7 +3529,7 @@ sys_compat_pselect(int64 nfds, void* rfds, void* wfds, void* efds,
 
 static int64 mmap_fb(void* addr, uint64 len, int64 prot, int64 flags);
 
-#define ANON_FREE_SLOTS 4096
+#define ANON_FREE_SLOTS 1024
 static struct {
 	uint64 addr;
 	uint64 len;
@@ -3745,10 +3631,16 @@ mmap_anon_carve(uint64 want)
 	want = (want + 4095) & ~(uint64)4095;
 	if (want == 0)
 		return -LINUX_EINVAL;
+	/* Import_ReadFile Allocate(64MB+1) and keeps it. Largest
+	 * .ailang is 2.3MB. Cap 8..128MB requests to 4MB. */
 	if (want >= (8ull * 1024ull * 1024ull)) {
 		kser_puts("Mz=");
 		kser_hex(want);
 		kser_putc('\n');
+		if (want < (128ull * 1024ull * 1024ull)) {
+			want = 4ull * 1024ull * 1024ull;
+			kser_puts("MC\n");
+		}
 	}
 	if (gBrkBase == 0)
 		return -LINUX_ENOMEM;
@@ -3797,11 +3689,29 @@ mmap_anon_haiku(uint64 len, int64 prot)
 		hprot = B_READ_AREA | B_WRITE_AREA;
 	mapped = NULL;
 	area = (int32)0x80000000;
-	/* create_area_etc with kernel pointers is safe in the hook
-	 * (file mmap already calls vm_map_file here). Worker-thread
-	 * create left maps the team could open but not read (10 decls).
-	 * Never _user_create_area (PR54j KDL). */
-	if (sCreateAreaEtc != 0) {
+	/* Prefer _user_create_area: same path as linux_arena. Name+addr
+	 * live in the team's wstat scratch (user). */
+	if (sUserCreateArea != 0 && sWstatScratch != 0) {
+		static const char nm[] = "linux_mmap";
+		if (user_memcpy((void*)(addr_t)sWstatScratch, (void*)nm,
+			sizeof(nm)) == B_OK
+			&& user_memcpy((void*)(addr_t)(sWstatScratch + 16),
+				&mapped, 8) == B_OK) {
+			area = sUserCreateArea(
+				(const char*)(addr_t)sWstatScratch,
+				(void**)(addr_t)(sWstatScratch + 16),
+				B_RANDOMIZED_ANY_ADDRESS, len, B_NO_LOCK, hprot);
+			if (area >= 0)
+				user_memcpy(&mapped,
+					(void*)(addr_t)(sWstatScratch + 16), 8);
+			else {
+				kser_puts("UC=");
+				kser_hex((uint64)(uint32)area);
+				kser_putc('\n');
+			}
+		}
+	}
+	if (area < 0 && sCreateAreaEtc != 0) {
 		vr.address = NULL;
 		vr.address_specification = B_ANY_ADDRESS;
 		vr._pad = 0;
@@ -3811,11 +3721,6 @@ mmap_anon_haiku(uint64 len, int64 prot)
 		pr.alignment = 0;
 		pr.boundary = 0;
 		mapped = NULL;
-		if (len >= (8ull * 1024ull * 1024ull)) {
-			kser_puts("Mz=");
-			kser_hex(len);
-			kser_putc('\n');
-		}
 		area = sCreateAreaEtc(info.team, "linux_mmap", len, B_NO_LOCK,
 			hprot, 0, 0, &vr, &pr, &mapped);
 		if (area < 0) {
@@ -3863,15 +3768,13 @@ sys_compat_mmap(void* addr, uint64 len, int64 prot, int64 flags,
 		if ((flags & LINUX_MAP_FIXED) != 0) {
 			uint64 a = (uint64)(addr_t)addr;
 			if (gBrkBase == 0 || a < gBrkBase
-				|| a + len > gArenaHi) {
-				kser_puts("FX\n");
+				|| a + len > gArenaHi)
 				return -LINUX_ENOMEM;
-			}
 			return (int64)a;
 		}
-		/* Exact-size carve from the loader's overcommit arena.
-		 * create_area_etc from this hook KDLs (PR54w). Worker
-		 * areas were not readable by _kern_read (10 decls). */
+		/* Do not call _user_create_area from the SYSCALL hook:
+		 * nested user copy PANICs (PR54j). Large Import_ReadFile
+		 * buffers (64MB) live in the carve; size must cover them. */
 		carved = mmap_anon_carve(len);
 		if (carved < 0)
 			kser_puts("ME\n");
@@ -6307,7 +6210,7 @@ init_driver(void)
 	kser_puts("sys_compat UART live orig=");
 	kser_hex(gOrigLstar);
 	kser_putc('\n');
-	kser_puts("PR54x\n");
+	kser_puts("PR54q\n");
 	kser_puts("ULS=");
 	kser_hex(gUlsOff);
 	kser_putc('\n');
@@ -6322,7 +6225,6 @@ init_driver(void)
 	discover_user_delete_area();
 	discover_user_create_area();
 	discover_create_area_etc();
-	mmap_worker_start();
 	discover_kern_close();
 	discover_user_exit_team();
 	discover_user_exit_thread();
@@ -6344,7 +6246,6 @@ init_driver(void)
 extern "C" void
 uninit_driver(void)
 {
-	mmap_worker_stop();
 	linux_clear_all();
 	call_all_cpus_sync(&restore_lstar, NULL);
 	if (sFutexMu >= 0) {
