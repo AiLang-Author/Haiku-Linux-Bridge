@@ -6,6 +6,8 @@ This is a patch series against **PostgreSQL 18.4**. Apply in order from
 `patches/SERIES`. Cherry-pick or `git am` onto a postgres tree, or append
 the `.patch` files onto the HaikuPorts `postgresql18-18.4.patchset`.
 
+**Why these patches exist (Haiku libc/kernel vs the port):** [`HAIKU_CONTRACT.md`](HAIKU_CONTRACT.md). Read that before adding more `#ifdef __HAIKU__`. The Linux contract is to fix Haiku and drop the ifdefs.
+
 License for *our* deltas: CC0 (same as Haiku-Linux-Bridge). PostgreSQL
 itself stays under the PostgreSQL license.
 
