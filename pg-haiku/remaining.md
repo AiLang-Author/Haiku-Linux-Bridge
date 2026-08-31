@@ -12,21 +12,17 @@ query until 0001 is in a rebuilt package. Tree-built libpq with
 
 ## GSS / SSL handshake
 
-`psql` can sit forever on connect unless:
+With **0001** applied, rebuilt `psql` connects on a local unix socket
+without `PGGSSENCMODE`/`PGSSLMODE`. This tree was built with
+`ENABLE_GSS` undefined. Stock packaged `psql` still hangs because it
+loads the old `libpq` (0001 not in the package yet).
 
-```
-PGGSSENCMODE=disable PGSSLMODE=disable
-```
+## `to_char()` / money — fixed in 0002
 
-Separate from the nonblocking-recv bug. `PQexec` against a local socket
-with those off is fine.
-
-## `to_char()` grouping formats
-
-Official `make check` gets past `test_setup` and the first type tests
-(`boolean`, `char`, `int2`, `int4`, `varchar`, …) with matching output.
-`int8`, `money`, and `numeric` have been seen to stall or truncate at
-`to_char(..., '9G999…')` / locale grouping. Not understood yet.
+Haiku `localeconv_l()` hangs; `localeconv()` and `uselocale()` work.
+0002 undefines `HAVE_LOCALECONV_L` on Haiku so postgres uses the POSIX
+path. After that, official `int8`, `money`, and `numeric` regress tests
+pass.
 
 ## Serial one-test-per-cluster is a false FAIL
 

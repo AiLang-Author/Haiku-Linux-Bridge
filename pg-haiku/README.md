@@ -14,6 +14,7 @@ itself stays under the PostgreSQL license.
 | Patch | What it fixes |
 | --- | --- |
 | [`patches/0001-nonblocking-sockets.patch`](patches/0001-nonblocking-sockets.patch) | `psql -c` never returns after a successful query. `make check` stalls after `using temp instance`. |
+| [`patches/0002-skip-localeconv_l.patch`](patches/0002-skip-localeconv_l.patch) | `to_char(..., '9G999')` and `'123'::money` hang. Haiku `localeconv_l()` never returns. |
 
 ### 0001 in one paragraph
 
