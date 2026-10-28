@@ -11,7 +11,7 @@ This project is dedicated to the **Public Domain** under the **Creative Commons 
 > You can copy, modify, distribute, and perform the work, even for commercial purposes, all without asking permission.
 > **Pull Requests and Community Contributions are very welcome!**
 
-PostgreSQL-on-Haiku port fixes (psql hang, …) live in [`pg-haiku/`](pg-haiku/). Numbered patches; cherry-pick or `git am`.
+PostgreSQL 18.4 Haiku fixes are on [AiLang-Author/postgres](https://github.com/AiLang-Author/postgres) branch `haiku-18.4`. This repo does not carry those patches.
 
 ---
 
